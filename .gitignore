@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# Flutter / Dart build artifacts
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework/
+ios/Flutter/Flutter.podspec
+ios/Flutter/flutter_assets/
+
+# Android
+android/.gradle/
+android/captures/
+android/local.properties
+android/key.properties
+android/**/keystore.jks
+android/**/upload-keystore.jks
+android/app/build/
+android/build/
+
+# Generated
+*.g.dart.bak
+**/*.freezed.dart.bak
+
+# Logs
+*.log
+
+# Env
+.env
+.env.local

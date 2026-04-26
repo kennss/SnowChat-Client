@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "175784217579",
+    "project_id": "snowchat-prod",
+    "storage_bucket": "snowchat-prod.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:175784217579:android:afb37a849cb243081fa7ae",
+        "android_client_info": {
+          "package_name": "com.snowchat.snowchat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA5HT7vAOkOd3Ww5x5iRDYwwYhNQ4zyAMY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

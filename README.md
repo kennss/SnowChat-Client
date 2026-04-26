@@ -1,0 +1,176 @@
+<div align="center">
+
+<img src="Snowchat.ico" width="128" height="128" alt="SnowChat" />
+
+# SnowChat
+
+**The first sovereign community stack on Solana.**
+
+E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
+
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B158-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B158/snowchat-v1.0.0%2B158-20260426.apk)
+
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
+[![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
+[![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B.svg?logo=flutter)](https://flutter.dev)
+
+</div>
+
+---
+
+## What is SnowChat
+
+SnowChat fuses an **E2EE messenger**, a **multi-wallet**, an **on-chain NFT marketplace** (a Tensor-fork Anchor program), and a **community fund** where 50% of every trade flows back to the creator-led community — into one mobile app.
+
+Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked, millions in NFTs drained. Tensor stripped creator royalties to compete on price, and creators lost the income that funded their community. Two stories, one root cause: intermediaries capturing value Web3 was supposed to return to creators and communities.
+
+**SnowChat reclaims both sovereignties — by mechanism, not enforcement.**
+
+---
+
+## 📥 Download
+
+### Android
+
+**[⬇️ snowchat-v1.0.0+158-20260426.apk](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B158/snowchat-v1.0.0%2B158-20260426.apk)**
+
+Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
+
+### iOS
+
+TestFlight build available on request via the Issues page. App Store submission is pending Phase 0 (legal entity / KYC / mainnet audit).
+
+---
+
+## Features
+
+### 🔐 E2EE Messaging — Pure Dart Signal Protocol
+- Direct Dart implementation of X3DH + Double Ratchet (1:1) + Sender Key Hybrid (group).
+- No `libsignal` binary, no Platform Channel — pure Dart, three internal audits.
+- Disappearing messages, read receipts, typing indicators.
+- Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library, reusable in any Flutter project.
+
+### 💼 Multi-Wallet (Solana, non-custodial)
+- BIP-39 mnemonic + SLIP-0010 derivation.
+- Phantom-compatible derivation path: `m/44'/501'/{account}'/0'`.
+- Multi-account, hide / unhide, biometric gate (`local_auth`).
+- iOS Keychain / Android Keystore for all key material — never on the server.
+
+### 🛍 On-Chain NFT Marketplace
+- Tensor-fork Anchor program with a custom `snowchat_vault` PDA and a 50% community-fee router.
+- See [`kennss/marketplace`](https://github.com/kennss/marketplace) (branch `feature/snowchat-community-fee-share`) for the on-chain program source.
+- Compressed NFTs (Bubblegum), Metaplex Token Metadata, SPL Token / ATA, Helius indexing.
+
+### 🏛 Community Fund — 50% On-Chain Split
+- Half of every trade flows directly to the creator-led community fund.
+- Verified Metaplex Collection + verified creator required.
+- Atomic settlement on Solana — no escrow, no opt-out, no enforcement layer.
+
+### 📞 Voice Calls (VoIP)
+- WebRTC P2P, Sealed Sender signaling over Socket.IO.
+- iOS CallKit + Android ConnectionService.
+- Cloudflare Realtime TURN, FCM Voice Push.
+
+### 🤖 On-Device AI
+- Forked `flutter_gemma` running Gemma 4 E2B (llama.cpp on iOS, LiteRT-LM on Android).
+- Apple Translation API for Korean, ML Kit language detector.
+- Agentic Tool Use router (calendar, contacts, photos, etc., with Just-in-Time permission).
+- **Zero server transmission** — all inference happens on-device.
+
+---
+
+## Identity
+
+SnowChat IDs are **not phone numbers, not emails**. They are deterministic hashes of the user's Solana wallet — `"snow"` + 32 hex characters (36 total). No Web2 PII, no centralized account system. Recovery via the BIP-39 mnemonic only.
+
+---
+
+## Tech Stack
+
+| Layer | Stack |
+|-------|-------|
+| Mobile | Flutter 3.x · Dart · Riverpod · GoRouter · drift (SQLite) · `flutter_secure_storage` |
+| E2EE | Pure Dart Signal Protocol · pinenacl · X25519 / Ed25519 / XSalsa20-Poly1305 / HMAC-SHA256 |
+| Solana | Anchor (Rust) · Tensor-fork marketplace · Compressed NFTs (Bubblegum) · Metaplex Token Metadata · SPL Token · Helius |
+| Wallet | BIP-39 · SLIP-0010 · `Ed25519HDKeyPair` · `local_auth` biometric gate |
+| VoIP | WebRTC · Socket.IO · CallKit · ConnectionService · Cloudflare TURN · FCM |
+| On-device AI | flutter_gemma · Gemma 4 E2B · llama.cpp / LiteRT-LM · Apple Translation API · ML Kit |
+
+The backend (Node.js · Express · Socket.IO · Prisma · PostgreSQL · Redis) is plaintext-blind by design — it relays ciphertext only — and its source is kept private. The E2EE security surface is fully open here.
+
+---
+
+## Build From Source
+
+### Requirements
+
+- Flutter 3.x (`flutter doctor` must pass)
+- Dart 3.x
+- Xcode 15+ (for iOS builds)
+- Android Studio / Android SDK 33+ (for Android builds)
+
+### Setup
+
+```bash
+git clone https://github.com/kennss/SnowChat-Client.git
+cd SnowChat-Client/app
+
+flutter pub get
+dart run build_runner build --delete-conflicting-outputs
+```
+
+### Run
+
+```bash
+# Android emulator
+flutter run -d emulator-5554
+
+# iOS simulator
+open -a Simulator
+flutter run -d <simulator-id>
+```
+
+### Production build (Android)
+
+```bash
+flutter build apk --release --dart-define=SERVER_ENV=prod
+# Output: app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+---
+
+## Related Projects
+
+| Repo | Purpose | License |
+|------|---------|---------|
+| [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) | Pure Dart Signal Protocol library — zero native dependencies, reusable. | AGPL-3.0 |
+| [`kennss/marketplace`](https://github.com/kennss/marketplace) (branch `feature/snowchat-community-fee-share`) | Tensor-fork Anchor program with `snowchat_vault` PDA + 50% community-fee router. | Apache-2.0 |
+
+---
+
+## Status
+
+- ✅ Wallet V2 Phase 1 — 1:1 chat asset transfers (SOL / SPL / NFT, drift persistence, in-flight recovery)
+- ✅ Wallet V2 Phase 2 — Tensor-fork marketplace + 50% community-fee split (devnet deployed)
+- ✅ E2EE messenger — Pure Dart Signal Protocol, three internal audits
+- ✅ Multi-Wallet V1 — BIP-39 + SLIP-0010, Phantom-compatible derivation
+- ✅ VoIP — WebRTC + CallKit / ConnectionService (Phase 8.2 A~D, G, H)
+- ✅ On-device AI — Gemma 4 E2B + agentic Tool Use
+- 🟡 Third-party security audit — Sec3 / Neodyme / OtterSec (funded by Solana Frontier hackathon)
+- 🟡 Mainnet — after Phase 0 (entity / legal / KYC provider)
+
+---
+
+## License
+
+**AGPL-3.0** — see [LICENSE](LICENSE).
+
+If you fork or run a network-modified version of this app, you must publish your source under the same license. This is intentional: it keeps the E2EE security surface verifiable end-to-end.
+
+---
+
+## Author
+
+**Kennt Kim** — [Calida Lab](https://snowchat.calidalab.ai)
+
+Built solo over four weeks. Submitting to [Colosseum Frontier](https://www.colosseum.com/) (Solana hackathon, 2026).

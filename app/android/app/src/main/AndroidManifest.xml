@@ -1,0 +1,122 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
+    <!-- Phase 10: AI 에이전틱 도구 권한 -->
+    <uses-permission android:name="android.permission.READ_CALENDAR"/>
+    <uses-permission android:name="android.permission.WRITE_CALENDAR"/>
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.READ_SMS"/>
+    <uses-permission android:name="android.permission.READ_CALL_LOG"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions"/>
+    <uses-permission android:name="android.permission.SET_ALARM"/>
+
+    <!-- Phase 8.2 VoIP — WebRTC 음성 통화 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <!-- Android 14+ AppOps RECORD_AUDIO 강화 대응 — Phase E 에서 foregroundServiceType=microphone으로 실제 런치 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <!-- Android 9+ telecom ConnectionService (Self-Managed, includesCallsInRecents=false 해당 없음) -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <application
+        android:label="snowchat"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false">
+        <!--
+             Phase 2 (2026-04-22): MainActivity 의 showWhenLocked / turnScreenOn 제거.
+             Samsung Knox 는 이 flag 를 "visible only" 로만 해석 + 모든 launch 경로
+             (홈 아이콘 포함) 에서 lock bypass 라 security regression. 전용 CallActivity
+             (신규) 가 통화 경로만 lock bypass 담당.
+             참고: Documentation/TO-DO/voip-dedicated-call-activity.md
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!--
+                 Phase 1 invite deeplink (snowchat://invite/<code>).
+                 BROWSABLE 없으면 외부 메신저(카톡 등)에서 클릭한 링크가 못 들어옴.
+                 DEFAULT 없으면 OS 가 자동 분기 시 후보에서 제외.
+                 host="invite" path 는 와일드카드 — code 자체는 router 에서 파싱.
+                 Phase 2 = https://snowchat.calidalab.ai/invite/* (autoVerify=true).
+            -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="snowchat" android:host="invite"/>
+            </intent-filter>
+        </activity>
+
+        <!--
+             전용 통화 Activity — Signal WebRtcCallActivity 패턴.
+             - showWhenLocked / turnScreenOn 을 manifest 선언으로 강제 (runtime 아닌
+               install time OS 인지 → Samsung Knox full-screen intent priority 취득).
+             - excludeFromRecents: 최근 앱 목록에 통화 화면 노출 안 함 (Zero-Trace).
+             - taskAffinity="" + launchMode=singleTask: 독립 task 로 fresh launch.
+             - LAUNCHER category 없음 → 홈 아이콘 실수 launch 불가.
+             - 현재 Phase 1 (probe): onCreate 에서 MainActivity redirect. Phase 2+ 에서
+               FlutterEngineCache + Flutter engine embed 으로 /call 직접 렌더 확장.
+        -->
+        <activity
+            android:name=".CallActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/LaunchTheme"
+            android:hardwareAccelerated="true"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" />
+
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>

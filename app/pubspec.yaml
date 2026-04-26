@@ -1,0 +1,124 @@
+name: snowchat
+description: E2EE Messenger + Solana Wallet
+publish_to: 'none'
+version: 1.0.0+158
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.0
+  riverpod_annotation: ^2.3.0
+
+  # Routing
+  go_router: ^14.0.0
+
+  # Network
+  dio: ^5.4.0
+  socket_io_client: ^2.0.3
+
+  # Local DB
+  drift: ^2.16.0
+  sqlite3_flutter_libs: ^0.5.0
+
+  # Secure storage
+  flutter_secure_storage: ^9.0.0
+
+  # Biometric auth
+  local_auth: ^2.2.0
+
+  # Solana / Crypto
+  bip39: ^1.0.6
+  pinenacl: ^0.6.0
+
+  # Hash (Safety Number SHA-512 iteration; transitive via flutter SDK already)
+  crypto: ^3.0.0
+
+  # QR code
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.2.0  # Phase 6.1 §3.3 — Flutter ≥3.29 OK (Spike S7)
+
+  # Deeplink (snowchat:// invite links — Phase 1, Phase 2 = Universal/App Link)
+  app_links: ^6.3.2
+
+  # Image
+  cached_network_image: ^3.3.0
+
+  # UI
+  shimmer: ^3.0.0
+  flutter_slidable: ^3.0.0
+  intl: ^0.19.0
+  cupertino_icons: ^1.0.8
+
+  # Push / Local Notifications
+  flutter_local_notifications: ^18.0.0
+  firebase_core: ^3.0.0
+  firebase_messaging: ^15.0.0
+
+  # Voice Messages
+  # record: ^5.0.5  # TODO: voice recording — disabled due to record_linux incompatibility
+  audioplayers: ^6.0.0
+
+  # HTTP
+  http: ^1.2.0
+
+  # Util
+  freezed_annotation: ^2.4.0
+  json_annotation: ^4.8.0
+  path_provider: ^2.1.0
+  share_plus: ^7.2.0
+  url_launcher: ^6.2.0
+  uuid: ^4.2.0
+  convert: ^3.1.1
+  image_picker: ^1.1.0
+  file_picker: ^8.1.0
+  flutter_image_compress: ^2.3.0
+  open_filex: ^4.5.0
+  solana: ^0.31.2+1
+  fl_chart: ^1.2.0
+  connectivity_plus: ^7.1.1
+  background_downloader: ^8.6.0
+  permission_handler: ^12.0.1
+  photo_manager: ^3.9.0
+  battery_plus: ^7.0.0
+  device_info_plus: ^12.4.0
+  device_calendar: ^4.3.1
+
+  # Phase 8.2 VoIP — WebRTC P2P + CallKit/ConnectionService + Cloudflare TURN
+  flutter_webrtc: ^1.4.1           # WebRTC Peer-to-Peer (Spike 검증 완료: iOS 26 + Android 16)
+  audio_session: ^0.2.0            # iOS/Android 오디오 세션 관리 (voiceChat 모드)
+  vibration: ^3.0.0                # 수신 벨 진동
+  # flutter_callkit_incoming — fork with self-managed Telecom ConnectionService
+  # 실제 구현. upstream 은 PhoneAccount 등록만 하고 addNewIncomingCall + Connection
+  # overrides 가 전부 stub. Samsung Knox 같은 OEM keyguard bypass 목적으로 필요.
+  # fork 위치: ../external/flutter_callkit_incoming (PR 준비 후 upstream 반영 목표).
+  flutter_callkit_incoming:
+    path: ../external/flutter_callkit_incoming
+  # iOS PushKit은 네이티브 Swift 직접 통합 (Phase E). pub.dev에 안정 패키지 부재 — MethodChannel 패턴.
+  screen_protector: ^1.5.1         # Android FLAG_SECURE + iOS 백그라운드 스냅샷 차단 (flutter_windowmanager 대체 — namespace 이슈로 폐기)
+
+  # Phase 10 AI v2 — On-device translation (Android). iOS는 Apple Translation API 사용 (네이티브).
+  google_mlkit_translation: ^0.13.0
+  google_mlkit_language_id: ^0.13.0
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.0
+  freezed: ^2.4.0
+  json_serializable: ^6.7.0
+  riverpod_generator: ^2.3.0
+  drift_dev: ^2.16.0
+  mockito: ^5.4.0
+
+flutter:
+  uses-material-design: true
+  # Phase J (Phase 8.2 §26): VoIP ringback / busy tone 에셋 (sine wave 합성, 라이선스 무관)
+  assets:
+    - assets/audio/

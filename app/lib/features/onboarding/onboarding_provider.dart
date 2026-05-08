@@ -183,10 +183,10 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         return;
       }
 
-      // Step 3: Authenticate (challenge-response) to get JWT
+      // Step 3: Authenticate (challenge-response) to get JWT pair
       try {
-        final token = await authService.authenticate();
-        _ref.read(authTokenProvider.notifier).state = token;
+        final snap = await authService.authenticate();
+        await _ref.read(tokenManagerProvider).setFromLogin(snap);
         debugPrint('[Onboarding] Authentication successful');
 
         // Step 4: Upload initial E2EE pre-key bundle to the server.
@@ -272,9 +272,9 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       // Step 3: Authenticate (only if server knows this user)
       if (!isNewUser) {
         try {
-          final token = await authService.authenticate();
+          final snap = await authService.authenticate();
           _mark('authService.authenticate (network)');
-          _ref.read(authTokenProvider.notifier).state = token;
+          await _ref.read(tokenManagerProvider).setFromLogin(snap);
           debugPrint('[Onboarding] Authentication successful');
 
           // Step 3b: Check if existing user has displayName set.
@@ -408,8 +408,8 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
 
       // Step 2: Authenticate
       try {
-        final token = await authService.authenticate();
-        _ref.read(authTokenProvider.notifier).state = token;
+        final snap = await authService.authenticate();
+        await _ref.read(tokenManagerProvider).setFromLogin(snap);
         debugPrint('[Onboarding] Authentication successful');
       } catch (e) {
         // Check if blocked by active session

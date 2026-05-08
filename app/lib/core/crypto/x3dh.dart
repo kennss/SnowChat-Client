@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-05-05 (P3 defense: domain-separate HKDF info — SnowChat_X3DH_4DH vs _5DH; BREAKING CHANGE for new sessions with v248- peers)
 ///
 /// @functions
 ///  - X3DHResult: X3DH session establishment result (shared secret + ephemeral public key)
@@ -32,8 +32,27 @@ class X3DHResult {
   });
 }
 
-/// X3DH info string used in HKDF for domain separation.
-final Uint8List _x3dhInfo = Uint8List.fromList(utf8.encode('SnowChat_X3DH'));
+/// X3DH info strings used in HKDF for domain separation.
+///
+/// P3 defense-in-depth (2026-05-05): split the unified info string into
+/// 4DH/5DH variants so that a silent fall from the OPK path to the no-OPK
+/// path produces an *immediate* AEAD verify failure on the very first
+/// message, instead of silently deriving a different shared secret and
+/// passing all of X3DH while making every Double Ratchet message
+/// undecryptable forever. After P0 client fail-loud at
+/// signal_protocol_service.dart:707 this fall is supposed to be impossible,
+/// but the cost of the guard is zero and the cost of being wrong is the
+/// "long-idle first-call decrypt fails permanently" UX we just fixed.
+///
+/// BREAKING CHANGE: this info string change makes new clients incompatible
+/// with peers running v248 or earlier when establishing a *new* X3DH
+/// session. Existing Double Ratchet sessions (already-derived shared
+/// secrets) keep working because the ratchet does not re-run HKDF with
+/// this info. Roll out to all paired devices in one batch.
+final Uint8List _x3dhInfo4DH =
+    Uint8List.fromList(utf8.encode('SnowChat_X3DH_4DH'));
+final Uint8List _x3dhInfo5DH =
+    Uint8List.fromList(utf8.encode('SnowChat_X3DH_5DH'));
 
 /// 32 zero bytes prepended to DH outputs per the Signal spec
 /// (used as a padding prefix before concatenation).
@@ -97,7 +116,7 @@ class X3DH {
     final sharedSecret = hkdfDerive(
       ikm: dhConcat,
       salt: Uint8List(32), // zero salt per Signal spec
-      info: _x3dhInfo,
+      info: hasOpk ? _x3dhInfo5DH : _x3dhInfo4DH,
       length: 32,
     );
 
@@ -146,7 +165,7 @@ class X3DH {
     final sk = hkdfDerive(
       ikm: dhConcat,
       salt: Uint8List(32),
-      info: _x3dhInfo,
+      info: hasOpk ? _x3dhInfo5DH : _x3dhInfo4DH,
       length: 32,
     );
     return sk;

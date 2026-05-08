@@ -44,6 +44,17 @@ android {
         // ABI 제한은 scripts/build_release.sh 의 `flutter build apk
         // --split-per-abi` 옵션에서 처리 — Gradle defaultConfig.ndk.abiFilters
         // 는 Flutter plugin 이 빌드 중 재설정해서 override 불가.
+
+        // 2026-05-08 i18n locale lock (Phase 0). Companion to iOS
+        // CFBundleLocalizations=['en'] — strips every locale except
+        // English from the APK so the system Resources.getConfiguration
+        // for our package falls back to English even on Korean-locale
+        // devices. Companion runtime guard (AppCompatDelegate
+        // .setApplicationLocales) sits in MainActivity. Together they
+        // force ConnectionService's incoming-call UI to render in
+        // English, matching the rest of the app and the iOS side.
+        // Documented in Documentation/TO-DO/2026-05-07-app-locale-and-i18n.md.
+        resourceConfigurations.add("en")
     }
 
     signingConfigs {

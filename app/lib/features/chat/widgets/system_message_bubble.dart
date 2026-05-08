@@ -6,7 +6,16 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase G: _TransferCompletedBubble — Sent/Received + explorer link)
+/// @lastUpdated 2026-05-06 (missed-call countdown anchor switched from
+///              metadata['insertedAtMs'] to ChatScreen's _screenEnteredAt
+///              when provided. Tester report 2026-05-06 — "user enters chat
+///              several minutes after a missed call and barely sees the
+///              countdown" — fixed by giving them up to the full 5-minute
+///              window from when they actually see the bubble. drift
+///              row expiry stays insertion-based per call/CLAUDE.md §2.2
+///              zero-trace cap. Earlier 2026-04-26: header English
+///              translation; 2026-04-20 Wallet V2 Phase G:
+///              _TransferCompletedBubble.)
 ///
 /// @functions
 ///  - SystemMessageBubble: StatelessWidget rendering WhatsApp-style system messages
@@ -32,7 +41,17 @@ import '../models/message.dart';
 class SystemMessageBubble extends StatelessWidget {
   final Message message;
 
-  const SystemMessageBubble({super.key, required this.message});
+  /// 2026-05-06: missed-call countdown anchor. Passed down from ChatScreen
+  /// so every missed-call bubble in the same chat session shares the same
+  /// "entered at" timestamp. Optional for back-compat — null falls back
+  /// to the metadata insertedAt anchor (legacy behaviour).
+  final DateTime? screenEnteredAt;
+
+  const SystemMessageBubble({
+    super.key,
+    required this.message,
+    this.screenEnteredAt,
+  });
 
   /// Returns the message metadata map, or an empty map if absent.
   Map<String, dynamic> _decodeMetadata() {
@@ -66,7 +85,11 @@ class SystemMessageBubble extends StatelessWidget {
     // also render the same bubble — reuses the 5-min TTL countdown.
     if (eventType == 'missed_voice_call' ||
         (eventType != null && eventType.startsWith('outgoing_voice_call_'))) {
-      return _MissedCallBubble(message: message, metadata: metadata);
+      return _MissedCallBubble(
+        message: message,
+        metadata: metadata,
+        screenEnteredAt: screenEnteredAt,
+      );
     }
     // Wallet V2 Phase G — permanent transfer-completed system message
     // (Sent/Received + 7-char tx hash + Solana explorer link). spec §6.4 / §5.9.
@@ -181,14 +204,28 @@ class SystemMessageBubble extends StatelessWidget {
 }
 
 /// V1.0.1: missed-call bubble — forced 5-min TTL countdown (Auto-deletes in mm:ss).
-/// 1-second setState driven off `metadata['insertedAtMs']`. call/CLAUDE.md §2.2.
+/// 1-second setState driven off the chat-screen-entered anchor (preferred) or
+/// `metadata['insertedAtMs']` (legacy fallback). call/CLAUDE.md §2.2.
+///
+/// 2026-05-06 anchor change: when ChatScreen provides `screenEnteredAt`, the
+/// countdown starts from the moment the user opened the chat, not from when
+/// the system message was inserted. Earlier behaviour gave the user only
+/// the residual portion of the 5-minute window — if they opened the chat 4
+/// minutes after the call, they had 1 minute or less to act on the
+/// callback hint. Anchoring on the screen-open moment gives them up to the
+/// full 5 minutes from the time they actually see the bubble. drift expiry
+/// remains insertion-based, so the bubble may unmount earlier than the
+/// countdown suggests when the row deletes — that is expected behaviour
+/// (zero-trace cap, not a bug).
 class _MissedCallBubble extends StatefulWidget {
   final Message message;
   final Map<String, dynamic> metadata;
+  final DateTime? screenEnteredAt;
 
   const _MissedCallBubble({
     required this.message,
     required this.metadata,
+    this.screenEnteredAt,
   });
 
   @override
@@ -198,15 +235,22 @@ class _MissedCallBubble extends StatefulWidget {
 class _MissedCallBubbleState extends State<_MissedCallBubble> {
   static const _ttl = Duration(minutes: 5);
   Timer? _timer;
-  late DateTime _insertedAt;
+  late DateTime _anchor;
 
   @override
   void initState() {
     super.initState();
-    final ms = widget.metadata['insertedAtMs'];
-    _insertedAt = ms is int
-        ? DateTime.fromMillisecondsSinceEpoch(ms)
-        : DateTime.now();
+    if (widget.screenEnteredAt != null) {
+      _anchor = widget.screenEnteredAt!;
+    } else {
+      // Legacy fallback — used if a future caller renders the bubble
+      // outside ChatScreen and does not pass screenEnteredAt. Same
+      // semantics as before the 2026-05-06 anchor change.
+      final ms = widget.metadata['insertedAtMs'];
+      _anchor = ms is int
+          ? DateTime.fromMillisecondsSinceEpoch(ms)
+          : DateTime.now();
+    }
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -219,7 +263,7 @@ class _MissedCallBubbleState extends State<_MissedCallBubble> {
   }
 
   Duration get _remaining {
-    final elapsed = DateTime.now().difference(_insertedAt);
+    final elapsed = DateTime.now().difference(_anchor);
     final remaining = _ttl - elapsed;
     return remaining.isNegative ? Duration.zero : remaining;
   }

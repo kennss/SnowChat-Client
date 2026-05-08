@@ -4,40 +4,34 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
-	<key>NSCameraUsageDescription</key>
-	<string>Camera access is used to scan Solana wallet addresses and Solana Pay QR codes.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>SnowChat AI uses calendar access to help manage your schedule. All data stays on-device.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>SnowChat AI uses contacts to help find people. All data stays on-device.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>SnowChat AI uses location to answer location-based questions. All data stays on-device.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>SnowChat AI uses photo access to search your photos. All data stays on-device.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>SnowChat uses the microphone for end-to-end encrypted voice calls. Audio is transmitted peer-to-peer over DTLS-SRTP and never stored.</string>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Authenticate to confirm wallet actions and NFT listings.</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>voip</string>
-		<string>audio</string>
-	</array>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>ai.calidalab.snowchat.invite</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>snowchat</string>
-			</array>
-		</dict>
-	</array>
+	<!-- Disable Firebase Messaging swizzle of remote notification handlers.
+	     iOS PushKit is integrated natively (VoipPushBridge.swift) and FCM is not
+	     used on iOS at all (APNs HTTP/2 direct via ApnsService). Leaving the
+	     swizzle on triggers a recurring `firebase_messaging/apns-token-not-set`
+	     unhandled exception (PushService.initialize) and is suspected of
+	     intercepting voip push delivery in the background path.
+	     Phase 8.2 §25 / 2026-04-29 hardening. -->
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
+	<!-- 2026-05-08 i18n locale lock (Phase 0) — force English at the OS
+	     level so CallKit's incoming-call banner renders "Accept" /
+	     "Decline" instead of the Korean "수락" / "거절" that was
+	     showing on Korean-locale devices. The textAccept / textDecline
+	     fields on flutter_callkit_incoming only apply when
+	     isCustomNotification=true; we keep that flag false (Phase E-2,
+	     2026-04-19 — separate Flutter engine boot causes Riverpod
+	     state reset). The only remaining lever is to declare the app
+	     itself as English-only so iOS falls back from Korean.
+	     CFBundleLocalizations advertises supported languages — listing
+	     only "en" makes iOS treat Korean devices the same as English
+	     ones for our process. Documented in
+	     Documentation/TO-DO/2026-05-07-app-locale-and-i18n.md. -->
 	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Snowchat</string>
 	<key>CFBundleExecutable</key>
@@ -54,10 +48,42 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>ai.calidalab.snowchat.invite</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>snowchat</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>SnowChat AI uses calendar access to help manage your schedule. All data stays on-device.</string>
+	<!-- Legacy iOS 16 and earlier — App Store Connect requires this even when
+	     NSCalendarsFullAccessUsageDescription is set, because device_calendar
+	     plugin still references the legacy EKEventStore APIs. -->
+	<key>NSCalendarsUsageDescription</key>
+	<string>SnowChat AI uses calendar access to help manage your schedule. All data stays on-device.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is used to scan Solana wallet addresses and Solana Pay QR codes.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>SnowChat AI uses contacts to help find people. All data stays on-device.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Authenticate to confirm wallet actions and NFT listings.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SnowChat AI uses location to answer location-based questions. All data stays on-device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SnowChat uses the microphone for end-to-end encrypted voice calls. Audio is transmitted peer-to-peer over DTLS-SRTP and never stored.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>SnowChat AI uses photo access to search your photos. All data stays on-device.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -81,6 +107,13 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+		<string>audio</string>
+		<string>remote-notification</string>
+		<string>fetch</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

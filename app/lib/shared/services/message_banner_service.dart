@@ -10,11 +10,13 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-26
-/// @lastUpdated 2026-04-26
+/// @lastUpdated 2026-04-28 (showFriendRequest — Friends tab 외 다른 화면에서
+///                          친구 요청 도착 시 in-app 배너로 알림)
 ///
 /// @functions
-///  - MessageBannerService.maybeShow(): main entry. Skips if user is
-///    actively viewing the conversation, otherwise displays the banner.
+///  - MessageBannerService.maybeShow(): incoming message banner
+///  - MessageBannerService.showFriendRequest(): incoming friend request banner
+///    — 사용자가 Friends 탭에 있을 때는 silent (이미 list 에 즉시 반영됨)
 
 library;
 
@@ -73,6 +75,60 @@ class MessageBannerService {
     overlay.insert(entry);
 
     _autoDismissTimer = Timer(_autoDismissDuration, _dismissCurrent);
+  }
+
+  /// Show a friend-request banner. Caller passes requester display name +
+  /// snowId for avatar. Tap → navigate to /friends. Silent if the user is
+  /// already on the Friends tab (list updates immediately so banner = noise).
+  void showFriendRequest({
+    required String fromSnowchatId,
+    required String fromDisplayName,
+  }) {
+    final overlay = rootNavigatorKey.currentState?.overlay;
+    if (overlay == null) {
+      debugPrint('[MessageBanner] no overlay — drop friend request banner');
+      return;
+    }
+
+    // 현재 라우트가 /friends 면 silent (badge + list 가 즉시 반영).
+    final ctx = rootNavigatorKey.currentContext;
+    final currentLoc = ctx != null
+        ? GoRouter.of(ctx).routerDelegate.currentConfiguration.uri.path
+        : null;
+    if (currentLoc == '/friends') return;
+
+    _dismissCurrent();
+
+    final data = BannerMessageData(
+      conversationId: '__friend_request__$fromSnowchatId',
+      senderName: fromDisplayName.isNotEmpty
+          ? fromDisplayName
+          : fromSnowchatId.substring(0, 12),
+      preview: 'Sent you a friend request',
+      snowId: fromSnowchatId,
+    );
+
+    final entry = OverlayEntry(
+      builder: (_) => MessageBanner(
+        data: data,
+        onTap: _navigateToFriends,
+        onDismiss: _dismissCurrent,
+      ),
+    );
+    _current = entry;
+    overlay.insert(entry);
+
+    _autoDismissTimer = Timer(_autoDismissDuration, _dismissCurrent);
+  }
+
+  void _navigateToFriends() {
+    final ctx = rootNavigatorKey.currentContext;
+    if (ctx == null) return;
+    try {
+      ctx.go('/friends');
+    } catch (e) {
+      debugPrint('[MessageBanner] navigate to friends failed: $e');
+    }
   }
 
   void _dismissCurrent() {

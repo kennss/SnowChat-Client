@@ -3,7 +3,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; Socket JWT auto-refresh: onJwtExpired/onAuthFailed wiring)
+/// @lastUpdated 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
+///              tokenSnapshotProvider 로 derived. tokenManagerProvider KeepAlive
+///              SSoT. AuthService 의 onTokenRefresh callback 폐기. socket /
+///              push token sync 도 events stream 으로 listen)
 /// @note SolanaNetwork enum is defined in solana_config.dart and re-exported here
 ///
 /// @functions
@@ -15,7 +18,9 @@
 ///  - currentSnowIdProvider: current user SnowChat ID state provider
 ///  - apiClientProvider: ApiClient provider
 ///  - authServiceProvider: AuthService provider
-///  - authTokenProvider: JWT auth token state provider
+///  - tokenManagerProvider: SSoT for JWT lifecycle (Phase 11, KeepAlive)
+///  - tokenSnapshotProvider: derived sync StateProvider exposing current TokenSnapshot
+///  - authTokenProvider: legacy compat — projects tokenSnapshot.access (read-only)
 ///  - socketManagerProvider: SocketManager provider
 ///  - snowDatabaseProvider: SnowDatabase provider
 ///  - messageDaoProvider: MessageDao provider (drift DB SSoT)
@@ -27,6 +32,7 @@
 ///  - encryptedMessageHandlerProvider: EncryptedMessageHandler provider
 ///  - notificationServiceProvider: NotificationService provider
 ///  - pushServiceProvider: PushService provider
+///  - pushTokenAutoSyncProvider: auto-registers the FCM token whenever authToken transitions to non-null (fresh signup / restore / login / restart)
 ///  - presenceServiceProvider: PresenceService provider
 ///  - linkPreviewServiceProvider: LinkPreviewService provider
 ///  - solanaNetworkProvider: Solana network (Devnet/Mainnet) state provider
@@ -34,6 +40,7 @@
 ///  - transferEventBusProvider: Wallet V2 — chat transfer event broadcast bus (Phase B)
 
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -61,6 +68,8 @@ import '../features/chat/providers/expiring_message_manager.dart';
 import '../core/crypto/group_session_manager.dart';
 import '../core/messaging/global_message_router.dart';
 import '../core/messaging/message_queue.dart';
+import '../core/call/voip_push_service.dart';
+import '../core/network/voip_native_bridge.dart';
 import '../core/notifications/notification_service.dart';
 import '../core/notifications/push_service.dart';
 import '../core/crypto/identity_manager.dart';
@@ -69,11 +78,13 @@ import '../core/crypto/session_store.dart';
 import '../core/crypto/signal_protocol_service.dart';
 import '../core/crypto/signal_session_manager.dart';
 import '../core/network/api_client.dart';
+import '../core/network/api_endpoints.dart';
 import '../core/network/file_service.dart';
 import '../core/network/link_preview_service.dart';
 import '../core/network/presence_service.dart';
 import '../core/network/socket_manager.dart';
 import '../core/network/auth_service.dart';
+import '../core/network/token_manager.dart';
 import '../core/storage/database.dart';
 import '../core/storage/daos/message_dao.dart';
 import '../core/storage/daos/conversation_dao.dart';
@@ -81,6 +92,7 @@ import '../core/storage/daos/attachment_dao.dart';
 import '../core/storage/daos/ai_message_dao.dart';
 import '../core/storage/daos/identity_verification_dao.dart';
 import '../core/storage/secure_storage.dart';
+import '../features/settings/settings_provider.dart';
 import '../features/wallet/services/transfer_event_bus.dart';
 import '../features/wallet/services/transfer_service.dart';
 
@@ -181,6 +193,22 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
         '(non-fatal): $e');
   }
 
+  // Phase 11 (2026-05-04 fresh-install fix): wire authTokenSyncProvider
+  // BEFORE the no-identity early return. Previously the wire happened only
+  // on the existing-identity branch (line moved here), so a fresh install
+  // returned with the bridge inert → tokenManager.setFromLogin() during
+  // onboarding updated tokenSnapshotProvider but the bridge never propagated
+  // to authTokenProvider → sealedSenderAutoInitProvider's
+  // `ref.watch(authTokenProvider)` stayed null → SealedSenderService never
+  // activated → callSignalingProvider null → callServiceProvider null →
+  // callProvider became `_IdleCallNotifier` → `_UnavailableCallService`
+  // throws on startCall: "VoIP not initialized — SealedSender service
+  // unavailable". Messaging worked because the legacy non-sealed E2EE path
+  // does not require sealedSenderService. App restart "fixed" it because the
+  // identity now exists and the original line-212 wire fires. User-reported
+  // 2026-05-04 (fresh iPhone 13 install + Kennt onboarding + 통화 실패).
+  ref.read(authTokenSyncProvider);
+
   // Step 1: Check local identity exists
   final hasId = await identityManager.hasIdentity();
   if (!hasId) {
@@ -191,16 +219,24 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   final snowId = await identityManager.getSnowChatId();
   debugPrint('[AppStartup] Identity found: $snowId');
 
+  // Step 1.5 (Phase 11): hydrate TokenManager from storage. Restores a
+  // previously-saved snapshot (v2 envelope or legacy slot migration) so the
+  // ensureFresh path can pick up where we left off without forcing a full
+  // re-authenticate.
+  final tokenManager = ref.read(tokenManagerProvider);
+  await tokenManager.hydrateFromStorage();
+
   // Step 2: Authenticate with server (BEFORE setting any app state)
-  // Skip if token already exists (e.g. onboarding just completed and set it)
-  final existingToken = ref.read(authTokenProvider);
-  if (existingToken != null) {
-    debugPrint('[AppStartup] Auth token already exists — skipping authenticate');
+  // Skip if a token already exists (hydrated or previously set by onboarding).
+  final existingSnap = tokenManager.snapshot;
+  if (existingSnap != null) {
+    debugPrint('[AppStartup] Auth snapshot present — skipping authenticate '
+        '(prefix=${existingSnap.accessPrefix})');
   } else {
     try {
       final authService = ref.read(authServiceProvider);
-      final token = await authService.authenticate();
-      ref.read(authTokenProvider.notifier).state = token;
+      final snap = await authService.authenticate();
+      await tokenManager.setFromLogin(snap);
       debugPrint('[AppStartup] Auth restored');
     } catch (e) {
       debugPrint('[AppStartup] Auth restore failed: $e');
@@ -234,7 +270,13 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   ref.read(requiresPinSetupProvider.notifier).state = !hasPin;
 
   // Step 4: Initialize E2EE (ensures identity key is on server)
-  if (ref.read(authTokenProvider) != null) {
+  // Phase 11 fix: tokenManager.snapshot 직접 체크. authTokenProvider 는
+  // tokenManagerProvider.events broadcast Stream 의 microtask-deferred
+  // sync glue 라 hydrate 직후 sync read 시점에 아직 null 가능 → 이 분기
+  // 통째 skip → sealedSenderAutoInit 안 fire → SealedSender unavailable
+  // → VoIP 시도 시 _UnavailableCallService throw "Bad state: VoIP not
+  // initialized — SealedSender service unavailable" 회귀.
+  if (tokenManager.snapshot != null) {
     try {
       await ref.read(signalSessionManagerProvider).initialize();
       debugPrint('[AppStartup] E2EE initialized');
@@ -242,12 +284,11 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
       debugPrint('[AppStartup] E2EE init failed (non-fatal): $e');
     }
 
-    // Step 4.5: Retry FCM token registration (device_id now available)
-    try {
-      await ref.read(pushServiceProvider).retryTokenRegistration();
-    } catch (e) {
-      debugPrint('[AppStartup] FCM token retry failed (non-fatal): $e');
-    }
+    // Step 4.5 — FCM token registration is handled by pushTokenAutoSyncProvider,
+    // which watches authTokenProvider and re-registers whenever the token transitions
+    // to non-null. Reading it here is the existing-session fallthrough so the same
+    // path triggers on cold-boot with a restored session (mirrors sealedSender below).
+    ref.read(pushTokenAutoSyncProvider);
 
     // Step 5 — SealedSender is handled by a separate auto-init provider
     // (sealedSenderAutoInitProvider) that watches authTokenProvider changes. Calling
@@ -311,90 +352,230 @@ final activeConversationProvider = StateProvider<String?>((ref) => null);
 
 // --- API client ---
 final apiClientProvider = Provider<ApiClient>((ref) {
-  return ApiClient();
+  // Phase 11: ApiClient now reads tokenManager via callback so it can pre-flight
+  // ensureFresh() before every request and handle 401 retry without circular
+  // provider creation.
+  final client = ApiClient();
+  client.tokenProvider = () => ref.read(tokenManagerProvider);
+  return client;
 });
 
 // --- Auth ---
+//
+// Phase 11: AuthService no longer owns refresh logic. authenticate() returns a
+// TokenSnapshot which the caller hands to TokenManager.setFromLogin(). All
+// refresh / 401 / socket reconnect routes through TokenManager.ensureFresh().
 final authServiceProvider = Provider<AuthService>((ref) {
-  final authService = AuthService(
+  return AuthService(
     apiClient: ref.read(apiClientProvider),
     identityManager: ref.read(identityManagerProvider),
     secureStorage: ref.read(secureStorageProvider),
   );
-
-  // Wire up token refresh callback for automatic 401 handling.
-  // On failure (e.g. DB reset invalidated tokens), clear auth state
-  // so the user is redirected to onboarding instead of infinite retry.
-  ref.read(apiClientProvider).onTokenRefresh = () async {
-    try {
-      final newToken = await authService.refreshToken();
-      ref.read(authTokenProvider.notifier).state = newToken;
-      return newToken;
-    } catch (e) {
-      debugPrint('[Auth] Token refresh failed, logging out: $e');
-      await authService.logout();
-      ref.read(authTokenProvider.notifier).state = null;
-      rethrow;
-    }
-  };
-
-  return authService;
 });
 
-// --- Auth token ---
-final authTokenProvider = StateProvider<String?>((ref) => null);
+// --- TokenManager (Phase 11 SSoT, KeepAlive) ---
+//
+// Single source of truth for JWT lifecycle. Created once at app start; survives
+// authToken null transitions (logout → re-login uses the same instance). The
+// underlying refresh implementation hits POST /auth/refresh via Dio directly
+// (separate Dio so we don't recurse through the interceptor).
+//
+// KeepAlive is critical: if a transient watcher disposes us mid-flight, the
+// `_inflight` mutex disappears and a follow-up call would race a fresh refresh.
+final tokenManagerProvider = Provider<TokenManager>((ref) {
+  // Use a separate Dio instance for /auth/refresh so we never re-enter the
+  // ApiClient interceptor (which itself would call ensureFresh and deadlock).
+  final refreshDio = Dio(BaseOptions(
+    baseUrl: ApiEndpoints.getBaseUrl(),
+    connectTimeout: const Duration(seconds: 15),
+    receiveTimeout: const Duration(seconds: 15),
+    headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+  ));
+
+  // Late binding lets the closure read `mgr.snapshot` without having to look
+  // the provider up via `ref.read(tokenManagerProvider)` (which would form a
+  // self-reference cycle and break Riverpod's type inference).
+  late final TokenManager mgr;
+  mgr = TokenManager(
+    storage: ref.read(secureStorageProvider),
+    refreshFn: (refresh) async {
+      // 2026-05-07 — failure classification lives here so token_manager.dart
+      // stays HTTP-library-agnostic. Transient (network unreachable / 5xx /
+      // request cancel) → RefreshTransientFailure (manager retries without
+      // counting toward exhaustion, only wall-clock cap trips expiredHard).
+      // Server-explicit reject (4xx) → RefreshHardReject (counts toward
+      // _kMaxAttempts). Anything else falls through as RefreshHardReject by
+      // default (defensive). Pre-this-fix every DioException was treated
+      // identically and 3× network blip in 7s wrongly bounced users to
+      // /welcome — pajooman003 incident 2026-05-07 UTC 10:55.
+      Response<dynamic> res;
+      try {
+        res = await refreshDio.post(
+          ApiEndpoints.authRefresh,
+          data: {'refreshToken': refresh},
+        );
+      } on DioException catch (e, st) {
+        final code = e.response?.statusCode;
+        if (e.response == null) {
+          // No HTTP response landed at all — pure network-side failure.
+          throw RefreshTransientFailure(e, st);
+        }
+        if (code != null && code >= 500 && code < 600) {
+          // 5xx — server reachable but in trouble; retry as transient.
+          throw RefreshTransientFailure(e, st);
+        }
+        // 4xx (or any other status) — server explicitly refused. Hard reject.
+        throw RefreshHardReject(e, statusCode: code, causeStack: st);
+      }
+      try {
+        final data = Map<String, dynamic>.from(res.data as Map);
+        final access = data['token'] as String;
+        final newRefresh = data['refreshToken'] as String;
+        final prev = mgr.snapshot;
+        return TokenSnapshot.fromTokens(
+          access: access,
+          refresh: newRefresh,
+          version: (prev?.version ?? 0) + 1,
+        );
+      } catch (e, st) {
+        // 200 OK 가 왔는데 body 가 예상한 모양이 아닌 케이스 — 서버 contract
+        // 위반이니 hard reject 로 분류 (transient retry 의미 없음).
+        throw RefreshHardReject(e,
+            statusCode: res.statusCode, causeStack: st);
+      }
+    },
+  );
+
+  // Bridge events → tokenSnapshotProvider so widgets/legacy code that watch
+  // authTokenProvider stay in sync.
+  final sub = mgr.events.listen((event) {
+    final next = mgr.snapshot;
+    final notifier = ref.read(tokenSnapshotProvider.notifier);
+    if (notifier.state?.version != next?.version ||
+        notifier.state?.access != next?.access) {
+      notifier.state = next;
+    }
+  });
+
+  ref.onDispose(() {
+    sub.cancel();
+    mgr.dispose();
+  });
+  return mgr;
+});
+
+// --- Token snapshot (sync, derived) ---
+//
+// Phase 11: replaces the raw `authTokenProvider` with a typed snapshot.
+// Sync read — widgets that just need "am I logged in?" check `state != null`.
+// NOT autoDispose; lifetime matches tokenManagerProvider.
+final tokenSnapshotProvider = StateProvider<TokenSnapshot?>((ref) => null);
+
+// --- Auth token (legacy compat alias) ---
+//
+// Phase 11: kept as a writable StateProvider<String?> so legacy watchers
+// (sealedSenderAutoInitProvider, pushTokenAutoSyncProvider, socketManager
+// listener, conversation_list_provider, contact_provider) keep functioning
+// without a sweeping rename. The init function seeds from tokenSnapshotProvider
+// and the bridge listener (set up in authTokenSyncProvider below) keeps the
+// two in sync going forward.
+//
+// Direct writes (`ref.read(authTokenProvider.notifier).state = token`) still
+// work — they propagate "downstream" but do NOT update the SSoT TokenManager
+// state. New code MUST call `tokenManager.setFromLogin(snapshot)` instead so
+// the bridge listener pushes the snapshot through this provider too.
+final authTokenProvider = StateProvider<String?>(
+  (ref) => ref.read(tokenSnapshotProvider)?.access,
+);
+
+/// Authorization header for raw network calls that bypass the Dio interceptor
+/// (Image.network on `/api/v2/files/:fileId` for channel/user avatars, etc.).
+///
+/// Phase 11 cut over moved Authorization injection from a Dio default header
+/// to a per-request interceptor (`ApiClient.onRequest`). The previous pattern
+/// `ref.read(apiClientProvider).dio.options.headers['Authorization']` now
+/// reads null → Image.network sends no auth header → server `/files/:fileId`
+/// returns 401 → `errorBuilder` fallback fires → user sees the initials
+/// placeholder instead of the uploaded avatar (manifests as "save 가 안 됨"
+/// because the upload + PUT both succeed but the next render cannot fetch
+/// the file). Watching `tokenSnapshotProvider` here makes consumers rebuild
+/// automatically on token rotation, so a refresh in flight does not leave a
+/// stale header behind.
+final authHeaderProvider = Provider<String?>((ref) {
+  final snap = ref.watch(tokenSnapshotProvider);
+  return snap != null ? 'Bearer ${snap.access}' : null;
+});
+
+// One-shot sync glue — listens to tokenSnapshotProvider and rewrites
+// authTokenProvider on every change. Keep alive (KeepAlive) for the app
+// lifetime so listeners never see stale values. Wired via app.dart's
+// `ref.read(authTokenSyncProvider)`.
+final authTokenSyncProvider = Provider<void>((ref) {
+  ref.listen<TokenSnapshot?>(tokenSnapshotProvider, (prev, next) {
+    final prevAccess = ref.read(authTokenProvider);
+    final nextAccess = next?.access;
+    if (prevAccess != nextAccess) {
+      ref.read(authTokenProvider.notifier).state = nextAccess;
+    }
+  }, fireImmediately: true);
+});
 
 // --- Socket ---
-// Use ref.read (not ref.watch) to avoid recreating/disposing the socket
-// when the auth token is refreshed. The socket is created once and stays
-// alive across token refreshes. Use ref.listen to connect when a token
-// first becomes available.
+//
+// Phase 11: token state is owned by TokenManager. SocketManager exposes a
+// `tokenProvider` callback so connect() can synchronously read the current
+// access string. Refresh is delegated entirely to TokenManager — the socket's
+// onConnectError JWT branch calls `tokenManager.ensureFresh()` and reconnects.
+// expiredHard event drives logout via the events stream listener below.
 final socketManagerProvider = Provider<SocketManager>((ref) {
-  final initialToken = ref.read(authTokenProvider);
-  final manager = SocketManager(token: initialToken);
+  final tokenManager = ref.read(tokenManagerProvider);
+  final initialSnap = ref.read(tokenSnapshotProvider);
+  final manager = SocketManager(
+    tokenProvider: () => tokenManager.snapshot?.access,
+    ensureFreshToken: () async {
+      try {
+        final s = await tokenManager.ensureFresh(reason: 'socket-connect');
+        return s.access;
+      } catch (e) {
+        debugPrint('[Socket] ensureFreshToken failed: $e');
+        return null;
+      }
+    },
+  );
 
-  // Auto-refresh JWT expiry on the Socket side (symmetric to the HTTP interceptor).
-  // Fixes a bug where the 1-hour JWT TTL plus onConnectError never calling refresh
-  // left the socket permanently stale.
-  manager.onJwtExpired = () async {
-    try {
-      final authService = ref.read(authServiceProvider);
-      final newToken = await authService.refreshToken();
-      ref.read(authTokenProvider.notifier).state = newToken;
-      return newToken;
-    } catch (e) {
-      debugPrint('[Socket] JWT refresh failed: $e');
-      return null;
-    }
-  };
-  manager.onAuthFailed = () async {
-    try {
-      final authService = ref.read(authServiceProvider);
-      await authService.logout();
-    } catch (_) {}
-    ref.read(authTokenProvider.notifier).state = null;
-  };
-
-  // Auto-connect when token is available at creation time
-  if (initialToken != null) {
-    manager.connect(); // fire-and-forget OK here — Provider can't be async
+  // Auto-connect if we already have a snapshot at creation (cold-boot path
+  // when hydrateFromStorage ran first).
+  if (initialSnap != null) {
+    manager.connect();
   }
 
-  // Listen for future token changes (e.g., first login) to auto-connect,
-  // but do NOT dispose/recreate the socket on every refresh.
-  ref.listen<String?>(authTokenProvider, (previous, next) {
-    if (next != null) {
-      manager.updateToken(next);
+  // Listen for snapshot transitions (login / logout) to drive connect/disconnect.
+  ref.listen<TokenSnapshot?>(tokenSnapshotProvider, (previous, next) {
+    if (next != null && previous?.access != next.access) {
       if (!manager.isConnected) {
-        manager.connect(); // fire-and-forget — listener can't await
+        manager.connect();
       }
-    } else {
+    } else if (next == null) {
       manager.disconnect();
     }
   });
 
-  // Cleanup on dispose
-  ref.onDispose(() => manager.dispose());
+  // expiredHard from TokenManager → run logout-side effects + clear.
+  final eventSub = tokenManager.events.listen((event) async {
+    if (event.type == TokenEventType.expiredHard) {
+      try {
+        final authService = ref.read(authServiceProvider);
+        await authService.logout();
+      } catch (_) {/* best-effort */}
+      // tokenManager.clear() already ran inside _doRefresh on expiredHard.
+      manager.disconnect();
+    }
+  });
+
+  ref.onDispose(() {
+    eventSub.cancel();
+    manager.dispose();
+  });
 
   return manager;
 });
@@ -605,6 +786,17 @@ final messageQueueProvider = Provider<MessageQueue>((ref) {
     apiClient: ref.read(apiClientProvider),
     socketManager: ref.read(socketManagerProvider),
     myIdResolver: () => ref.read(currentSnowIdProvider) ?? '',
+    // 2026-05-04 — Phase 8.2 Signal-style VoIP signaling persistence.
+    // Server enqueues mid-call sealed envelopes with metadata.voip=true.
+    // Route them to CallSignaling.injectEnvelope on offline-recovery fetch.
+    // ref.read inside the lambda so we resolve callSignalingProvider lazily
+    // (it depends on SignalSessionManager + SealedSenderService which may
+    // not be ready at messageQueueProvider construction).
+    injectVoipEnvelope: (envelopeBase64) async {
+      final signaling = ref.read(callSignalingProvider);
+      if (signaling == null) return;
+      await signaling.injectEnvelope(envelopeBase64);
+    },
   );
   // P0-2 Stage B: route receive-path TOFU mismatch into Safety Number pipeline.
   queue.identityChangeHandler = ref.read(identityChangeHandlerProvider);
@@ -637,6 +829,57 @@ final notificationServiceProvider = Provider<NotificationService>((ref) {
   return service;
 });
 
+// --- VoIP Push Service (iOS PushKit, Phase E-2) ---
+final voipPushServiceProvider = Provider<VoipPushService>((ref) {
+  debugPrint('[VoipPush] provider closure executed');
+  final svc = VoipPushService(
+    apiClient: ref.read(apiClientProvider),
+    secureStorage: ref.read(secureStorageProvider),
+  );
+  unawaited(svc.start());
+  ref.onDispose(svc.dispose);
+  return svc;
+});
+
+// --- VoIP Native Bridge (iOS PushKit + CallKit accept handoff, Phase E-2 v3.1) ---
+//
+// Provider (NOT auto-dispose — N-Min-4): hot restart re-reads should reuse
+// the same instance. The class internally guards against double attach
+// (`_started` flag), but auto-dispose would let the Stream get re-subscribed
+// twice between rebuilds, leading to duplicate envelope drains.
+final voipNativeBridgeProvider = Provider<VoipNativeBridge>((ref) {
+  final bridge = VoipNativeBridge();
+  bridge.start();
+  ref.onDispose(bridge.dispose);
+  return bridge;
+});
+
+// Auto-pushes the resolved API base URL to native CallAcceptCoordinator
+// whenever it becomes available. Until baseUrl arrives on native, accepts
+// queue. We watch authTokenProvider as a proxy for "Riverpod has fully
+// hydrated" — by the time auth is set, ApiEndpoints.getBaseUrl() is stable.
+final voipNativeBaseUrlPushProvider = FutureProvider<void>((ref) async {
+  if (!Platform.isIOS) return;
+  final token = ref.watch(authTokenProvider);
+  if (token == null) return;
+  final bridge = ref.read(voipNativeBridgeProvider);
+  await bridge.setBaseUrl(ApiEndpoints.getBaseUrl());
+  // Wire native drain → CallNotifier.acceptPendingVoipCallWithEnvelopes.
+  // Subscription is single-listener (cancelled on provider dispose) — no
+  // duplicate hand-off across rebuilds.
+  final sub = bridge.events.listen((event) {
+    final notifier = ref.read(callProvider.notifier);
+    final relay = ref.read(settingsProvider).callAlwaysRelay;
+    notifier.acceptPendingVoipCallWithEnvelopes(
+      nonce: event.nonce,
+      envelopes: event.envelopes,
+      localAlwaysRelay: relay,
+      source: 'native',
+    );
+  });
+  ref.onDispose(sub.cancel);
+});
+
 // --- Push Service ---
 final pushServiceProvider = Provider<PushService>((ref) {
   final pushService = PushService(
@@ -654,6 +897,51 @@ final pushServiceProvider = Provider<PushService>((ref) {
   pushService.initialize();
   ref.onDispose(() => pushService.dispose());
   return pushService;
+});
+
+// Auto-syncs FCM push token whenever the user authenticates (login) or a
+// stored snapshot is hydrated on cold boot.
+//
+// Phase 11: previously this watched `authTokenProvider` and re-fired on every
+// transition (including refresh, which caused the 4-6× register storm logged
+// 2026-05-03). Now it listens to TokenManager.events and dedups so login OR
+// hydrated triggers a single registration pass; refreshed events are ignored
+// (the FCM token didn't change just because the JWT rotated).
+//
+// Fresh-signup gap fix (2026-04-28) is preserved: hydrate happens before
+// onboarding completes, so login fires after onboarding -> registration runs
+// on the SAME app launch as the signup, not waiting for the next cold boot.
+final pushTokenAutoSyncProvider = Provider<void>((ref) {
+  final tokenManager = ref.read(tokenManagerProvider);
+  bool registered = false;
+  Future<void> trigger(String reason) async {
+    if (registered) return;
+    registered = true;
+    try {
+      await ref.read(pushServiceProvider).retryTokenRegistration();
+      debugPrint('[PushTokenAutoSync] registration via $reason succeeded');
+    } catch (e) {
+      registered = false; // allow retry on next event
+      debugPrint('[PushTokenAutoSync] registration ($reason) failed (non-fatal): $e');
+    }
+  }
+
+  // If a snapshot is already loaded by the time this provider mounts (cold
+  // boot path), trigger immediately.
+  if (tokenManager.snapshot != null) {
+    unawaited(trigger('initial'));
+  }
+
+  final sub = tokenManager.events.listen((event) {
+    if (event.type == TokenEventType.login ||
+        event.type == TokenEventType.hydrated) {
+      unawaited(trigger(event.type.name));
+    } else if (event.type == TokenEventType.logout ||
+        event.type == TokenEventType.expiredHard) {
+      registered = false; // re-arm for next login
+    }
+  });
+  ref.onDispose(sub.cancel);
 });
 
 // --- Presence Service ---
@@ -701,6 +989,11 @@ final callSignalingProvider = Provider<CallSignaling?>((ref) {
     sealedSenderService: sealed,
     senderCertificateManager: certMgr,
     socketManager: ref.read(socketManagerProvider),
+    // 2026-05-04 fix: self-sender envelope leak 가드. CallSignaling 의
+    // _onIncoming 이 own envelope 를 받으면 abort. providers 가
+    // currentSnowIdProvider 를 closure 로 wire — sync read 라 BG isolate
+    // 안전.
+    mySnowchatIdResolver: () => ref.read(currentSnowIdProvider),
   );
   ref.onDispose(signaling.dispose);
   return signaling;
@@ -714,7 +1007,27 @@ final callServiceProvider = Provider<CallService?>((ref) {
   final service = CallService(
     signaling: signaling,
     turnManager: ref.read(turnCredentialManagerProvider),
+    // v204 (2026-05-03): inject CallKitManager so outbound startCall on iOS
+    // can drive CXStartCallAction → didActivate (Apple-recommended pattern).
+    // Pre-v204 outbound bypassed CallKit, leaving AURemoteIO without
+    // PhoneCall priority → silent two-way audio failure.
+    callKit: ref.read(callKitManagerProvider),
   );
+  // v2.5 (2026-05-03): wire CallService → VoipNativeBridge audio session
+  // events. The previous design had CallService register its own
+  // setMethodCallHandler on `snowchat/voip_native`, colliding with the
+  // bridge's handler — whichever provider initialized last won, silently
+  // dropping the other side's MethodCalls. The bridge now owns the channel
+  // exclusively and exposes audio session events as broadcast streams.
+  // No-op on Android.
+  if (Platform.isIOS) {
+    final bridge = ref.read(voipNativeBridgeProvider);
+    service.wireNativeBridge(
+      audioSessionActivated: bridge.audioSessionActivated,
+      audioSessionDeactivated: bridge.audioSessionDeactivated,
+      systemReset: bridge.systemReset,
+    );
+  }
   ref.onDispose(service.dispose);
   return service;
 });

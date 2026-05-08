@@ -3,26 +3,36 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-04-28 (avatarUrl 옵션 — 채널/사용자가 업로드한 이미지가 있으면 표시, 없으면 이니셜 fallback)
 ///
 /// @functions
 ///  - SnowAvatar: deterministic colored avatar StatelessWidget
 
 import 'package:flutter/material.dart';
 import '../constants/colors.dart';
+import '../../core/network/api_endpoints.dart';
 
 /// Generates a deterministic color avatar from a SnowChat ID,
 /// similar to Session's public-key-based colored avatars.
+///
+/// 만약 [avatarUrl] (서버 fileId) 가 주어지면 network image 로 표시 +
+/// 로딩/에러 시 동일 이니셜 fallback 으로 자연스럽게 degradation.
+/// 인증 헤더 [authHeader] (Bearer token) 가 필요한 경우 widget 호출
+/// 측에서 전달 (raw HTTP 가 dio interceptor 우회하므로).
 class SnowAvatar extends StatelessWidget {
   final String snowId;
   final double size;
   final String? displayName;
+  final String? avatarUrl;
+  final String? authHeader;
 
   const SnowAvatar({
     super.key,
     required this.snowId,
     this.size = 48,
     this.displayName,
+    this.avatarUrl,
+    this.authHeader,
   });
 
   @override
@@ -30,7 +40,7 @@ class SnowAvatar extends StatelessWidget {
     final color = _colorFromId(snowId);
     final initials = _initials();
 
-    return Container(
+    final fallback = Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
@@ -46,6 +56,25 @@ class SnowAvatar extends StatelessWidget {
             fontSize: size * 0.38,
             fontWeight: FontWeight.w600,
           ),
+        ),
+      ),
+    );
+
+    if (avatarUrl == null || avatarUrl!.isEmpty) return fallback;
+
+    return ClipOval(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Image.network(
+          '${ApiEndpoints.getBaseUrl()}/files/$avatarUrl',
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          headers: authHeader != null ? {'Authorization': authHeader!} : null,
+          errorBuilder: (_, __, ___) => fallback,
+          loadingBuilder: (_, child, progress) =>
+              progress == null ? child : fallback,
         ),
       ),
     );

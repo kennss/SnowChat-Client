@@ -266,7 +266,58 @@ const env = await redis.get(key);
 await redis.del(key);  // 1회성 보장 — persist 0
 ```
 
-**iOS 분기 차단**: Phase I 시점 iOS는 Apple Dev cert 미확보 → `osType === 'android'` 필터로 발송 0. 상세 `Documentation/TO-DO/ios-voip-push.md`.
+**iOS 분기 차단**: ~~Phase I 시점 iOS는 Apple Dev cert 미확보 → `osType === 'android'` 필터로 발송 0~~ → **2026-04-28 Apple Dev cert 확보 후 해제**. iOS PushKit + APNs(`ApnsService.ts`) 통합 완료. 상세 Phase 8.2 §25.7 + §28 (Phase E-2 hardening). `Documentation/TO-DO/ios-voip-push.md`는 archive 처리됨.
+
+### 2.6.2 FCM data callId echo — Telecom dual-Connection zombie 차단 (Z-fix, 2026-05-05)
+
+**예외 조항**: FCM voip data payload 에 envelope 의 `callId` 를 echo 하는 것을 **허용**한다. §2.6.1 의 "callId 평문 노출 금지" 와 충돌하는 것처럼 보이지만, 다음 근거로 무해:
+
+1. 서버는 이미 `sealed_call_signaling` socket 메시지의 plaintext metadata 필드로 `callId` 를 들고 있음 (`call_signaling.dart:192-199`, v208 push gating 용).
+2. `callId` 는 caller-side random UUID 로, recipient identity 와 무관 (per-call 일회성). nonce 와 동일 threat class.
+3. 서버는 callId 를 DB/log/metric 에 영속화하지 않음 — relay metadata 로만 사용 (Zero-Trace §2.5 그대로 유지).
+
+**필요성**: BG isolate (FCM path) 와 main isolate (socket call_invite path) 가 같은 통화에 대해 `showCallkitIncoming` 을 두 번 호출 — 각자 독립 UUID 사용 시 Telecom 에 별개 Connection 2개 등록됨. endCall 은 그 중 하나만 종료시켜 다른 하나가 좀비화 (Galaxy logcat 2026-05-05 21:04:47 TC@222 ON_HOLD 7분 잔존 사례). 같은 callId 통일 시 fork 의 `CallkitIncomingBroadcastReceiver.kt:116-119` dedup gate 가 두 번째 등록을 silent skip → 단일 Connection 보장.
+
+```typescript
+// ✓ 허용 — Z-fix 이후 (2026-05-05)
+data: {
+  type: 'incoming_call',
+  nonce,                           // Redis pending key (server-allocated)
+  callId,                          // envelope callId (caller-allocated, single source)
+  expiresAt: String(Date.now() + 60_000),
+}
+```
+
+```dart
+// ✓ 허용 — BG isolate 가 callId 우선 사용
+final unifiedId = (data['callId'] as String?) ?? data['nonce'] as String;
+await FlutterCallkitIncoming.showCallkitIncoming(
+  CallKitParams(id: unifiedId, ...),
+);
+```
+
+**여전히 금지** (§2.6.1 그대로):
+- `callerName` / `callerDisplayName` / `callerSnowchatId` — recipient identity 노출
+- `notification` 필드 — data-only 강제
+
+### 2.7 Ringtone / Ringback 재생 시 audio session 필수 (Phase E-2, 2026-04-29)
+
+ringtone 또는 ringback 재생은 **반드시 `_configureAudioSession()` (audio_session 패키지, voiceChat mode) 통과 후** 수행해야 한다. iOS는 정의되지 않은 session category에서 audioplayers 재생 시 silenced — foreground 무음 회귀 발생 (Phase 8.2 §27 12차 식별).
+
+```dart
+// ❌ 금지 — call_service.dart 278-281의 변경 전 패턴
+if (Platform.isIOS) unawaited(_startRingtone());
+
+// ✓ 필수 — audio session configure 선행
+if (Platform.isIOS) {
+  await _configureAudioSession();   // playAndRecord + voiceChat 명시
+  unawaited(_startRingtone());
+}
+```
+
+**추가 가드**: `_startRingtone` 내부에서 idempotent하게 `AudioSession.instance.setActive(true)` 호출. iOS silent switch 한계 인정 — `playback` 카테고리는 silent switch가 mute하므로 `playAndRecord` 유지 필수. 상세 Phase 8.2 §26.5 강화안.
+
+**WebRTC takeover**: `_pc!.onIceConnectionState`에서 `Connected/Completed` 진입 직후 `_stopRingback()` + `_stopRingtone()` 동기 호출 (call_service.dart 611-613 패턴).
 
 ---
 
@@ -665,7 +716,7 @@ grep -rn "callerDisplayName" server/src/services/PushNotification # ❌
 # FCM Voice Push (Phase I) 위반 패턴
 grep -rn "sendVoipIncomingCall.*callerName" server/src/             # ❌ (payload에 이름 평문)
 grep -rn "sendVoipIncomingCall.*callerSnowchatId" server/src/       # ❌
-grep -rn "sendVoipIncomingCall.*callId" server/src/services/        # ❌ (callId도 메타데이터)
+# (callId echo 는 §2.6.2 Z-fix 로 허용 — Telecom dual-Connection zombie 차단 목적)
 grep -rn "voip:pending.*SETEX.*[^6][0-9]\{3,\}" server/src/         # ❌ (TTL 60s 초과 금지)
 grep -rn "type.*incoming_call.*notification" server/src/            # ❌ (data-only 강제)
 grep -rn "showCallkitIncoming.*nameCaller.*[^S]" app/lib/core/call/voip_push # ❌ (익명 강제: "SnowChat Call" 외 금지)
@@ -673,6 +724,22 @@ grep -rn "showCallkitIncoming.*nameCaller.*[^S]" app/lib/core/call/voip_push # �
 # 메타데이터 로그
 grep -rn "logger\.(info|debug).*call.*caller" server/src/    # ❌
 grep -rn "debugPrint.*call.*recipient" app/lib/features/call # ❌
+
+# Phase E-2 (PushKit Production Hardening, §28) 추가 패턴
+# 1. ringtone/ringback 재생 시 audio session 미configure 차단 (§2.7, foreground 무음 bug)
+grep -rnE "_startRingtone\(\)|_startRingback\(\)" app/lib/core/call/  # ⚠ 호출부에서 _configureAudioSession 선행 확인 필수
+# 2. iOS PushKit token Optional drop 방지 (§25.7 함정 #1)
+grep -rn "SwiftFlutterCallkitIncomingPlugin.sharedInstance?.setDevicePushTokenVoIP" app/ios/Runner/  # ⚠ AppDelegate didInitializeImplicitFlutterEngine 시점 확인
+# 3. nonce 형식 호환 widening 회귀 방지 (§25.7 함정 #2)
+grep -n "_noncePattern" app/lib/core/call/voip_push_handler.dart     # ⚠ base64url{43} | UUID 36 양쪽 매칭 regex 유지
+# 4. Firebase swizzle 비활성 유지 (§25.7 함정 #4)
+grep -n "FirebaseAppDelegateProxyEnabled" app/ios/Runner/Info.plist  # ⚠ <false/> 유지 (true 또는 누락 시 PushKit 가로챔)
+# 5. APNs production/sandbox env 일관성 (§25.7 함정 #5)
+grep -n "APNS_PRODUCTION" server/.env.example                         # ⚠ deploy 환경 매트릭스에 명시
+# 6. DIAG 진단 로그 일괄 제거 후 재발 방지 (§28.4)
+grep -rnE "\[DIAG-VOIP-2026\]|\[DIAG:CallService\]|\[DIAG:CallSignal\]|\[DIAG:CallNotifier\]|\[FCM\] voip|\[APNs\] " server/src app/lib app/ios | head -20  # ❌ production diff 시 0건이어야 함
+# 7. _processedEnvelopes lifecycle (§28.5(a))
+grep -n "_processedEnvelopes" app/lib/core/call/call_signaling.dart  # ⚠ _cleanup 시 clear 호출 필수 — 누락 시 다음 통화 차단 가능
 ```
 
 ---
@@ -785,3 +852,5 @@ Phase E (PushKit/CallKit/ConnectionService)
 | 2026-04-20 | V1.0.1 — §2.2 부재중 통화 정책을 "제한적 알림 정책" 으로 전환. 수신자 측 1:1 채팅방에 5분 강제 TTL `system` 메시지 insert 허용 (기존 인프라 재사용, 새 테이블 X, 영속 X, 60s peer 레이트 제한). 콜백 hint 가 시스템 알림 dismiss 후에도 채팅방에서 5분 잔존 → UX 개선 + Zero-Trace 정신 유지. |
 | 2026-04-20 | V1.0.1 후속 — 트리거 조건 확장: `endedReason == 'timeout'` → `prevStatus == incoming && endedReason != 'declined'`. iPhone 발신자가 60s 안에 끊는 흔한 패턴 (reason='ended') 도 cover. UI: `_MissedCallBubble` 카운트다운 (Auto-deletes in mm:ss) 추가. |
 | 2026-04-21 | Phase I — FCM Voice Push (Android) 정책 확장. §2.6.1 신설: FCM 경로도 §2.6 nonce-only 원칙 + 추가 강화 (notification 필드 금지, callerName/callerSnowchatId 평문 금지, CallKit 표시는 "SnowChat Call" 익명 강제 — Signal 패턴, Redis TTL 60s + fetch 후 즉시 DEL, iOS 분기 차단). §10 CI lint grep 패턴 6개 추가. 상세 Phase 8.2 §25. |
+| 2026-04-29 | Phase E-2 — Apple Dev cert 확보 후 iOS PushKit 활성화. §2.6.1의 "iOS 분기 차단" 조항 해제 (PushKit + APNs `ApnsService.ts` 통합 완료). **§2.7 신설** — ringtone/ringback 재생 시 `_configureAudioSession()` 선행 필수 (foreground 무음 ringtone bug 방지). §10 CI lint에 7개 패턴 추가 (`_startRingtone` 호출부 audit, plugin sharedInstance Optional drop 방지, nonce regex widening 유지, `FirebaseAppDelegateProxyEnabled=false` 유지, `APNS_PRODUCTION` env 명시, DIAG 로그 production 0건, `_processedEnvelopes` lifecycle). 상세 Phase 8.2 §25.7 + §28. |
+| 2026-05-05 | Z-fix — **§2.6.2 신설**: FCM voip data 에 envelope `callId` echo 허용. Galaxy 21:04:47 logcat 에서 BG isolate(FCM nonce) + main isolate(socket envelope callId) 가 각자 다른 UUID 로 `showCallkitIncoming` 호출 → Telecom 에 Connection 2개 등록 → endCall 1개만 처리 → TC@222 좀비 7분 잔존 발견. 단일 source-of-truth (envelope callId) 통일 시 fork dedup gate 가 두 번째 등록 silent skip → 단일 Connection. callId 는 caller-side random UUID, nonce 와 동일 threat class, 서버 영속화 없음 — Zero-Trace 매트릭스 무영향. §10 lint 의 `sendVoipIncomingCall.*callId` 차단 항목을 §2.6.2 예외로 표시. |

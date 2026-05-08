@@ -73,6 +73,9 @@ class ChannelInfo {
   final String? category;
   final int memberCount;
   final JoinPolicy joinPolicy;
+  /// 일반 멤버 invite 허용 여부. owner 가 channel settings 에서 토글.
+  /// INVITE_ONLY 채널엔 강제 false (서버에서 enforce — race 방어).
+  final bool allowMemberInvite;
   final String? role;
   final bool isMuted;
   final List<ChannelRoom> rooms;
@@ -85,6 +88,7 @@ class ChannelInfo {
     this.category,
     this.memberCount = 0,
     this.joinPolicy = JoinPolicy.open,
+    this.allowMemberInvite = false,
     this.role,
     this.isMuted = false,
     this.rooms = const [],
@@ -103,6 +107,7 @@ class ChannelInfo {
       category: json['category'] as String?,
       memberCount: json['memberCount'] as int? ?? 0,
       joinPolicy: parseJoinPolicy(json['joinPolicy'] as String?),
+      allowMemberInvite: json['allowMemberInvite'] as bool? ?? false,
       role: json['role'] as String?,
       isMuted: json['isMuted'] as bool? ?? false,
       rooms: roomsList,
@@ -126,6 +131,12 @@ class ChannelInfo {
 
   bool get isOwner => role == 'OWNER';
   bool get isAdmin => role == 'ADMIN' || role == 'OWNER';
+
+  /// 사용자가 invite link 를 생성할 수 있는지. admin 이거나 (멤버 +
+  /// allowMemberInvite=true + INVITE_ONLY 아님). 서버 권한 체크와 동일.
+  bool get canCreateInvite =>
+      isAdmin ||
+      (allowMemberInvite && joinPolicy != JoinPolicy.inviteOnly);
 }
 
 class PendingChannel {
@@ -185,8 +196,12 @@ class InviteInfo {
   });
 
   factory InviteInfo.fromJson(Map<String, dynamic> json) {
+    // 서버 (channelService.getInviteInfo) 는 channelId 키로 반환. 과거
+    // group/channel 분리 전 코드 잔재로 클라이언트는 groupId 만 기대했음
+    // → null cast 실패 → "Invalid or expired invite link" 표면화.
+    // 양쪽 키 모두 받아 자연스러운 마이그레이션.
     return InviteInfo(
-      groupId: json['groupId'] as String,
+      groupId: (json['channelId'] ?? json['groupId']) as String,
       groupName: json['groupName'] as String?,
       avatarUrl: json['avatarUrl'] as String?,
       category: json['category'] as String?,

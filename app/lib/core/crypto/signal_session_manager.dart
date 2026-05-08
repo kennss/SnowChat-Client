@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; Wallet V2 Phase F: getPeerEd25519PublicKey public helper — for TransferService walletAddressSig verification)
+/// @lastUpdated 2026-05-05 (Fix A: pin-cache-first on msgType=2 decrypt — eliminates the ~500ms HTTP race that let sealed_call_signaling overtake an in-flight session_reset on long-idle pre-warm)
 ///
 /// @functions
 ///  - SignalSessionManager: Signal session management class
@@ -99,6 +99,15 @@ class SignalSessionManager {
   /// Maps peer snowchatId → timestamp of last reset.
   /// Prevents rapid-fire resets for the same peer (5 min cooldown).
   final Map<String, DateTime> _lastResetTimestamps = {};
+
+  /// 2026-05-04 — pre-warm 결정용. encrypt 성공 시점 기록 → CallService 가
+  /// startCall 직전에 1h 이상 idle 면 archive_reset force 로 fresh X3DH
+  /// 강제 → first invite 가 prekey-message 로 송신 → recipient 가 stale
+  /// session 무시하고 fresh bootstrap → 첫 시도 부터 정상 decrypt.
+  final Map<String, DateTime> _lastEncryptTimestamps = {};
+
+  DateTime? lastEncryptTimestamp(String snowId) =>
+      _lastEncryptTimestamps[snowId];
 
   /// Minimum interval between session resets for the same peer.
   static const Duration _resetCooldown = Duration(minutes: 5);
@@ -383,6 +392,30 @@ class SignalSessionManager {
     debugPrint('[Perf]   getSignalPublicKey (read): ${_sw.elapsedMilliseconds}ms');
     _sw.reset();
 
+    // P1 ordering fix (2026-05-05): persist private keys to disk BEFORE the
+    // server POST.
+    //
+    // Original ordering (POST → save) had a process-kill window: server stores
+    // OPK public keys → process killed during the ~hundreds of ms before save
+    // → restart loads empty store → peers fetch the bundle and run X3DH 5-DH
+    // referencing OPK ids we no longer hold privately → silent 4-DH
+    // fallthrough on receive (now caught by signal_protocol_service P0
+    // fail-loud) → permanent decrypt failure for any session opened in that
+    // window. The previous "Phase 8.7 round 6" save-after-POST closed the
+    // process-killed-after-everything window but not this earlier one.
+    //
+    // New ordering (save → POST): a save failure aborts the upload (no
+    // server-side state created). A POST failure after a successful save
+    // leaves orphan private keys in the local store keyed by OPK ids the
+    // server never knew about — harmless: no peer can ever request them.
+    // Counter advance already happened above, so the next attempt uses fresh
+    // ids and the orphans age out of the map naturally on the next session
+    // store rewrite.
+    await _saveSessionStore();
+    debugPrint('[Perf]   _saveSessionStore (pre-upload persist): '
+        '${_sw.elapsedMilliseconds}ms');
+    _sw.reset();
+
     // Upload to server -- includes identityKey + Ed25519 verify key for server DB update
     try {
       await _apiClient.post(
@@ -411,25 +444,6 @@ class SignalSessionManager {
       debugPrint(
           '[SignalSessionManager] Uploaded signed prekey #$signedPreKeyId + '
           '$preKeyBatchSize one-time prekeys to server');
-
-      // Phase 8.7 round 6 — CRITICAL fix: persist SPK/OPK private keys to
-      // disk immediately after server upload. Without this call the freshly
-      // generated private keys live ONLY in the signal service's in-memory
-      // map. If the user kills the app before any other code path triggers
-      // _saveSessionStore (e.g. a decrypt that advances the ratchet), the
-      // next cold start loads an empty session store, and every incoming
-      // X3DH prekey message fails with "Signed prekey X not found,
-      // available: []" — forever, because the server already stored the
-      // public keys and every peer will keep using them.
-      //
-      // Reproduction: CCC (5554) onboards → uploadPreKeys succeeds (server
-      // has real SPK/OPK) → user swipe-kills before any message arrives →
-      // restart → SessionStore.loadFromDB returns 0 sessions → SPK map is
-      // [] → every SKDM wrapper from every peer dead-letters with 'Signed
-      // prekey 1 not found'. Lost all X3DH private keys permanently.
-      await _saveSessionStore();
-      debugPrint('[SignalSessionManager] Session store persisted after '
-          'uploadPreKeys');
     } catch (e) {
       debugPrint('[SignalSessionManager] Failed to upload pre-keys: $e');
       rethrow;
@@ -872,6 +886,9 @@ class SignalSessionManager {
         deviceId: deviceId,
       );
 
+      // 2026-05-04 — pre-warm 결정용 timestamp 갱신.
+      _lastEncryptTimestamps[recipientId] = DateTime.now();
+
       return result;
     } on SignalProtocolException catch (e) {
       debugPrint('[SignalSessionManager] Encrypt error: $e');
@@ -901,22 +918,49 @@ class SignalSessionManager {
     _assertInitialized();
 
     // Pre-fetch sender Ed25519 verify key when this could trigger
-    // _receiveSession. We always fetch on messageType == 2 — the existing
-    // session might be missing (cold start, peer rotation, archived) so the
-    // signal layer may fall through to _receiveSession. If a session exists
-    // and trial-decrypts, the fetched key is simply unused.
+    // _receiveSession. On messageType == 2 the existing session might be
+    // missing (cold start, peer rotation, archived) so the signal layer may
+    // fall through to _receiveSession. If a session exists and trial-decrypts,
+    // the fetched key is simply unused.
+    //
+    // 2026-05-05 race fix: try the local TOFU pin store FIRST and only fall
+    // back to a synchronous HTTP fetch on first contact (no pin yet). The
+    // previous unconditional server fetch added ~500ms to every prekey-
+    // message decrypt, opening a race window where a follow-up
+    // sealed_call_signaling envelope (different socket event, different
+    // handler) raced past the in-flight session install and tried to decrypt
+    // against the now-archived old session — fail. Pre-warm scenarios always
+    // have a pre-existing pin (we have talked to the peer before), so the pin
+    // cache hit path is the realistic 100% case here. First contact still
+    // pays the HTTP RTT, but in that case there is no pre-warm at all so no
+    // race. The signal layer downstream still TOFU-checks against the same
+    // pin store, so reading from the pin here introduces no MITM exposure —
+    // a server compromise cannot inject a fake key because the pin is local.
     Uint8List? senderEd25519;
     if (messageType == 2) {
-      try {
-        senderEd25519 = await _fetchSenderEd25519(senderId);
-      } catch (e) {
-        // Surface as a SignalProtocolException so the queue treats this as
-        // a normal ratchet failure (retry via backoff) rather than a TOFU
-        // mismatch. Retries are bounded; persistent failure dead-letters.
-        throw SignalProtocolException(
-          'Failed to fetch sender Ed25519 key for prekey envelope from '
-          '$senderId: $e',
-        );
+      final pinStore = _identityPinStore;
+      if (pinStore != null) {
+        try {
+          senderEd25519 = await pinStore.getPinned(senderId);
+        } catch (e) {
+          // Pin store read failure is not fatal — fall back to server.
+          debugPrint('[SignalSessionManager] decrypt pin store read '
+              'failed (fallback to server): $e');
+        }
+      }
+
+      if (senderEd25519 == null) {
+        try {
+          senderEd25519 = await _fetchSenderEd25519(senderId);
+        } catch (e) {
+          // Surface as a SignalProtocolException so the queue treats this as
+          // a normal ratchet failure (retry via backoff) rather than a TOFU
+          // mismatch. Retries are bounded; persistent failure dead-letters.
+          throw SignalProtocolException(
+            'Failed to fetch sender Ed25519 key for prekey envelope from '
+            '$senderId: $e',
+          );
+        }
       }
     }
 
@@ -1030,6 +1074,51 @@ class SignalSessionManager {
     await _sessionStore.deleteAll();
     _initialized = false;
     debugPrint('[SignalSessionManager] All session data reset');
+  }
+
+  /// 2026-05-04 회귀 fix: per-peer 로컬 세션 wipe (no peer notification).
+  ///
+  /// 1:1 대화방 삭제 시 호출. drift Conversations / Messages row 만 지우고
+  /// Signal SessionStore 의 ratchet state 를 그대로 두면, 같은 peer 와 다시
+  /// 메시지 주고받을 때 stale ratchet 으로 decrypt 시도 → 실패 →
+  /// `archiveAndResetSession` (peer 한테 session_reset notification 보냄) →
+  /// peer 도 reset → 양쪽 동시 X3DH bootstrap → 서로 다른 session 생성 →
+  /// **session_reset 무한 loop** (사용자 보고 2026-05-04 "1:1 채팅 삭제 후
+  /// 같은 peer 와 메시지 주고받을 때 그룹 통신 안 됨").
+  ///
+  /// archiveAndResetSession 과 다른 점:
+  ///   - 이건 자기 쪽 store 만 wipe — peer 한테 알림 X. peer 의 session 은
+  ///     그대로 (peer 도 자기 쪽 채팅을 별도로 삭제하면 둘 다 깨끗해짐).
+  ///   - peer 가 다음 메시지 보낼 때 fresh prekey-message 가 X3DH bootstrap
+  ///     트리거 → 우리 쪽에 fresh session 생성 → convergence.
+  ///   - 양측 동시 reset race 의 위험 회피 (notification 안 보냄).
+  Future<void> deleteSessionForPeer(String snowId) async {
+    if (!_initialized) {
+      // Init wasn't run — store doesn't have this peer's session anyway.
+      // Just remove the cached deviceId mapping (if any) and bail.
+      _recipientDeviceIds.remove(snowId);
+      return;
+    }
+    final deviceId = _recipientDeviceIds[snowId];
+    if (deviceId != null) {
+      try {
+        await _signal.deleteSession(snowId, deviceId);
+      } catch (e) {
+        debugPrint('[SessionMgr] deleteSessionForPeer delete error '
+            '(non-fatal): $e');
+      }
+    }
+    _recipientDeviceIds.remove(snowId);
+    // Persist immediately so a crash mid-flight doesn't restore the wiped
+    // session from disk.
+    try {
+      await _saveSessionStore();
+    } catch (e) {
+      debugPrint('[SessionMgr] deleteSessionForPeer persist error '
+          '(non-fatal): $e');
+    }
+    debugPrint('[SessionMgr] deleteSessionForPeer($snowId) — local session '
+        'wiped (no peer notification)');
   }
 
   /// Persist current session state and release resources.

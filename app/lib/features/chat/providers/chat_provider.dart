@@ -945,6 +945,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
       expiresIn: Value(ttl ?? 0),
       expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
       replyToId: Value(replyTo?.id),
+      // 2026-05-08 schema v10 — persist the same denormalized quote
+      // fields we already keep on the in-memory Message, so the watch
+      // stream's drift-loaded version doesn't lose the quote text.
+      replyToPreview: Value(replyTo?.plaintext),
+      replyToSenderId: Value(replyTo?.senderSnowchatId),
     ));
 
     // Schedule expiration deletion

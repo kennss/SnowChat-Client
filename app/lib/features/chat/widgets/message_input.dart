@@ -63,6 +63,13 @@ class _MessageInputState extends State<MessageInput> {
 
   static String? _ttlLabel(int? ttl) {
     if (ttl == null) return null;
+    // Disappearing options (disappearing_timer_selector.dart): 60, 300,
+    // 1800, 3600. Bug 2026-05-07 — earlier the 60-second selection (1m)
+    // fell through to the 5m branch because there was no <= 60 bucket.
+    // Same bug previously fixed on chat_screen.dart's AppBar label;
+    // missed this duplicate copy until tester reported the chip in the
+    // input area still showed "5m" after picking 1m.
+    if (ttl <= 60) return '1m';
     if (ttl <= 300) return '5m';
     if (ttl <= 1800) return '30m';
     return '1h';

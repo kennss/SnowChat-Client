@@ -3,7 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-12 Phase 10 P0-B: added decryptionFailed state icon)
+/// @lastUpdated 2026-05-08 (Phase 2 reply-quote display name — bubble now
+///              accepts an optional replyToSenderDisplayName so the quote
+///              header reads "Benjamin" / "pajooman003" instead of the
+///              cryptic shortened snow ID. Resolution happens in
+///              chat_screen.dart against the current messages list, which
+///              already carries senderDisplayName for every loaded
+///              message. Earlier 2026-04-26: header + inline English
+///              translation; 2026-04-12 Phase 10 P0-B added
+///              decryptionFailed state icon.)
 ///
 /// @functions
 ///  - MessageBubble: StatelessWidget rendering chat-message bubbles (delegates voice -> VoiceMessageBubble, image -> ImageMessageBubble, file -> FileMessageBubble)
@@ -35,6 +43,13 @@ class MessageBubble extends StatelessWidget {
   /// Whether translation is currently loading.
   final bool isTranslating;
 
+  /// Display name to show inside the reply-quote box (resolved by the
+  /// caller against the current messages list / contacts directory).
+  /// Null falls back to a shortened snow ID — that path stays as the
+  /// last-ditch fallback when the original sender is no longer reachable
+  /// through any locally loaded data.
+  final String? replyToSenderDisplayName;
+
   const MessageBubble({
     super.key,
     required this.message,
@@ -45,6 +60,7 @@ class MessageBubble extends StatelessWidget {
     this.linkPreviewService,
     this.translatedText,
     this.isTranslating = false,
+    this.replyToSenderDisplayName,
   });
 
   /// Whether this file message contains an image based on mimeType or fileName extension.
@@ -251,10 +267,13 @@ class MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Sender name of the quoted message
+            // Sender name of the quoted message — prefer the resolved
+            // display name from the caller; fall back to a shortened
+            // snow ID only when no resolution was possible.
             if (message.replyToSenderId != null)
               Text(
-                _shortId(message.replyToSenderId!),
+                replyToSenderDisplayName ??
+                    _shortId(message.replyToSenderId!),
                 style: const TextStyle(
                   color: SnowColors.primary,
                   fontSize: 11,

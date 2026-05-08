@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-10
-/// @lastUpdated 2026-04-26 (header + inline English translation; agentic Tool Use integration)
+/// @lastUpdated 2026-05-06 (aiModelManagerProvider now fires
+///              syncStatusFromDisk() on first read — replaces the old
+///              cold-launch startBackgroundDownload() call site in
+///              app.dart. The chat list builds → AiChatTile reads the
+///              provider → manager constructs and reflects the on-disk
+///              install state on its ValueNotifier. No download, just
+///              status truth. Earlier: 2026-04-26 header + inline
+///              English translation; agentic Tool Use integration.)
 ///
 /// @functions
 ///  - aiModelManagerProvider: AIModelManager singleton
@@ -37,7 +44,15 @@ import '../tools/notification_tool.dart';
 
 // --- AI Model Manager ---
 final aiModelManagerProvider = Provider<AIModelManager>((ref) {
-  return AIModelManager();
+  final manager = AIModelManager();
+  // Lazy disk sync on first provider read. The chat list builds →
+  // AiChatTile watches the provider → this fires once → if the model
+  // is already on disk, downloadStatus flips to complete and the
+  // "On-Device" badge appears without any user interaction. No
+  // download is triggered here — that path is reserved for the
+  // user-initiated tap on the AI tile (RAM gate first, then onboarding).
+  unawaited(manager.syncStatusFromDisk());
+  return manager;
 });
 
 // --- Tool Router (per-platform tool registration) ---

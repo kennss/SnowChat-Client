@@ -3,13 +3,21 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-05-03 (v215: iOS APNs alert path 복원. cert-era VoIP-only
+///              집중기에 iOS 는 push_service 자체 skip 했었지만 v215
+///              (AppDelegate) 가 didRegisterForRemoteNotificationsWithDevice-
+///              Token + Messaging.apnsToken forward 구현 → getAPNSToken() 이
+///              valid hex 반환 가능. iOS 분기에서 raw APNs token 을 server
+///              에 등록 (server PushNotificationService 가 직접 APNs 사용,
+///              FCM-routing 아님). cold-launch 의 didRegister race 를 retry
+///              로 cover. Earlier 2026-04-26: header English translation.)
 ///
 /// @functions
 ///  - PushService: service that receives push notification events and triggers local notifications
-///  - PushService.initialize(): obtain FCM token + register socket event listeners
-///  - PushService.registerFcmToken(): register FCM token with server
+///  - PushService.initialize(): obtain push token (FCM Android / APNs iOS) + register socket event listeners
+///  - PushService.registerFcmToken(): register push token with server
 ///  - PushService.unregisterPushToken(): unregister push token from server (on logout)
+///  - PushService._waitForApnsToken(): iOS APNs token retry helper (v215, cover didRegister race)
 ///  - PushService.dispose(): resource cleanup
 
 import 'dart:async';
@@ -63,17 +71,35 @@ class PushService {
     _groupInviteSubscription =
         _socketManager.onGroupInvite.listen(_onGroupInvite);
 
-    // FCM setup
     final fcm = FirebaseMessaging.instance;
 
-    // Request permission (iOS shows dialog, Android 13+ shows dialog)
+    // Request permission. iOS: alert/badge/sound dialog + APNs register trigger.
+    // Android 13+: notification dialog.
     await fcm.requestPermission(
       alert: true,
       badge: true,
       sound: true,
     );
 
-    // Get FCM token and register with server
+    // v215 (2026-05-03): platform-aware token. iOS server uses direct APNs
+    // (apnsService.send) so register raw APNs hex token. Android keeps FCM.
+    if (Platform.isIOS) {
+      // AppDelegate.didRegisterForRemoteNotificationsWithDeviceToken (v215)
+      // forwards token to Messaging.apnsToken; getAPNSToken() then returns
+      // hex. cold-launch race covered by retry.
+      final apnsToken = await _waitForApnsToken();
+      if (apnsToken != null) {
+        _cachedFcmToken = apnsToken;
+        await registerFcmToken(apnsToken);
+        debugPrint('[PushService] Initialized with APNs (iOS, v215)');
+      } else {
+        debugPrint('[PushService] iOS APNs token not available after retry — '
+            'check notification permission + AppDelegate didRegister callback');
+      }
+      return;
+    }
+
+    // Android FCM
     _cachedFcmToken = await fcm.getToken();
     if (_cachedFcmToken != null) {
       await registerFcmToken(_cachedFcmToken!);
@@ -86,12 +112,35 @@ class PushService {
     // Foreground FCM messages — Socket.IO handles these, so we skip
     FirebaseMessaging.onMessage.listen(_onForegroundFcm);
 
-    debugPrint('[PushService] Initialized with FCM');
+    debugPrint('[PushService] Initialized with FCM (Android)');
   }
 
-  /// Retry FCM token registration after auth completes (device_id now available).
+  /// v215: iOS APNs token retry. Native AppDelegate 의 didRegisterForRemote-
+  /// NotificationsWithDeviceToken 콜백이 Messaging.apnsToken set 한 후에만
+  /// getAPNSToken() 이 valid hex 반환. cold-launch ↔ didRegister 사이의
+  /// race 를 cover (max ~5초 wait).
+  Future<String?> _waitForApnsToken({
+    int retries = 10,
+    Duration interval = const Duration(milliseconds: 500),
+  }) async {
+    for (int i = 0; i < retries; i++) {
+      try {
+        final token = await FirebaseMessaging.instance.getAPNSToken();
+        if (token != null && token.isNotEmpty) return token;
+      } catch (e) {
+        debugPrint('[PushService] getAPNSToken attempt $i failed: $e');
+      }
+      await Future.delayed(interval);
+    }
+    return null;
+  }
+
+  /// Retry token registration after auth completes (device_id now available).
+  /// v215: platform-aware — iOS uses APNs hex (server direct APNs), Android FCM.
   Future<void> retryTokenRegistration() async {
-    _cachedFcmToken ??= await FirebaseMessaging.instance.getToken();
+    _cachedFcmToken ??= Platform.isIOS
+        ? await _waitForApnsToken()
+        : await FirebaseMessaging.instance.getToken();
     if (_cachedFcmToken != null) {
       await registerFcmToken(_cachedFcmToken!);
     }
@@ -162,6 +211,24 @@ class PushService {
     // here (avoids duplicate CallKit).
     if (type == 'incoming_call') {
       debugPrint('[PushService] Foreground incoming_call — socket path will handle');
+      return;
+    }
+
+    // 2026-04-28: friend request push — foreground 시 socket 으로도 도착하므로
+    // 보통 in-app banner 가 처리. 그러나 socket 일시 단절 race 에서 FCM 만
+    // 도착할 수도 있어 OS 알림으로 보장. (banner 가 같은 frame 에 동시 표시될
+    // 수도 있으나 Friends 탭에서 둘 다 silent — 사용자가 이미 보고 있는 것)
+    if (type == 'friend_request') {
+      final fromName = message.data['fromDisplayName'] as String? ?? '';
+      final fromSnowId = message.data['fromSnowchatId'] as String? ?? '';
+      final senderLabel = fromName.isNotEmpty
+          ? fromName
+          : (fromSnowId.length >= 12 ? fromSnowId.substring(0, 12) : 'Someone');
+      _notificationService.showMessageNotification(
+        senderName: senderLabel,
+        preview: 'Sent you a friend request',
+        conversationId: '__friend_request__$fromSnowId',
+      );
       return;
     }
 

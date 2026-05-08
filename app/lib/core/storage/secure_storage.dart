@@ -1,9 +1,18 @@
 /// @file        secure_storage.dart
 /// @description flutter_secure_storage wrapper. Secure storage backed by iOS Keychain / Android EncryptedSharedPreferences.
+///              Phase E-2 v3.1: a small allowlist of keys (auth_token,
+///              auth_refresh_token, device_id) is routed through the iOS-only
+///              `snowchat/keychain_relaxed` MethodChannel so they're stored
+///              under kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly. This
+///              lets the native CallAcceptCoordinator read them in the
+///              post-CallKit-accept window where the device may still be
+///              locked at the WhenUnlocked level.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-19)
+/// @lastUpdated 2026-04-30 (Phase E-2 v3.1: relaxed-key routing for VoIP
+///              accept fetch; auth_refresh_token added to allowlist so BFU
+///              JWT refresh after expiry is unblocked)
 ///
 /// @functions
 ///  - SecureStorageService: secure storage wrapper class
@@ -23,9 +32,11 @@
 ///  - SecureStorageService.getPreferredLanguage(): read stored translation target language
 
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../crypto/hkdf.dart' show sha256;
@@ -35,6 +46,32 @@ import '../crypto/hkdf.dart' show sha256;
 /// Android: EncryptedSharedPreferences (Android Keystore backend)
 class SecureStorageService {
   late final FlutterSecureStorage _storage;
+
+  /// Phase E-2 v3.1 (N-Maj-1): keys we route to a *relaxed*
+  /// (AfterFirstUnlockThisDeviceOnly) keychain class via the
+  /// `snowchat/keychain_relaxed` MethodChannel on iOS. Required so
+  /// CallAcceptCoordinator can read them from native code in the
+  /// post-CallKit-accept window where the device may still be locked at
+  /// the WhenUnlocked level.
+  ///
+  /// auth_refresh_token is in the allowlist (was missing in v2): without
+  /// it, BFU after JWT 1h expiry would refresh-fail → silent re-login
+  /// blocked → user stuck unable to receive calls until next foreground unlock.
+  static const Set<String> _relaxedKeys = {
+    // Phase 11 (2026-05-03): primary token slot. AfterFirstUnlock 필수 —
+    // BG VoIP / lock 상태에서 TokenManager 가 hydrate / refresh 시 read.
+    // 누락 시 device-locked 상태 첫 push 도착 시 silent token-fetch 실패.
+    'auth_tokens_v2',
+    // Legacy slots (kept for one-time migration in TokenManager.hydrateFromStorage).
+    // Hydrate succeeds → bundled v2 envelope written + these deleted.
+    // Keep relaxed accessibility until migration drains.
+    'auth_token',
+    'auth_refresh_token',
+    'device_id',
+  };
+
+  static const MethodChannel _relaxedChannel =
+      MethodChannel('snowchat/keychain_relaxed');
 
   /// Perf measurement: isolate the Keystore MasterKey unwrap cost that happens only on first access.
   bool _firstAccessLogged = false;
@@ -48,6 +85,9 @@ class SecureStorageService {
     );
   }
 
+  bool _isRelaxed(String key) =>
+      Platform.isIOS && _relaxedKeys.contains(key);
+
   void _logFirstAccess(String op, int elapsed) {
     if (!_firstAccessLogged) {
       _firstAccessLogged = true;
@@ -57,28 +97,59 @@ class SecureStorageService {
   }
 
   Future<String?> read(String key) async {
-    final _sw = Stopwatch()..start();
+    final sw = Stopwatch()..start();
+    if (_isRelaxed(key)) {
+      final result =
+          await _relaxedChannel.invokeMethod<String?>('read', {'key': key});
+      _logFirstAccess('read:$key(relaxed)', sw.elapsedMilliseconds);
+      return result;
+    }
     final result = await _storage.read(key: key);
-    _logFirstAccess('read:$key', _sw.elapsedMilliseconds);
+    _logFirstAccess('read:$key', sw.elapsedMilliseconds);
     return result;
   }
 
   Future<void> write(String key, String value) async {
-    final _sw = Stopwatch()..start();
+    final sw = Stopwatch()..start();
+    if (_isRelaxed(key)) {
+      await _relaxedChannel
+          .invokeMethod<void>('write', {'key': key, 'value': value});
+      _logFirstAccess('write:$key(relaxed)', sw.elapsedMilliseconds);
+      return;
+    }
     await _storage.write(key: key, value: value);
-    _logFirstAccess('write:$key', _sw.elapsedMilliseconds);
+    _logFirstAccess('write:$key', sw.elapsedMilliseconds);
   }
 
   Future<void> delete(String key) async {
+    if (_isRelaxed(key)) {
+      await _relaxedChannel.invokeMethod<void>('delete', {'key': key});
+      return;
+    }
     await _storage.delete(key: key);
   }
 
   Future<bool> containsKey(String key) async {
+    if (_isRelaxed(key)) {
+      final v = await _relaxedChannel
+          .invokeMethod<String?>('read', {'key': key});
+      return v != null;
+    }
     return _storage.containsKey(key: key);
   }
 
   Future<void> deleteAll() async {
     await _storage.deleteAll();
+    if (Platform.isIOS) {
+      // Phase E-2 v3.1: also wipe the relaxed channel entries (they live in
+      // the same keychain service but are written through SecItemAdd with a
+      // different accessibility, so they aren't in _storage's namespace cache).
+      for (final key in _relaxedKeys) {
+        try {
+          await _relaxedChannel.invokeMethod<void>('delete', {'key': key});
+        } catch (_) {/* best-effort */}
+      }
+    }
   }
 
   Future<Map<String, String>> readAll() async {

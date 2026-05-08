@@ -387,6 +387,12 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
               expiresIn: Value(existing.expiresIn),
               expireStarted: Value(existing.expireStarted),
               replyToId: Value(existing.replyToId),
+              // 2026-05-08 schema v10 — carry the denormalized quote
+              // fields across the local→server ID swap. Without this, a
+              // sent message loses its reply quote the moment the ACK
+              // arrives and the drift watch reloads the new row.
+              replyToPreview: Value(existing.replyToPreview),
+              replyToSenderId: Value(existing.replyToSenderId),
               senderDisplayName: Value(existing.senderDisplayName),
             ),
           );

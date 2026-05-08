@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; P1-4: block saveSessionStore plaintext fallback + hasStoreEncryptionKey getter, P1-6: mask sessionKey in SignalProtocolException)
+/// @lastUpdated 2026-05-05 (P0 fail-loud: throw when sender-named OPK missing locally — blocks silent X3DH 4-DH fallthrough)
 ///
 /// @functions
 ///  - SignalProtocolService: Pure Dart Signal Protocol implementation class
@@ -711,6 +711,21 @@ class SignalProtocolService {
         opkPrivate = opk.privateKey;
         // One-time prekeys are single-use — remove after consumption
         _oneTimePreKeys.remove(oneTimePreKeyId);
+      } else {
+        // P0 fail-loud (2026-05-05): the sender's bundle named an OPK we no
+        // longer hold. Going ahead with opkPrivate=null silently drops X3DH
+        // from 5-DH to 4-DH while the sender still ran the 5-DH path → both
+        // sides derive different shared secrets → every message decrypts as
+        // garbage and stays broken until session_reset. Fail loud so the
+        // outer dispatcher's catch hits archiveAndResetSession() + Retry
+        // Receipt instead of caching a permanently-poisoned session.
+        // Root cause is upstream (server OPK race or upload-before-persist
+        // crash window); this guard just ensures the symptom is recoverable.
+        throw SignalProtocolException(
+          'OPK #$oneTimePreKeyId requested by sender but not in local store '
+          '(available: ${_oneTimePreKeys.keys.toList()}). '
+          'Refusing X3DH 4-DH fallthrough — would yield mismatched shared secret.',
+        );
       }
     }
 

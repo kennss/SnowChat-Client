@@ -91,9 +91,22 @@ class _ListingDetailContentState extends State<_ListingDetailContent> {
         color: _C.surface,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      child: SingleChildScrollView(
+      // Fixed bottom CTA pattern — same as send_screen (S23 layout fix
+      // 2026-04-27). Slide-to-buy / Cancel button must always be visible
+      // even with long content + error banner. Previous bug: button was
+      // inside the SingleChildScrollView so error message growth pushed
+      // it off-screen on small displays. Now: scrollable upper region +
+      // fixed bottom action strip wrapped in SafeArea (system gesture nav
+      // doesn't overlap the slide).
+      child: SafeArea(
+        top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
           children: [
             // Drag handle.
             Container(
@@ -335,8 +348,8 @@ class _ListingDetailContentState extends State<_ListingDetailContent> {
                       valueColor: listing.status == 'ACTIVE'
                           ? _C.primary
                           : listing.status == 'SOLD'
-                              ? const Color(0xFF00C853)
-                              : _C.warning,
+                                  ? const Color(0xFF00C853)
+                                  : _C.warning,
                     ),
                     const SizedBox(height: 12),
                     _DetailRow(
@@ -349,11 +362,20 @@ class _ListingDetailContentState extends State<_ListingDetailContent> {
               ),
             ),
 
-            // Error display.
-            if (_error != null) ...[
-              const SizedBox(height: 12),
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            ),
+
+            // --- Fixed bottom CTA strip (always visible) ---
+
+
+            // Error display — fixed above the action button so it doesn't
+            // push the slide off-screen.
+            if (_error != null)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                 child: Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -370,19 +392,18 @@ class _ListingDetailContentState extends State<_ListingDetailContent> {
                           _error!,
                           style: const TextStyle(
                               color: _C.error, fontSize: 13),
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-            ],
 
-            const SizedBox(height: 24),
-
-            // Action buttons.
+            // Action button — slide-to-buy or cancel-listing.
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               child: widget.isOwner
                   ? _CancelListingButton(
                       isLoading: _isLoading,

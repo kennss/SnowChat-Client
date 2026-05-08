@@ -246,8 +246,10 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
           },
           onLongPress: () => _showChannelOptions(channel),
           child: Container(
+            // Chats 탭과 동일한 padding/spacing/typography. 채널 아바타가
+            // 있으면 (avatarUrl) 32px network image, 없으면 이니셜 fallback.
             padding: const EdgeInsets.symmetric(
-                horizontal: SnowSizes.md, vertical: 12),
+                horizontal: SnowSizes.md, vertical: 10),
             child: Row(
               children: [
                 Icon(
@@ -257,18 +259,18 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
                   color: SnowColors.textTertiary,
                   size: 20,
                 ),
-                const SizedBox(width: 8),
-                // Channel avatar
+                const SizedBox(width: 6),
                 SnowAvatar(
                   snowId: channel.id,
-                  size: 28,
+                  size: SnowSizes.avatarMd,
                   displayName: channel.name ?? '',
+                  avatarUrl: channel.avatarUrl,
+                  authHeader: ref.watch(authHeaderProvider),
                 ),
-                const SizedBox(width: 10),
-                // Channel name
+                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    channel.name ?? 'Channel',
+                    '${channel.name ?? "Channel"} (${channel.memberCount})',
                     style: const TextStyle(
                       color: SnowColors.textPrimary,
                       fontWeight: FontWeight.w600,
@@ -284,23 +286,22 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
                         color: SnowColors.textTertiary, size: 16),
                   ),
                 // Unread badge (when collapsed)
-                if (!isExpanded && unread > 0) ...[
+                if (!isExpanded && unread > 0)
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                      color: SnowColors.error,
+                      color: SnowColors.primary,
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      '$unread',
+                      unread > 99 ? '99+' : '$unread',
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 11,
                           fontWeight: FontWeight.bold),
                     ),
                   ),
-                ],
               ],
             ),
           ),
@@ -350,6 +351,21 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
                   Navigator.pop(context);
                   context.push(
                     '/channel-admin/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Channel')}',
+                  );
+                },
+              ),
+            // Invite link — admin 무조건, 일반 멤버는 channel.canCreateInvite
+            // (서버 권한 체크와 일치). INVITE_ONLY 채널엔 admin 만 보임.
+            if (channel.canCreateInvite)
+              ListTile(
+                leading:
+                    const Icon(Icons.link_rounded, color: SnowColors.primary),
+                title: const Text('Invite to Channel',
+                    style: TextStyle(color: SnowColors.textPrimary)),
+                onTap: () {
+                  Navigator.pop(context);
+                  context.push(
+                    '/invite-link/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Channel')}',
                   );
                 },
               ),
@@ -606,28 +622,29 @@ class _ChannelMemberList extends ConsumerWidget {
                 }
               },
               child: Padding(
+                // DM tile (chat list) 와 같은 vertical padding + avatarMd 사이즈.
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 40, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 40, vertical: 6),
                 child: Row(
                   children: [
                     if (isOwner)
-                      const Text('👑 ', style: TextStyle(fontSize: 14))
+                      const Text('👑 ', style: TextStyle(fontSize: 16))
                     else if (isAdmin)
-                      const Text('🛡 ', style: TextStyle(fontSize: 14))
+                      const Text('🛡 ', style: TextStyle(fontSize: 16))
                     else
-                      const SizedBox(width: 22),
+                      const SizedBox(width: 24),
                     SnowAvatar(
                       snowId: snowchatId,
-                      size: 28,
+                      size: SnowSizes.avatarMd,
                       displayName: displayName ?? '',
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         displayName ?? snowchatId.substring(0, 12),
                         style: TextStyle(
                           color: SnowColors.textPrimary,
-                          fontSize: 14,
+                          fontSize: 16,
                           fontWeight: isOwner || isAdmin
                               ? FontWeight.w600
                               : FontWeight.normal,

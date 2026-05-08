@@ -11,6 +11,11 @@
 		09BD12B32F90973F0052354A /* LlamaBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12B22F90973F0052354A /* LlamaBridge.swift */; };
 		09BD12B52F9197400052354A /* TranslationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12B42F9197400052354A /* TranslationBridge.swift */; };
 		09BD12B72F91A0000052354A /* IOSForegroundDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12B62F91A0000052354A /* IOSForegroundDownloader.swift */; };
+		09BD12B92F92E2900052354A /* VoipPushBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12B82F92E2900052354A /* VoipPushBridge.swift */; };
+		09BD12C12FA51A000052354A /* CallAcceptCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12C02FA51A000052354A /* CallAcceptCoordinator.swift */; };
+		09BD12C32FA51A000052354A /* SecureStorageReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12C22FA51A000052354A /* SecureStorageReader.swift */; };
+		09BD12C52FA51A000052354A /* RelaxedKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12C42FA51A000052354A /* RelaxedKeychain.swift */; };
+		09BD12C72FA51A000052354A /* VoipNativeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD12C62FA51A000052354A /* VoipNativeBridge.swift */; };
 		09EBE1D42F8E4BC900B09185 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 09EBE1D32F8E4BC900B09185 /* GoogleService-Info.plist */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -53,6 +58,13 @@
 		09BD12B22F90973F0052354A /* LlamaBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaBridge.swift; sourceTree = "<group>"; };
 		09BD12B42F9197400052354A /* TranslationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationBridge.swift; sourceTree = "<group>"; };
 		09BD12B62F91A0000052354A /* IOSForegroundDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSForegroundDownloader.swift; sourceTree = "<group>"; };
+		09BD12B82F92E2900052354A /* VoipPushBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoipPushBridge.swift; sourceTree = "<group>"; };
+		09BD12C02FA51A000052354A /* CallAcceptCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallAcceptCoordinator.swift; sourceTree = "<group>"; };
+		09BD12C22FA51A000052354A /* SecureStorageReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorageReader.swift; sourceTree = "<group>"; };
+		09BD12C42FA51A000052354A /* RelaxedKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaxedKeychain.swift; sourceTree = "<group>"; };
+		09BD12C62FA51A000052354A /* VoipNativeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoipNativeBridge.swift; sourceTree = "<group>"; };
+		09C8F6092FA1447600BFC634 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		09C8F60A2FA1447600BFC635 /* RunnerRelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RunnerRelease.entitlements; sourceTree = "<group>"; };
 		09EBE1D32F8E4BC900B09185 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
@@ -169,6 +181,8 @@
 		97C146F01CF9000F007C117D /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				09C8F6092FA1447600BFC634 /* Runner.entitlements */,
+				09C8F60A2FA1447600BFC635 /* RunnerRelease.entitlements */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
 				97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */,
@@ -182,6 +196,11 @@
 				09BD12B22F90973F0052354A /* LlamaBridge.swift */,
 				09BD12B42F9197400052354A /* TranslationBridge.swift */,
 				09BD12B62F91A0000052354A /* IOSForegroundDownloader.swift */,
+				09BD12B82F92E2900052354A /* VoipPushBridge.swift */,
+				09BD12C02FA51A000052354A /* CallAcceptCoordinator.swift */,
+				09BD12C22FA51A000052354A /* SecureStorageReader.swift */,
+				09BD12C42FA51A000052354A /* RelaxedKeychain.swift */,
+				09BD12C62FA51A000052354A /* VoipNativeBridge.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
 			path = Runner;
@@ -426,6 +445,11 @@
 				09BD12B32F90973F0052354A /* LlamaBridge.swift in Sources */,
 				09BD12B52F9197400052354A /* TranslationBridge.swift in Sources */,
 				09BD12B72F91A0000052354A /* IOSForegroundDownloader.swift in Sources */,
+				09BD12B92F92E2900052354A /* VoipPushBridge.swift in Sources */,
+				09BD12C12FA51A000052354A /* CallAcceptCoordinator.swift in Sources */,
+				09BD12C32FA51A000052354A /* SecureStorageReader.swift in Sources */,
+				09BD12C52FA51A000052354A /* RelaxedKeychain.swift in Sources */,
+				09BD12C72FA51A000052354A /* VoipNativeBridge.swift in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				A1B2C3D4E5F6A7B8C9D0E1F4 /* SignalBridge.swift in Sources */,
 				A1B2C3D4E5F6A7B8C9D0E1F5 /* SignalStore.swift in Sources */,
@@ -520,6 +544,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
@@ -594,7 +619,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = AppIcon;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
 				CLANG_CXX_LIBRARY = "libc++";
@@ -651,7 +676,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = AppIcon;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++0x";
 				CLANG_CXX_LIBRARY = "libc++";
@@ -707,6 +732,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
@@ -734,10 +760,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = Runner/RunnerRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
-				DEVELOPMENT_TEAM = 8677QL77VJ;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = 8677QL77VJ;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.6;
@@ -748,6 +777,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.snowchat.snowchat;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "SnowChat App Store Distribution";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";

@@ -174,6 +174,19 @@ class MessageQueue {
   /// infinite loops. They will not be re-processed in this session.
   final Set<String> _deadLetters = {};
 
+  /// 2026-05-04 — Signal-style VoIP signaling persistence (Phase 8.2).
+  /// Server enqueues mid-call sealed envelopes (call_answer / rtc_answer /
+  /// ICE / call_end) into MessageQueue with metadata.voip=true when the
+  /// recipient is offline. On reconnect-fetch, [_processSealedMessage]
+  /// surfaces these via this callback to CallSignaling.injectEnvelope —
+  /// reusing the existing Sealed Sender unseal + DR decrypt pipeline so
+  /// CallService state machine sees the same events as the live socket
+  /// path. Without this hook, mid-call signaling to a briefly-offline
+  /// peer is permanently lost (user report 2026-05-04: outgoing iPhone
+  /// disconnects during long-idle Galaxy cold launch → Galaxy's
+  /// call_answer never reaches iPhone → infinite ringback).
+  final Future<void> Function(String envelopeBase64)? injectVoipEnvelope;
+
   MessageQueue({
     required SignalSessionManager sessionManager,
     required EncryptedMessageHandler e2eeHandler,
@@ -186,6 +199,7 @@ class MessageQueue {
     required ApiClient apiClient,
     required SocketManager socketManager,
     required String Function() myIdResolver,
+    this.injectVoipEnvelope,
   })  : _sessionMgr = sessionManager,
         _e2eeHandler = e2eeHandler,
         _messageDao = messageDao,
@@ -786,6 +800,8 @@ class MessageQueue {
       outgoingStatus: const Value('delivered'),
       senderDisplayName: Value(envelope['senderDisplayName'] as String?),
       replyToId: Value(decrypted.replyToId),
+      replyToPreview: Value(decrypted.replyToPreview),
+      replyToSenderId: Value(decrypted.replyToSenderId),
     );
 
     // Check if the conversation is currently being viewed by the user
@@ -863,6 +879,40 @@ class MessageQueue {
     final messageId =
         (envelope['id'] ?? envelope['messageId']) as String;
 
+    // 2026-05-04 Signal-style VoIP signaling delivery — server enqueues
+    // mid-call sealed envelopes with metadata.voip=true when recipient is
+    // offline (callHandler.ts orphan branch). Route to CallSignaling
+    // instead of the chat decrypt + drift insert path. The inner envelope
+    // is the raw base64 Sealed Sender ciphertext; CallSignaling.injectEnvelope
+    // runs the same unseal + DR decrypt + dispatch pipeline that the live
+    // socket fast-path uses, so CallService sees the same events.
+    final outerMeta = envelope['metadata'];
+    final isVoip = outerMeta is Map && outerMeta['voip'] == true;
+    if (isVoip) {
+      final encContent = envelope['encryptedContent'];
+      final voipEnvelope =
+          encContent is Map ? encContent['envelope'] as String? : null;
+      if (voipEnvelope != null && voipEnvelope.isNotEmpty &&
+          injectVoipEnvelope != null) {
+        debugPrint('[DIAG:Sealed] $messageId VOIP route to CallSignaling');
+        try {
+          await injectVoipEnvelope!(voipEnvelope);
+        } catch (e) {
+          debugPrint('[DIAG:Sealed] $messageId VOIP inject failed: '
+              '${e.runtimeType}');
+          // Fall through to ack — re-delivery would just retry the same
+          // failure (retry receipt path inside CallSignaling handles
+          // session-state errors separately).
+        }
+      } else {
+        debugPrint('[DIAG:Sealed] $messageId VOIP marker but '
+            'envelope/handler missing — skip + ack');
+      }
+      _enqueueAck(messageId);
+      envelope['_sessionResetConsumed'] = true;
+      return;
+    }
+
     debugPrint('[DIAG:Sealed] $messageId start');
     final decrypted = await _e2eeHandler.decryptSealedMessage(envelope);
     final senderId = decrypted.senderSnowchatId;
@@ -933,6 +983,8 @@ class MessageQueue {
       read: const Value(false),
       outgoingStatus: const Value('delivered'),
       replyToId: Value(decrypted.replyToId),
+      replyToPreview: Value(decrypted.replyToPreview),
+      replyToSenderId: Value(decrypted.replyToSenderId),
     );
 
     final isViewing = MarkReadHelper.isConversationActive(convId);
@@ -1161,6 +1213,8 @@ class MessageQueue {
       outgoingStatus: const Value('delivered'),
       senderDisplayName: Value(envelope['senderDisplayName'] as String?),
       replyToId: Value(decrypted.replyToId),
+      replyToPreview: Value(decrypted.replyToPreview),
+      replyToSenderId: Value(decrypted.replyToSenderId),
     );
 
     final isViewingGroup = MarkReadHelper.isConversationActive(groupId);

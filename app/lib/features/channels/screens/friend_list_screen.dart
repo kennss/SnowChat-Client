@@ -3,14 +3,23 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-09
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-05-06 (friend tile tap UX rework — direct tap now
+///              opens (or resumes) the 1:1 chat instead of routing through
+///              NewChatScreen, matching the Telegram/Signal pattern.
+///              Long-press still opens the options bottom sheet, now with
+///              an added Voice Call entry alongside Send Message and
+///              Remove Friend. The find-or-create-and-navigate flow is
+///              extracted into start_direct_chat.dart so NewChatScreen
+///              and any future entry point share the same code path.
+///              Earlier: 2026-04-28 Add Friend AlertDialog → AddFriendScreen
+///              풀스크린.)
 ///
 /// @functions
 ///  - FriendListScreen: friend list + friend requests + add-friend screen
 ///  - _buildFriendTile(): render friend item (avatar + name + online status)
 ///  - _buildFriendRequestSection(): received friend-request section (accept/decline)
-///  - _showAddFriendDialog(): SnowChat ID input dialog
-///  - _showFriendOptions(): friend options bottom sheet (DM / remove)
+///  - _showFriendOptions(): friend options bottom sheet (Send Message / Voice Call / Remove)
+///  - _placeVoiceCall(): direct call from the friend options sheet — reads alwaysRelay + my display name from settings, fires CallNotifier.startCall, /call route push handled by app.dart's listener
 
 import 'dart:async';
 
@@ -22,6 +31,8 @@ import '../../../app/providers.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
+import '../../chat/services/start_direct_chat.dart';
+import '../../settings/settings_provider.dart';
 import '../models/channel.dart';
 import '../providers/channel_provider.dart';
 
@@ -83,7 +94,10 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.person_add_rounded, color: SnowColors.primary),
-            onPressed: () => _showAddFriendDialog(),
+            // 기존 AlertDialog (search/preview 없음) → 풀스크린 AddFriendScreen
+            // 으로 변경. NewChatScreen 과 동일 패턴 (search + live preview tile +
+            // CTA) 으로 두 SnowChat ID 검색 진입점 일관성 확보 (2026-04-28).
+            onPressed: () => context.push('/add-friend'),
           ),
         ],
       ),
@@ -139,10 +153,12 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
     final isOnline = presenceService.isOnline(friend.snowchatId);
 
     return InkWell(
-      onTap: () {
-        // Navigate to DM with this friend
-        context.push('/new-chat?recipientId=${friend.snowchatId}');
-      },
+      onTap: () => openDirectChatWith(
+        context: context,
+        ref: ref,
+        recipientSnowchatId: friend.snowchatId,
+        recipientDisplayName: friend.displayName,
+      ),
       onLongPress: () => _showFriendOptions(friend),
       child: Padding(
         padding: const EdgeInsets.symmetric(
@@ -202,13 +218,16 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
                 ],
               ),
             ),
-            // Chat icon
+            // Chat icon — same path as the row tap.
             IconButton(
               icon: const Icon(Icons.chat_bubble_outline_rounded,
                   color: SnowColors.textTertiary, size: 20),
-              onPressed: () {
-                context.push('/new-chat?recipientId=${friend.snowchatId}');
-              },
+              onPressed: () => openDirectChatWith(
+                context: context,
+                ref: ref,
+                recipientSnowchatId: friend.snowchatId,
+                recipientDisplayName: friend.displayName,
+              ),
             ),
           ],
         ),
@@ -371,7 +390,8 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
               ),
             ),
             const Divider(color: SnowColors.divider, height: 24),
-            // Send message
+            // Send message — direct tap on the row does the same thing,
+            // this entry is the explicit menu version.
             ListTile(
               leading: const Icon(Icons.chat_bubble_outline_rounded,
                   color: SnowColors.primary),
@@ -379,7 +399,25 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
                   style: TextStyle(color: SnowColors.textPrimary)),
               onTap: () {
                 Navigator.pop(context);
-                context.push('/new-chat?recipientId=${friend.snowchatId}');
+                openDirectChatWith(
+                  context: context,
+                  ref: ref,
+                  recipientSnowchatId: friend.snowchatId,
+                  recipientDisplayName: friend.displayName,
+                );
+              },
+            ),
+            // Voice call — fire CallNotifier.startCall directly. The /call
+            // route push is handled by app.dart's ref.listen<CallState>
+            // when status flips to outgoing, so we don't navigate here.
+            ListTile(
+              leading: const Icon(Icons.call_rounded,
+                  color: SnowColors.primary),
+              title: const Text('Voice Call',
+                  style: TextStyle(color: SnowColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(context);
+                _placeVoiceCall(friend);
               },
             ),
             // Remove friend
@@ -402,93 +440,30 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
     );
   }
 
-  Future<void> _showAddFriendDialog() async {
-    final controller = TextEditingController();
-    final result = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: SnowColors.surface,
-        title: const Text('Add Friend',
-            style: TextStyle(color: SnowColors.textPrimary)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Enter your friend\'s SnowChat ID to send a friend request.',
-              style: TextStyle(color: SnowColors.textSecondary, fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              style: const TextStyle(color: SnowColors.textPrimary),
-              decoration: InputDecoration(
-                hintText: 'snow...',
-                hintStyle: const TextStyle(color: SnowColors.textTertiary),
-                filled: true,
-                fillColor: SnowColors.surfaceVariant,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-                prefixIcon: const Icon(Icons.person_search_rounded,
-                    color: SnowColors.textTertiary),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isNotEmpty) {
-                Navigator.pop(dialogContext, text);
-              }
-            },
-            child: const Text('Send Request',
-                style: TextStyle(color: SnowColors.primary)),
-          ),
-        ],
-      ),
-    );
-
-    if (result != null && result.isNotEmpty && mounted) {
-      final status = await ref.read(friendActionsProvider).addFriend(result);
+  /// Fires a voice call to the given friend from the friend options sheet.
+  /// Mirrors the call-start logic in chat_screen.dart (alwaysRelay setting,
+  /// own display name attached to the invite payload, contact-directory
+  /// fallback for the remote display name). The /call route push is
+  /// handled by app.dart's `ref.listen<CallState>` on the outgoing
+  /// transition, so we do not navigate manually here.
+  void _placeVoiceCall(FriendInfo friend) {
+    final notifier = ref.read(callProvider.notifier);
+    final alwaysRelay = ref.read(settingsProvider).callAlwaysRelay;
+    final myDisplayName = ref.read(currentDisplayNameProvider);
+    final remoteName = friend.displayName?.isNotEmpty == true
+        ? friend.displayName
+        : friend.snowchatId.substring(0, 12);
+    unawaited(notifier.startCall(
+      recipientSnowchatId: friend.snowchatId,
+      alwaysRelay: alwaysRelay,
+      remoteDisplayName: remoteName,
+      senderDisplayName: myDisplayName,
+    ).catchError((Object e) {
       if (!mounted) return;
-
-      String message;
-      switch (status) {
-        case 'pending':
-          message = 'Friend request sent!';
-        case 'already_friend':
-          message = 'Already friends.';
-        case 'already_pending':
-          message = 'Friend request already pending.';
-        default:
-          message = 'Failed to send friend request.';
-      }
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(message),
-          backgroundColor: status == 'pending' || status == 'already_friend'
-              ? SnowColors.success
-              : status == 'already_pending'
-                  ? Colors.amber
-                  : SnowColors.error,
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text('Failed to start call: $e')),
       );
-
-      if (status == 'pending') {
-        ref.invalidate(personalChannelProvider);
-      }
-    }
+    }));
   }
 
   Future<void> _acceptFriendRequest(String channelId) async {

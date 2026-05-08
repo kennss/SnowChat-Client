@@ -52,6 +52,7 @@ import '../../../app/providers.dart';
 import '../../../core/storage/database.dart' as db show Conversation;
 import '../../../core/crypto/group_metadata_crypto.dart';
 import '../../../core/network/api_endpoints.dart';
+import '../../../shared/services/message_banner_service.dart';
 import '../models/conversation.dart';
 import '../../../core/storage/secure_storage.dart';
 import 'chat_provider.dart' show broadcastSenderKeyToGroup;
@@ -547,6 +548,12 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
 
   /// Phase 11: Listen for chat_deleted / group_deleted (room demolition).
   /// Remove the conversation locally when the other side deletes it.
+  ///
+  /// 2026-05-04 fix: 1:1 인 경우 Signal SessionStore 도 함께 wipe — peer 가
+  /// 채팅 삭제했다는 건 곧 본인 쪽에서도 fresh start 원한다는 의미이고,
+  /// session 남기면 이후 같은 peer 와 메시지 주고받을 때 stale ratchet 으로
+  /// session_reset 무한 loop 발생 (deleteConversationLocally 의 동일 fix
+  /// 와 mirror).
   void _listenForChatDeleted() {
     final sm = _ref.read(socketManagerProvider);
     sm.onChatDeleted.listen((data) async {
@@ -555,12 +562,43 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       if (id == null) return;
       debugPrint('[ConversationList] chat/group deleted received: $id');
 
+      // 삭제 *전에* peer SnowChat ID 추출 (1:1 만). drift row 가 사라지면
+      // participantIds 못 읽음.
+      String? peerSnowIdToWipe;
+      try {
+        final convDao = _ref.read(conversationDaoProvider);
+        final conv = await convDao.getConversation(id);
+        if (conv != null && conv.type == 'direct' && conv.groupId == null) {
+          final mySnow = _ref.read(currentSnowIdProvider);
+          final list = (jsonDecode(conv.participantIds) as List).cast<String>();
+          for (final p in list) {
+            if (p != mySnow) {
+              peerSnowIdToWipe = p;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[ConversationList] chat_deleted peer lookup failed: $e');
+      }
+
       // Remove from drift DB (messages + conversation row)
       try {
         final convDao = _ref.read(conversationDaoProvider);
         await convDao.deleteConversation(id);
       } catch (e) {
         debugPrint('[ConversationList] chat_deleted drift cleanup failed: $e');
+      }
+
+      // 1:1 인 경우 Signal session 도 wipe — fresh X3DH bootstrap 보장.
+      if (peerSnowIdToWipe != null) {
+        try {
+          final sessionMgr = _ref.read(signalSessionManagerProvider);
+          await sessionMgr.deleteSessionForPeer(peerSnowIdToWipe);
+        } catch (e) {
+          debugPrint('[ConversationList] chat_deleted signal session wipe '
+              'for $peerSnowIdToWipe failed: $e');
+        }
       }
 
       // Remove from in-memory state
@@ -687,11 +725,22 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   /// Phase 9.1: Global listener for friend_request_received socket events.
   /// Updates the badge counter so the Friends tab shows a notification dot
   /// even when the user is on a different tab.
+  /// 2026-04-28: also fire MessageBannerService for in-app foreground toast
+  /// (Friends 탭 외 화면에서도 즉시 알림).
   void _listenForFriendRequests() {
     final sm = _ref.read(socketManagerProvider);
     _friendRequestSubscription = sm.onFriendRequestReceived.listen((data) {
       final current = _ref.read(pendingFriendBadgeProvider);
       _ref.read(pendingFriendBadgeProvider.notifier).state = current + 1;
+
+      final fromSnowchatId = data['fromSnowchatId'] as String? ?? '';
+      final fromDisplayName = data['fromDisplayName'] as String? ?? '';
+      if (fromSnowchatId.isNotEmpty) {
+        MessageBannerService.instance.showFriendRequest(
+          fromSnowchatId: fromSnowchatId,
+          fromDisplayName: fromDisplayName,
+        );
+      }
       debugPrint('[ConversationList] friend_request_received — badge=${current + 1}');
     });
   }

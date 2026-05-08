@@ -110,7 +110,11 @@ class TxDetailScreen extends ConsumerWidget {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: body,
+      // SafeArea(top: false) — AppBar 가 status bar 처리, 우리는 system
+      // gesture nav bar 인셋만 필요. S23 같은 작은 디스플레이에서 Explorer
+      // 버튼이 nav bar 와 충돌해 잘려보이고 탭 어려운 문제 (2026-04-27 사용자
+      // 리포트). 다른 wallet 화면들도 동일 패턴 적용 가치 있음.
+      body: SafeArea(top: false, child: body),
     );
   }
 }

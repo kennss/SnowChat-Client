@@ -3,7 +3,26 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; Layer 7: send-time actual socket state check + stale _isConnected self-heal)
+/// @lastUpdated 2026-05-03 (Phase 11 fix — connect() async + pre-flight
+///              `await ensureFreshToken!()` + library auto-reconnect disabled
+///              (`setReconnectionAttempts(0)`) + `_connecting` single-flight
+///              guard. Original Phase 11 cut over only wired the reactive
+///              onConnectError branch — connect() entry kept reading the
+///              cached snapshot synchronously, so a stale access JWT (idle
+///              65min past 1h TTL) launched the handshake, got rejected,
+///              and relied on reactive recovery. Server log evidence
+///              2026-05-03 16:08~16:16 UTC: 13 jwt-expired Socket auth
+///              failures vs only 3 actual /auth/refresh hits in 8 minutes —
+///              gap was Socket.IO library's enableReconnection retrying in
+///              the background with stale auth captured at io.io
+///              construction. Earlier same day: token field + updateToken +
+///              _refreshing + onJwtExpired/onAuthFailed callbacks all
+///              removed. SocketManager receives `tokenProvider` (sync read)
+///              + `ensureFreshToken` (async refresh) callbacks from
+///              providers.dart. Earlier v206: didChangeAppLifecycleState
+///              emits app_state=background on inactive too. Earlier
+///              2026-04-26: header English translation; Layer 7 send-time
+///              actual socket state check + stale _isConnected self-heal.)
 ///  - onUserRegistered: new user registration notification stream
 ///  - added user_registered/online_users socket event listeners
 ///  - SocketManager.sendPrivateMessage(): T0-pattern 1:1 message send (ack callback support)
@@ -47,7 +66,17 @@ import 'api_endpoints.dart';
 /// Socket.IO connection manager for real-time messaging.
 /// Handles connection lifecycle, reconnection, and event routing.
 class SocketManager with WidgetsBindingObserver {
-  String? token;
+  /// Phase 11: sync read of the current access JWT. Returns null if the user
+  /// is unauthenticated. The wiring (providers.dart) points this at
+  /// `tokenManager.snapshot?.access`.
+  String? Function()? tokenProvider;
+
+  /// Phase 11: async refresh entry. On JWT expiry detected via
+  /// `onConnectError`, this is invoked to obtain a fresh access JWT before
+  /// reconnecting. Routes through `tokenManager.ensureFresh()` so the
+  /// 100-concurrent caller mutex covers HTTP + Socket simultaneously.
+  /// Returns null if refresh failed (caller falls through to disconnected).
+  Future<String?> Function()? ensureFreshToken;
 
   io.Socket? _socket;
   bool _isConnected = false;
@@ -257,7 +286,7 @@ class SocketManager with WidgetsBindingObserver {
 
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
-  SocketManager({this.token}) {
+  SocketManager({this.tokenProvider, this.ensureFreshToken}) {
     // App lifecycle observer — recover dead socket when returning background → foreground.
     // If the OS killed the socket in background, Socket.IO may not detect it immediately →
     // trigger explicit reconnect on resume (falls back to onConnectError → JWT refresh path if needed).
@@ -267,15 +296,16 @@ class SocketManager with WidgetsBindingObserver {
     // Don't rely on Socket.IO's internal exponential backoff (5~60s); fire on the first OS connectivity
     // event. Recovers within 1s for airplane mode toggle / WiFi switch / signal recovery.
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
-      if (_disposed || token == null) return;
+      if (_disposed) return;
+      if (tokenProvider?.call() == null) return;
       final online = results.any((r) =>
           r == ConnectivityResult.wifi ||
           r == ConnectivityResult.mobile ||
           r == ConnectivityResult.ethernet ||
           r == ConnectivityResult.vpn);
-      if (online && !_isConnected && !_refreshing) {
+      if (online && !_isConnected && !_jwtRefreshInFlight && !_connecting) {
         debugPrint('[SocketManager] Connectivity restored ($results) — reconnecting');
-        connect();
+        unawaited(connect());
       }
     });
   }
@@ -283,69 +313,162 @@ class SocketManager with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
+    final token = tokenProvider?.call();
+
+    // [Phase 8.2 §8-B fix — app_state presence emit]
+    // iPhone 의 fg→bg 30s 내 incoming 수신 불가 (매트릭스 #4) 의 정공법.
+    // server `wantPush = isOffline` 이 socket presence 기반인데, iOS 가
+    // background 진입해도 socket 즉시 안 죽음 (~10-30s grace) → server 가
+    // "online" 으로 판단 → push 안 보냄 → socket emit 가도 background app
+    // deliver 못 함 → invite 사라짐.
+    //
+    // 해법: client 가 background 진입 시 server 에 명시 알림. server 는
+    // userAppState 에 'background' 기록 → wantPush 조건에 포함. iOS 의 ~5s
+    // grace window 안에 emit 가 deliver 되어 server 가 정확한 state 인식.
+    //
+    // foreground 복귀 시도 emit — server 가 reset 해서 next call 정상.
+    //
+    // AppLifecycleState.paused = iOS applicationDidEnterBackground / Android onStop
+    // AppLifecycleState.inactive = iOS willResignActive (전화 / 알림 등 transient)
+    // AppLifecycleState.resumed = foreground 복귀
+    //
+    // v206 (2026-05-03): iOS 의 paused emit 가 BG transition window 에서 socket
+    // I/O freeze 로 손실되는 race 를 좁히기 위해 inactive 에서도 background
+    // emit. inactive 는 transient (control center / notification banner) 에서도
+    // 발화하지만 server 의 userAppState 는 idempotent map 이고, 이후 paused
+    // 안 오고 resumed 가 오면 정상 복귀 emit 가 덮어쓰므로 부작용 없음.
+    // server 측 v206 의 iOS-always-push 와 짝 — 서버가 이미 iOS 는 항상
+    // PushKit 발사하므로 이 emit 는 Android 의 BG-aware push 정확도 + iOS 의
+    // 보조 신호 역할.
+    if (_isConnected && _socket != null && token != null) {
+      if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.inactive) {
+        debugPrint('[SocketManager] App ${state.name} — emit app_state=background');
+        try {
+          _socket!.emit('app_state', {'state': 'background'});
+        } catch (e) {
+          debugPrint('[SocketManager] app_state background emit failed: ${e.runtimeType}');
+        }
+      } else if (state == AppLifecycleState.resumed) {
+        debugPrint('[SocketManager] App resumed — emit app_state=foreground');
+        try {
+          _socket!.emit('app_state', {'state': 'foreground'});
+        } catch (e) {
+          debugPrint('[SocketManager] app_state foreground emit failed: ${e.runtimeType}');
+        }
+      }
+    }
+
     if (state == AppLifecycleState.resumed && token != null) {
-      if (!_isConnected && !_refreshing) {
+      if (!_isConnected && !_jwtRefreshInFlight && !_connecting) {
         debugPrint('[SocketManager] App resumed — reconnecting (was disconnected)');
-        connect();
+        unawaited(connect());
       } else {
         debugPrint('[SocketManager] App resumed — already connected or refreshing, skip');
       }
     }
   }
 
-  /// Refresh callback invoked when JWT expiration is detected.
-  /// providers.dart wires this to AuthService.refreshToken().
-  /// Return value: new JWT (on success) / null (on refresh failure — caller handles logout).
-  Future<String?> Function()? onJwtExpired;
+  /// Local guard for socket-driven JWT refresh — prevents the onConnectError
+  /// branch from firing two ensureFreshToken calls in parallel for the same
+  /// expired token. The TokenManager mutex would coalesce them anyway, but
+  /// keeping this avoids a noisy log + double socket recreate.
+  bool _jwtRefreshInFlight = false;
 
-  /// Called when JWT refresh fails (refresh token also expired).
-  /// providers.dart wires this to logout + navigate to login screen.
-  void Function()? onAuthFailed;
-
-  /// Lock to prevent duplicate concurrent refresh calls.
-  bool _refreshing = false;
-
-  /// Update the auth token without recreating the socket manager.
-  /// Call [connect] after this to reconnect with the new token.
-  void updateToken(String newToken) {
-    token = newToken;
-  }
+  /// Phase 11 fix (2026-05-03): single-flight guard for connect() itself.
+  /// connect() is now async + awaits ensureFresh — without this guard, a
+  /// rapid burst (lifecycle resume + connectivity restored + onDisconnect
+  /// 5s timer) could race two parallel handshakes against the server.
+  bool _connecting = false;
 
   /// Connect to the Socket.IO server with JWT authentication.
-  void connect() {
-    if (token == null || _disposed) return;
-
-    // Already connected — nothing to do (idempotent)
-    if (_isConnected && _socket != null) {
-      debugPrint('[SocketManager] Already connected, skipping reconnect');
+  ///
+  /// Phase 11 spec (`Documentation/Dev-plan2/Phase11-JWT-Token-Permanent-Solution.md` §4.3):
+  /// "connect() 전 await tokenManager.ensureFresh()". The original cut over
+  /// only wired the reactive onConnectError branch — connect() entry kept
+  /// reading the cached snapshot synchronously, so a stale access JWT (idle
+  /// 65min past 1h TTL) would launch the handshake, get rejected, and rely
+  /// on the reactive path to recover. Server log evidence (2026-05-03
+  /// 16:08~16:16): 13 jwt-expired Socket auth failures vs only 3 actual
+  /// /auth/refresh hits in 8 minutes — the gap was the Socket.IO library's
+  /// `enableReconnection()` retrying in the background with the stale auth
+  /// captured at io.io construction time, while our onConnectError branch
+  /// could not see those retries (they fire on the disposed socket's
+  /// listeners).
+  ///
+  /// Fix:
+  ///   1. async + pre-flight `await ensureFreshToken!()` so every handshake
+  ///      starts with a guaranteed fresh access JWT (5min near-expiry
+  ///      threshold inside TokenManager.ensureFresh).
+  ///   2. `setReconnectionAttempts(0)` + drop `enableReconnection()` —
+  ///      this client owns ALL reconnect logic. The library's silent
+  ///      stale-auth retry loop is permanently disabled.
+  ///   3. `_connecting` single-flight guard so concurrent lifecycle events
+  ///      (resume + connectivity + 5s disconnect timer) coalesce into one
+  ///      handshake instead of racing.
+  Future<void> connect() async {
+    if (_disposed) return;
+    if (_connecting) {
+      debugPrint('[SocketManager] connect() already in flight — skip');
       return;
     }
+    _connecting = true;
+    try {
+      // Pre-flight: ensure access JWT is fresh BEFORE the handshake.
+      // ensureFreshToken returns null when refresh fails 3x — TokenManager
+      // already emitted `expiredHard` so providers.dart listener handles
+      // logout. We just stay disconnected.
+      String? freshToken;
+      if (ensureFreshToken != null) {
+        freshToken = await ensureFreshToken!();
+      } else {
+        // Defensive fallback for tests / pre-Phase 11 wiring.
+        freshToken = tokenProvider?.call();
+      }
+      if (_disposed) return;
+      if (freshToken == null) {
+        debugPrint('[SocketManager] connect() — no valid token, staying disconnected');
+        return;
+      }
 
-    // Clean up existing socket before reconnect
-    _socket?.disconnect();
-    _socket?.dispose();
-    _socket = null;
-    _isConnected = false;
+      // Already connected — nothing to do (idempotent). Re-check after the
+      // await so a parallel onConnect that fired during ensureFresh wins.
+      if (_isConnected && _socket != null) {
+        debugPrint('[SocketManager] Already connected, skipping reconnect');
+        return;
+      }
 
-    var socketUrl = ApiEndpoints.getSocketUrl();
-    debugPrint('[SocketManager] Connecting to $socketUrl');
+      // Clean up existing socket before reconnect.
+      _socket?.disconnect();
+      _socket?.dispose();
+      _socket = null;
+      _isConnected = false;
 
-    _socket = io.io(
-      socketUrl,
-      io.OptionBuilder()
-          .setTransports(['websocket'])
-          .setAuth({'token': token})
-          .disableAutoConnect()
-          .enableForceNewConnection() // Prevent stale cached socket after reconnect
-          .enableReconnection()
-          .setReconnectionAttempts(10)
-          .setReconnectionDelay(1000)
-          .setReconnectionDelayMax(10000)
-          .build(),
-    );
+      final socketUrl = ApiEndpoints.getSocketUrl();
+      debugPrint('[SocketManager] Connecting to $socketUrl (token prefix=${freshToken.length > 8 ? freshToken.substring(0, 8) : freshToken})');
 
-    _setupEventListeners();
-    _socket!.connect();
+      _socket = io.io(
+        socketUrl,
+        io.OptionBuilder()
+            .setTransports(['websocket'])
+            .setAuth({'token': freshToken})
+            .disableAutoConnect()
+            .enableForceNewConnection() // Prevent stale cached socket after reconnect
+            // Phase 11 fix: disable library auto-reconnect. We own ALL retry
+            // via onDisconnect (5s timer) + onConnectError (ensureFresh +
+            // reconnect) + lifecycle / connectivity observers. Otherwise the
+            // library captures auth at io.io construction and silently
+            // retries with stale token on its own backoff schedule — server
+            // sees ghost handshakes the client cannot observe.
+            .setReconnectionAttempts(0)
+            .build(),
+      );
+
+      _setupEventListeners();
+      _socket!.connect();
+    } finally {
+      _connecting = false;
+    }
   }
 
   /// Set up all Socket.IO event listeners.
@@ -363,15 +486,16 @@ class SocketManager with WidgetsBindingObserver {
       debugPrint('[SocketManager] Disconnected (reason: $reason)');
       _isConnected = false;
       _connectionController.add(false);
-      // Auto-reconnect after 5 seconds if Socket.IO's internal reconnection hasn't succeeded.
-      // But skip if a JWT refresh is in flight — prevents stale-token reconnect race; refresh path drives it.
-      if (!_disposed && token != null) {
+      // Phase 11 fix: library reconnection is disabled (setReconnectionAttempts(0)),
+      // so this manual 5s timer is the ONLY auto-reconnect path on a clean
+      // disconnect. connect() now does its own pre-flight ensureFresh, so we
+      // do not need to gate on _jwtRefreshInFlight — the TokenManager mutex
+      // and our _connecting flag coalesce.
+      if (!_disposed && tokenProvider?.call() != null) {
         Future.delayed(const Duration(seconds: 5), () {
-          if (!_disposed && !_isConnected && !_refreshing) {
-            debugPrint('[SocketManager] Manual reconnect after Socket.IO reconnection timeout');
-            connect();
-          } else if (_refreshing) {
-            debugPrint('[SocketManager] Skip manual reconnect — JWT refresh in flight');
+          if (!_disposed && !_isConnected && !_connecting) {
+            debugPrint('[SocketManager] Scheduled reconnect after disconnect (5s)');
+            unawaited(connect());
           }
         });
       }
@@ -382,7 +506,7 @@ class SocketManager with WidgetsBindingObserver {
       _isConnected = false;
       _connectionController.add(false);
 
-      // Detect JWT expiry → refresh, then reconnect.
+      // Detect JWT expiry → ensureFresh via TokenManager, then reconnect.
       // Server (auth.ts:91) sends "jwt expired: INVALID_TOKEN" / "jwt invalid: INVALID_TOKEN" /
       // "jwt missing: AUTH_REQUIRED". Also include 'token' / 'invalid' for backward compat
       // with the old format ("INVALID_TOKEN"/"AUTH_REQUIRED").
@@ -392,28 +516,28 @@ class SocketManager with WidgetsBindingObserver {
           msg.contains('auth') ||
           msg.contains('token') ||
           msg.contains('invalid');
-      if (looksExpired && onJwtExpired != null && !_refreshing && !_disposed) {
-        _refreshing = true;
-        debugPrint('[SocketManager] JWT expired suspected — triggering refresh');
+      if (looksExpired && ensureFreshToken != null && !_jwtRefreshInFlight && !_disposed) {
+        _jwtRefreshInFlight = true;
+        debugPrint('[SocketManager] JWT expired suspected — triggering ensureFresh');
         // Stop the old socket's internal auto-reconnect first to avoid stale-token retry race.
         try { _socket?.disconnect(); } catch (_) {}
         () async {
           try {
-            final newToken = await onJwtExpired!();
+            final newToken = await ensureFreshToken!();
             if (_disposed) return;
             if (newToken == null) {
-              debugPrint('[SocketManager] Refresh returned null — auth failed');
-              onAuthFailed?.call();
+              // TokenManager already emitted expiredHard event so the
+              // providers.dart listener fires logout + UI navigate. We just
+              // stay disconnected — no need to call out.
+              debugPrint('[SocketManager] ensureFresh returned null — staying disconnected');
               return;
             }
-            updateToken(newToken);
             debugPrint('[SocketManager] Token refreshed — reconnecting');
-            connect();
+            unawaited(connect());
           } catch (e) {
-            debugPrint('[SocketManager] Refresh failed: $e — auth failed');
-            onAuthFailed?.call();
+            debugPrint('[SocketManager] ensureFresh failed: $e — staying disconnected');
           } finally {
-            _refreshing = false;
+            _jwtRefreshInFlight = false;
           }
         }();
       }
@@ -1080,9 +1204,24 @@ class SocketManager with WidgetsBindingObserver {
   /// Phase 8.2 VoIP: Sealed Sender signaling send (§24.2).
   /// Server does not know envelope contents and only performs memory-only relay.
   /// onAck callback receives `{relayed: true}`, `{offline: true}`, or an error response.
+  ///
+  /// Path B v4 (C2) + Fix D/E (2026-05-06):
+  /// - [signalType]: coarse type tag for server push gating.
+  ///   'invite' → triggers always-push when callee on PATHB_MIN_CLIENT_VERSION.
+  ///   'end'    → reuse-branch enqueue1to1 + sendVoipCancel FCM (Android BG isolate
+  ///              dismisses Telecom Connection without main engine boot).
+  ///   'other'  → legacy isOffline-only path for offer/answer/ICE.
+  ///   Plan §2.5 / §2.7 / §10.16, §2.6.2 callId class.
+  /// - [callId]: caller-allocated RFC4122 v4 UUID for end-to-end nonce alignment
+  ///   (F1, Plan §2.10, Z-fix §2.6.2). Server uses this as PushKit nonce on invite
+  ///   so callee's Telecom Connection id == envelope-internal callId. On call_end
+  ///   server passes this to sendVoipCancel so the BG isolate's `endCall(callId)`
+  ///   matches the Connection raised at invite time. Other signal types may pass null.
   void sendSealedCallSignaling({
     required String recipientSnowchatId,
     required String envelope,
+    String signalType = 'other',
+    String? callId,
     void Function(dynamic)? onAck,
   }) {
     if (!_isReadyToSend()) {
@@ -1095,12 +1234,17 @@ class SocketManager with WidgetsBindingObserver {
       return;
     }
     // Don't log envelope/recipient — Zero-Trace §23
+    final payload = <String, dynamic>{
+      'recipientSnowchatId': recipientSnowchatId,
+      'envelope': envelope,
+      'signalType': signalType,
+    };
+    if (callId != null) {
+      payload['callId'] = callId;
+    }
     _socket!.emitWithAck(
       'sealed_call_signaling',
-      {
-        'recipientSnowchatId': recipientSnowchatId,
-        'envelope': envelope,
-      },
+      payload,
       ack: (response) {
         onAck?.call(response);
       },

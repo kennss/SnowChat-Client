@@ -171,6 +171,33 @@ class MessageRepository {
   /// _processPrivate1to1.findOrCreate path.
   Future<void> deleteConversationLocally() async {
     try {
+      // 2026-05-04 회귀 fix: 1:1 conversation 의 경우 peer 의 SnowChat ID 를
+      // 미리 조회. 아래에서 conversation row 가 삭제되면 participantIds 를
+      // 더 이상 못 읽으므로 *반드시* 삭제 전에 추출해야 함.
+      String? peerSnowIdToWipe;
+      if (_ref != null) {
+        try {
+          final convDao = _ref!.read(conversationDaoProvider);
+          final conv = await convDao.getConversation(conversationId);
+          if (conv != null && conv.type == 'direct' && conv.groupId == null) {
+            // participantIds = JSON array of SnowChat IDs (self + peer for 1:1).
+            // Pick the entry that isn't us.
+            final mySnow = _ref!.read(currentSnowIdProvider);
+            final list = (jsonDecode(conv.participantIds) as List)
+                .cast<String>();
+            for (final p in list) {
+              if (p != mySnow) {
+                peerSnowIdToWipe = p;
+                break;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('[MessageRepo] peer lookup before delete failed '
+              '(non-fatal): $e');
+        }
+      }
+
       final dao = _attachmentDao;
       if (dao != null) {
         // Resolve relative paths against the current Documents dir.
@@ -199,6 +226,25 @@ class MessageRepository {
       if (_ref != null) {
         final convDao = _ref!.read(conversationDaoProvider);
         await convDao.deleteConversation(conversationId);
+      }
+
+      // 2026-05-04 회귀 fix: 1:1 인 경우 Signal SessionStore 도 wipe.
+      // drift row 만 지우고 ratchet state 남기면 같은 peer 와 다시 메시지
+      // 주고받을 때 stale state 로 decrypt 시도 → 실패 → archiveAndResetSession
+      // → 양쪽 동시 reset → X3DH bootstrap race → 서로 다른 session 생성 →
+      // session_reset 무한 loop (사용자 보고 "1:1 채팅 삭제 후 같은 peer 와
+      // 메시징 + 그룹 통신 모두 깨짐" 2026-05-04). deleteSessionForPeer 는
+      // peer 한테 알림 안 보냄 — 우리만 깨끗해지고, peer 가 다음 메시지 보낼
+      // 때 prekey-message 가 X3DH bootstrap 트리거해서 fresh session 자연
+      // convergence.
+      if (peerSnowIdToWipe != null && _ref != null) {
+        try {
+          final sessionMgr = _ref!.read(signalSessionManagerProvider);
+          await sessionMgr.deleteSessionForPeer(peerSnowIdToWipe);
+        } catch (e) {
+          debugPrint('[MessageRepo] signal session wipe for '
+              '$peerSnowIdToWipe failed (non-fatal): $e');
+        }
       }
     } catch (e) {
       debugPrint('[MessageRepo] deleteConversationLocally failed: $e');
@@ -303,6 +349,11 @@ class MessageRepository {
         outgoingStatus: Value(msg.status.name),
         senderDisplayName: Value(msg.senderDisplayName),
         replyToId: Value(msg.replyToId),
+        // 2026-05-08 schema v10 — round-trip the quote fields so the
+        // bubble's `replyToPreview != null` render guard actually sees
+        // the data after drift's watch stream replaces in-memory state.
+        replyToPreview: Value(msg.replyToPreview),
+        replyToSenderId: Value(msg.replyToSenderId),
       ));
     }
   }
@@ -619,6 +670,10 @@ class MessageRepository {
       ttlSeconds: row.expiresIn > 0 ? row.expiresIn : null,
       senderDisplayName: row.senderDisplayName,
       replyToId: row.replyToId,
+      // 2026-05-08 schema v10 — drift columns added so the quote bubble
+      // can render after a watch-stream rebuild without losing context.
+      replyToPreview: row.replyToPreview,
+      replyToSenderId: row.replyToSenderId,
       isDeleted: row.remoteDeleted,
     );
   }

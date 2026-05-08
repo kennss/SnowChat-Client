@@ -10,11 +10,17 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-10
-/// @lastUpdated 2026-04-26 (header + inline English translation; AI model download/install management)
+/// @lastUpdated 2026-05-06 (startBackgroundDownload removed — auto fetch from
+///              cold launch was the trap on iPhone 13 / 4 GB phones that can
+///              never load the model anyway. Replaced with syncStatusFromDisk
+///              which only reflects the on-disk install state on the
+///              ValueNotifier; the actual fetch trigger is now exclusively
+///              user-initiated through ai_chat_tile.dart's RAM-gated tap →
+///              /ai-onboarding → startManualDownload.)
 ///
 /// @functions
 ///  - AIModelManager.isModelInstalled(): whether the model is installed
-///  - AIModelManager.startBackgroundDownload(): auto-invoked at app startup
+///  - AIModelManager.syncStatusFromDisk(): read-only disk check that flips downloadStatus → complete when the file is already there
 ///  - AIModelManager.startManualDownload(): manual download
 ///  - AIModelManager.modelPath: absolute path to the model file
 ///  - AIModelManager.deleteModel(): delete the model
@@ -116,22 +122,21 @@ class AIModelManager {
     }
   }
 
-  /// Auto-invoked at app startup — start background download if on WiFi.
-  Future<void> startBackgroundDownload() async {
-    final installed = await isModelInstalled();
-    if (installed) {
+  /// Read-only disk sync. Called once when the provider first constructs
+  /// the manager (Riverpod fires this lazily on first read of
+  /// aiModelManagerProvider). Reflects the on-disk install state on the
+  /// downloadStatus ValueNotifier so a returning user with the model
+  /// already installed sees the "On-Device" badge as soon as the chat
+  /// list builds.
+  ///
+  /// Does NOT trigger a download. The 2.9 GB fetch is only allowed
+  /// through the user-initiated path (ai_chat_tile.dart RAM gate → tap
+  /// → /ai-onboarding → startManualDownload).
+  Future<void> syncStatusFromDisk() async {
+    if (await isModelInstalled()) {
       downloadStatus.value = ModelDownloadStatus.complete;
       downloadProgress.value = 1.0;
-      return;
     }
-
-    final wifi = await isWifiConnected();
-    if (!wifi) {
-      debugPrint('[AIModelManager] Not on WiFi — skipping auto download');
-      return;
-    }
-
-    _enqueueDownload();
   }
 
   /// Manual download (also called over cellular after user consent).

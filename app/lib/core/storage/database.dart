@@ -81,7 +81,7 @@ class SnowDatabase extends _$SnowDatabase {
   SnowDatabase(super.e);
 
   @override
-  int get schemaVersion => 9;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration {
@@ -202,6 +202,19 @@ class SnowDatabase extends _$SnowDatabase {
           // Wallet V2 Phase 1: persist in-flight tx for in-chat transfers (P0-1, P0-2).
           // recoverPending() looks up RPC results for status='sent' rows.
           await m.createTable(pendingTransfers);
+        }
+        if (from < 10) {
+          // V1 reply-quote fix (2026-05-08) — replyToPreview and
+          // replyToSenderId were carried in the encrypted payload and
+          // populated on the in-memory Message, but the drift insert
+          // paths only stored replyToId. The quote bubble checks
+          // `replyToPreview != null` to render, so once drift's watch
+          // stream replaced the in-memory message with the persisted
+          // version the quote text disappeared. These two nullable
+          // columns let the persist / read paths actually round-trip
+          // the data.
+          await m.addColumn(localMessages, localMessages.replyToPreview);
+          await m.addColumn(localMessages, localMessages.replyToSenderId);
         }
         debugPrint('[Perf] 💾 drift onUpgrade complete: ${sw.elapsedMilliseconds}ms');
       },

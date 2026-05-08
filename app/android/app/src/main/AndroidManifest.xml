@@ -36,19 +36,33 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
-        android:fullBackupContent="false">
+        android:fullBackupContent="false"
+        android:localeConfig="@xml/locales_config"><!-- 2026-05-08 i18n locale lock (Phase 0). Pairs with res/xml/locales_config.xml + build.gradle resourceConfigurations + MainActivity.attachBaseContext. Documented in Documentation/TO-DO/2026-05-07-app-locale-and-i18n.md. -->
         <!--
-             Phase 2 (2026-04-22): MainActivity 의 showWhenLocked / turnScreenOn 제거.
-             Samsung Knox 는 이 flag 를 "visible only" 로만 해석 + 모든 launch 경로
-             (홈 아이콘 포함) 에서 lock bypass 라 security regression. 전용 CallActivity
-             (신규) 가 통화 경로만 lock bypass 담당.
-             참고: Documentation/TO-DO/voip-dedicated-call-activity.md
+             Option 2 (dedicated CallActivity hosting a cached FlutterEngine)
+             attempted 2026-05-06 and reverted same day: FlutterFragment
+             exclusively locks an attached engine and refuses to let a
+             second Activity attach to it (AssertionError: "internal
+             FlutterEngine has been attached to by another activity"). With
+             a single Dart isolate hosting the WebRTC peer connection there
+             is no way to render /call in a separate Activity without a
+             native Foreground Service rewrite — out of scope for now.
+
+             So MainActivity is once again the call host. The keyguard-bypass
+             attributes here are scoped to the call path by Dart-side route
+             logic: /call is the only route pushed via the Accept flow, and
+             when it ends with the keyguard still locked we run
+             SystemNavigator.pop() to finish this Activity instead of
+             popping into the underlying chat/wallet route. That post-call
+             finish closes the only meaningful security gap of this setup.
         -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
@@ -79,28 +93,6 @@
                 <data android:scheme="snowchat" android:host="invite"/>
             </intent-filter>
         </activity>
-
-        <!--
-             전용 통화 Activity — Signal WebRtcCallActivity 패턴.
-             - showWhenLocked / turnScreenOn 을 manifest 선언으로 강제 (runtime 아닌
-               install time OS 인지 → Samsung Knox full-screen intent priority 취득).
-             - excludeFromRecents: 최근 앱 목록에 통화 화면 노출 안 함 (Zero-Trace).
-             - taskAffinity="" + launchMode=singleTask: 독립 task 로 fresh launch.
-             - LAUNCHER category 없음 → 홈 아이콘 실수 launch 불가.
-             - 현재 Phase 1 (probe): onCreate 에서 MainActivity redirect. Phase 2+ 에서
-               FlutterEngineCache + Flutter engine embed 으로 /call 직접 렌더 확장.
-        -->
-        <activity
-            android:name=".CallActivity"
-            android:exported="true"
-            android:launchMode="singleTask"
-            android:taskAffinity=""
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:excludeFromRecents="true"
-            android:theme="@style/LaunchTheme"
-            android:hardwareAccelerated="true"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" />
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

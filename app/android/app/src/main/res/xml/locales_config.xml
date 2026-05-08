@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    2026-05-08 i18n locale lock (Phase 0). Lists the only locale this app
+    declares it supports — English. Companion to:
+      - iOS Info.plist CFBundleLocalizations=['en']
+      - app/build.gradle.kts defaultConfig.resourceConfigurations += "en"
+      - MainActivity.attachBaseContext (runtime locale wrap)
+      - AndroidManifest <application android:localeConfig="@xml/locales_config">
+
+    On Android 13+ (API 33+) the system surfaces this list in the
+    per-app Settings panel; on earlier versions it is harmless extra
+    metadata. The combined effect is that Korean-locale devices fall
+    back to English for SnowChat in-process — the rest of the app stays
+    consistent with the iOS experience.
+
+    Note: Telecom ConnectionService's incoming-call UI is rendered
+    outside our process and is NOT affected by this — see
+    Documentation/TO-DO/2026-05-07-app-locale-and-i18n.md for the
+    limitation.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+</locale-config>

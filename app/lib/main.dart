@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; Phase 8.2 §25 Phase I: FCM Voice Push — incoming_call branch)
+/// @lastUpdated 2026-05-06 (Fix E — _firebaseBackgroundHandler now branches on
+///              type='call_cancel' to dismiss Telecom Connection from the BG
+///              isolate without booting the main engine. Solves the cold-start
+///              "Galaxy keeps ringing after iPhone cancels" matrix that only
+///              reproduces when callee is locked / swipe-dismissed). Earlier
+///              2026-05-03 (Phase 11 — TokenManager.registerMainIsolateOwner()
+///              call so BG isolates can detect main isolate presence and refuse
+///              token refresh. Pairs with TokenManager.isMainIsolateOwnerSync().)
 ///
 /// @functions
 ///  - main(): app initialization and run
@@ -16,10 +23,12 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app/app.dart';
 import 'core/call/voip_push_handler.dart';
 import 'core/network/api_endpoints.dart';
+import 'core/network/token_manager.dart';
 
 /// Workaround for Dart VM DNS resolver failing on some Android devices
 /// (OS-level DNS works, but Dart's InternetAddress.lookup() returns empty).
@@ -62,9 +71,67 @@ Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
   // when the app is killed/backgrounded. Zero plaintext metadata leak, anonymous display.
   if (type == 'incoming_call') {
     await VoipPushHandler.handleIncomingCall(message.data);
+
+    // [D-1 verification 2026-05-05]
+    //
+    // FlutterCallkitIncomingPlugin.sendEvent broadcasts to every
+    // EventCallbackHandler registered via onAttachedToEngine — one per
+    // FlutterEngine. If the BG FlutterEngine attaches the plugin, a
+    // listener registered here in the BG isolate should receive decline
+    // events even though the main isolate has not booted.
+    //
+    // If this listener fires on decline (verified via Process.run('log')
+    // → logcat 'BG_LISTENER_TEST'), option D is feasible: we can move
+    // the entire cold-launch decline pipeline into the BG isolate and
+    // skip the Activity-launch dance entirely. If it never fires, option
+    // D is architecturally dead and we escalate to option C (dedicated
+    // Dart entry point).
+    await _bgLog('listener registering after CallKit raised');
+    FlutterCallkitIncoming.onEvent.listen((event) async {
+      if (event == null) return;
+      await _bgLog('event received action=${event.event.name}');
+    });
+    return;
+  }
+  // Fix E (2026-05-06) — caller-cancel cold-start path.
+  // Server (callHandler.ts reuse-branch) fires this FCM data-only when a caller
+  // cancels and the callee process is dead. Dismiss the Telecom Connection
+  // raised by the original 'incoming_call' push so the phone stops ringing
+  // immediately instead of waiting for the plugin's 30s ringer auto-timeout.
+  // The missed-call system message inserts later when the user opens SnowChat
+  // and the queued call_end envelope (Fix C) surfaces via socket reconnect →
+  // CallSignaling.injectEnvelope → _onIncoming → CallService fallback.
+  //
+  // BG isolate can call FlutterCallkitIncoming.endCall directly — the plugin's
+  // Android implementation routes through Telecom regardless of main engine
+  // presence. iOS does not reach this branch (Apple PushKit only delivers
+  // 'incoming_call' type pushes; we never send 'call_cancel' to iOS).
+  if (type == 'call_cancel') {
+    final callId = message.data['callId'] as String?;
+    await _bgLog('call_cancel received callId=$callId');
+    if (callId != null && callId.isNotEmpty) {
+      try {
+        await FlutterCallkitIncoming.endCall(callId);
+        await _bgLog('call_cancel endCall dispatched callId=$callId');
+      } catch (e) {
+        await _bgLog('call_cancel endCall error: ${e.runtimeType}');
+      }
+    }
     return;
   }
   debugPrint('[FCM] Background message: ${message.data}');
+}
+
+/// Emit a logcat line from the BG isolate via the Android `log` system
+/// utility. Works in release builds where Dart `print` / `debugPrint` are
+/// stripped. No permissions required (`/system/bin/log` is universally
+/// callable).
+Future<void> _bgLog(String msg) async {
+  try {
+    await Process.run('log', ['-t', 'BG_LISTENER_TEST', msg]);
+  } catch (_) {
+    // Best-effort diagnostic — never propagate.
+  }
 }
 
 void main() async {
@@ -84,6 +151,12 @@ void main() async {
   // Phase 8.1: Firebase initialization
   await Firebase.initializeApp();
   FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+
+  // Phase 11: register the main-isolate marker port. BG isolates (FCM bg
+  // handler etc.) lookup this port — absence = "I'm not main, refuse to
+  // refresh JWT". Without this, a parallel isolate could trigger a refresh
+  // that wins the server-side jti CAS and clobbers main isolate's snapshot.
+  TokenManager.registerMainIsolateOwner();
 
   // Force dark status bar
   SystemChrome.setSystemUIOverlayStyle(

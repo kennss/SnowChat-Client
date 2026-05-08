@@ -17,6 +17,7 @@ import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/snow_id_display.dart';
 import '../../../app/providers.dart';
+import '../../../utils/version.dart';
 import '../../ai/service/supported_languages.dart';
 import '../settings_provider.dart';
 import 'network_settings_screen.dart';
@@ -200,7 +201,10 @@ class SettingsScreen extends ConsumerWidget {
           _buildNavTile(
             icon: Icons.info_outline_rounded,
             title: 'Version',
-            subtitle: '1.0.0 (Build 1)',
+            subtitle: ref.watch(appDisplayVersionProvider).maybeWhen(
+                  data: (v) => v,
+                  orElse: () => '...',
+                ),
             onTap: () {},
           ),
 
@@ -584,19 +588,23 @@ class SettingsScreen extends ConsumerWidget {
     // 2. Wipe E2EE session data (sessions + signal_session_store.bin)
     await ref.read(signalSessionManagerProvider).resetSessionData();
 
-    // 3. Clear secure storage (identity, PIN, tokens, Signal keys)
+    // 3. Clear TokenManager (Phase 11) — wipes the v2 envelope + legacy slots
+    //    and emits logout event so listeners (sealedSender / push) tear down.
+    await ref.read(tokenManagerProvider).clear();
+
+    // 4. Clear secure storage (identity, PIN, Signal keys — token already
+    //    wiped in step 3, but deleteAll covers everything else).
     await ref.read(secureStorageProvider).deleteAll();
 
-    // 4. Delete drift database
+    // 5. Delete drift database
     await ref.read(snowDatabaseProvider).close();
 
-    // 5. Reset all app state
-    ref.read(authTokenProvider.notifier).state = null;
+    // 6. Reset remaining app state
     ref.read(currentSnowIdProvider.notifier).state = null;
     ref.read(isOnboardedProvider.notifier).state = false;
     ref.read(isLockedProvider.notifier).state = false;
 
-    // 6. Navigate to welcome
+    // 7. Navigate to welcome
     if (context.mounted) {
       context.go('/welcome');
     }

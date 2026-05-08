@@ -12,7 +12,7 @@ PODS:
     - Flutter
   - connectivity_plus (0.0.1):
     - Flutter
-  - CryptoSwift (1.8.4)
+  - CryptoSwift (1.10.0)
   - device_calendar (0.0.1):
     - Flutter
   - device_info_plus (0.0.1):
@@ -208,6 +208,8 @@ PODS:
   - nanopb/encode (3.30910.0)
   - open_filex (0.0.2):
     - Flutter
+  - package_info_plus (0.4.5):
+    - Flutter
   - permission_handler_apple (9.3.0):
     - Flutter
   - photo_manager (3.9.0):
@@ -287,6 +289,7 @@ DEPENDENCIES:
   - local_auth_darwin (from `.symlinks/plugins/local_auth_darwin/darwin`)
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
   - open_filex (from `.symlinks/plugins/open_filex/ios`)
+  - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
   - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
   - screen_protector (from `.symlinks/plugins/screen_protector/ios`)
@@ -378,6 +381,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/mobile_scanner/darwin"
   open_filex:
     :path: ".symlinks/plugins/open_filex/ios"
+  package_info_plus:
+    :path: ".symlinks/plugins/package_info_plus/ios"
   permission_handler_apple:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
   photo_manager:
@@ -402,7 +407,7 @@ SPEC CHECKSUMS:
   background_downloader: 9f788ffc5de45acf87d6380e91ca0841066c18cf
   battery_plus: 34f72fa2afeeea83bbae306c72a25828d3ec727a
   connectivity_plus: 2a701ffec2c0ae28a48cf7540e279787e77c447d
-  CryptoSwift: e64e11850ede528a02a0f3e768cec8e9d92ecb90
+  CryptoSwift: e2e7776512f250e66205955da748e7a4e4abffe0
   device_calendar: 9cb33f88a02e19652ec7b8b122ca778f751b1f7b
   device_info_plus: bf2e3232933866d73fe290f2942f2156cdd10342
   DKImagePickerController: 946cec48c7873164274ecc4624d19e3da4c1ef3c
@@ -442,6 +447,7 @@ SPEC CHECKSUMS:
   mobile_scanner: 77265f3dc8d580810e91849d4a0811a90467ed5e
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   open_filex: 6e26e659846ec990262224a12ef1c528bb4edbe4
+  package_info_plus: c0502532a26c7662a62a356cebe2692ec5fe4ec4
   permission_handler_apple: 9878588469a2b0d0fc1e048d9f43605f92e6cec2
   photo_manager: d8a1055c2d3ee24fc300461c66e0defdec58b3d6
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47

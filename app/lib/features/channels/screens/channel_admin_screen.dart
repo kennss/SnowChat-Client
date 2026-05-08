@@ -63,7 +63,19 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
   late TextEditingController _descController;
   String _selectedCategory = 'Other';
   String _joinPolicy = 'OPEN';
+  bool _allowMemberInvite = false;
   bool _isSaving = false;
+  bool _isUploadingAvatar = false;
+  // upload-on-pick 으로 받은 새 avatar fileId. _saveSettings 에서 PUT body
+  // 의 avatarUrl 로 사용. _avatarFile 보존에 의존하지 않으므로 picker 가
+  // 떠있는 동안 OS 가 액티비티 회수해도 손실되지 않음 (업로드 완료된 fileId
+  // 만 보존).
+  String? _pendingAvatarUrl;
+  // _initFromDetail 가 매 build 마다 호출되면 사용자가 토글한 직후 setState
+  // 의 rebuild 로 detail 의 stale 값 (서버 동기화 전) 이 즉시 덮어쓰기 →
+  // 토글이 OFF 로 자동 복귀하는 버그 (allowMemberInvite, joinPolicy,
+  // category 모두 동일). 최초 1회만 init 후엔 사용자 입력만 반영.
+  bool _detailInitialized = false;
   bool _isDeleting = false;
   File? _avatarFile;
   String? _currentAvatarUrl;
@@ -105,6 +117,12 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
   }
 
   void _initFromDetail(Map<String, dynamic> detail) {
+    // Guard: 최초 1회만 stateful 필드 초기화. setState rebuild 마다 호출되면
+    // 사용자 입력 (토글 ON, dropdown 변경 등) 이 즉시 stale server 값으로
+    // 덮여서 UI 가 입력을 받지 않는 것처럼 보임.
+    if (_detailInitialized) return;
+    _detailInitialized = true;
+
     if (_nameController.text == widget.channelName) {
       _nameController.text = detail['name'] as String? ?? widget.channelName;
     }
@@ -113,6 +131,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
     }
     _selectedCategory = detail['category'] as String? ?? 'Other';
     _joinPolicy = detail['joinPolicy'] as String? ?? 'OPEN';
+    _allowMemberInvite = detail['allowMemberInvite'] as bool? ?? false;
     _currentAvatarUrl ??= detail['avatarUrl'] as String?;
   }
 
@@ -124,15 +143,42 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
       maxHeight: 512,
       imageQuality: 80,
     );
-    if (image != null) {
-      setState(() => _avatarFile = File(image.path));
+    if (image == null || !mounted) return;
+
+    // 미리보기는 즉시 노출 (네트워크 왕복 전).
+    setState(() {
+      _avatarFile = File(image.path);
+      _isUploadingAvatar = true;
+    });
+
+    // upload-on-pick — 갤러리 picker 가 띄워져 있는 동안 OS 가 main
+    // activity 메모리 회수하면 _avatarFile 손실되어 _saveSettings 시점에
+    // null → upload 0 회 → avatar 미반영 채로 PUT 만 성공 (사용자가 본
+    // "save 가 않됨" 의 진짜 원인). pick 직후 업로드해서 fileId 만 보존.
+    final fileId = await _uploadAvatarBytes(_avatarFile!);
+    if (!mounted) return;
+    setState(() {
+      _isUploadingAvatar = false;
+      if (fileId != null) {
+        _pendingAvatarUrl = fileId;
+      } else {
+        // 업로드 실패 시 미리보기 롤백
+        _avatarFile = null;
+      }
+    });
+    if (fileId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Avatar upload failed. Try again.'),
+          backgroundColor: SnowColors.error,
+        ),
+      );
     }
   }
 
-  Future<String?> _uploadAvatar() async {
-    if (_avatarFile == null) return null;
+  Future<String?> _uploadAvatarBytes(File file) async {
     try {
-      final bytes = await _avatarFile!.readAsBytes();
+      final bytes = await file.readAsBytes();
       final hash = sha256.convert(bytes).toString();
       final apiClient = ref.read(apiClientProvider);
       final res = await apiClient.postRaw(
@@ -352,30 +398,68 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
                 border: Border.all(color: SnowColors.divider),
               ),
               clipBehavior: Clip.antiAlias,
-              child: _avatarFile != null
-                  ? Image.file(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (_avatarFile != null)
+                    Image.file(
                       _avatarFile!,
                       width: 80,
                       height: 80,
                       fit: BoxFit.cover,
                     )
-                  : _currentAvatarUrl != null
-                      ? Image.network(
-                          '${ApiEndpoints.getBaseUrl()}/files/${_currentAvatarUrl!}',
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const Icon(
-                            Icons.groups_rounded,
-                            color: SnowColors.textTertiary,
-                            size: 32,
+                  else if (_currentAvatarUrl != null)
+                    Image.network(
+                      '${ApiEndpoints.getBaseUrl()}/files/${_currentAvatarUrl!}',
+                      // 서버 GET /files/:fileId 는 auth 필수 — 토큰 없으면
+                      // 401 → errorBuilder 의 generic icon 으로 fallback →
+                      // 사용자 입장에선 "save 가 안 됨" 으로 보임.
+                      // (서버 저장은 됐지만 client 가 표시 못 함.)
+                      //
+                      // Phase 11 (2026-05-04 회귀 fix): 이전엔 Dio default
+                      // headers 에 Authorization 박혀있었지만 cut over 후
+                      // 매 request interceptor 가 동적 주입 → default 는 비었음
+                      // → 옛 lookup 이 null → 401. authHeaderProvider 가
+                      // tokenSnapshotProvider 를 watch 해서 token 회전 시
+                      // 자동 rebuild.
+                      headers: () {
+                        final h = ref.watch(authHeaderProvider);
+                        return h != null ? {'Authorization': h} : null;
+                      }(),
+                      width: 80,
+                      height: 80,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        Icons.groups_rounded,
+                        color: SnowColors.textTertiary,
+                        size: 32,
+                      ),
+                    )
+                  else
+                    const Icon(
+                      Icons.camera_alt_rounded,
+                      color: SnowColors.textTertiary,
+                      size: 32,
+                    ),
+                  // upload-on-pick 진행 중 — preview 위에 spinner 오버레이.
+                  // 끝나기 전에 Save 누르면 race guard 가 잡지만 시각적
+                  // feedback 으로 명시적 표시.
+                  if (_isUploadingAvatar)
+                    Container(
+                      color: Colors.black.withValues(alpha: 0.4),
+                      child: const Center(
+                        child: SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: SnowColors.primary,
                           ),
-                        )
-                      : const Icon(
-                          Icons.camera_alt_rounded,
-                          color: SnowColors.textTertiary,
-                          size: 32,
                         ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -442,7 +526,35 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
             DropdownMenuItem(value: 'APPROVAL', child: Text('Approval')),
             DropdownMenuItem(value: 'INVITE_ONLY', child: Text('Invite Only')),
           ],
-          onChanged: (v) => setState(() => _joinPolicy = v ?? 'OPEN'),
+          onChanged: (v) {
+            setState(() {
+              _joinPolicy = v ?? 'OPEN';
+              // INVITE_ONLY 면 멤버 invite 강제 off (서버 enforce 와 동기화).
+              if (_joinPolicy == 'INVITE_ONLY') {
+                _allowMemberInvite = false;
+              }
+            });
+          },
+        ),
+        const SizedBox(height: SnowSizes.md),
+
+        // Allow members to invite (Telegram pattern). INVITE_ONLY 채널엔
+        // disabled — 비공개인데 누구나 초대하면 게이트키핑 무력화됨.
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Allow members to invite',
+              style: TextStyle(color: SnowColors.textPrimary)),
+          subtitle: Text(
+            _joinPolicy == 'INVITE_ONLY'
+                ? 'Disabled — Invite Only channels require admin approval.'
+                : 'Members can create invite links to bring in friends.',
+            style: const TextStyle(color: SnowColors.textTertiary, fontSize: 12),
+          ),
+          value: _allowMemberInvite,
+          activeThumbColor: SnowColors.primary,
+          onChanged: _joinPolicy == 'INVITE_ONLY'
+              ? null
+              : (v) => setState(() => _allowMemberInvite = v),
         ),
         const SizedBox(height: SnowSizes.md),
 
@@ -464,13 +576,18 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
   }
 
   Future<void> _saveSettings() async {
+    // upload-on-pick 이 아직 끝나지 않은 상태로 Save 시 race 차단.
+    if (_isUploadingAvatar) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Avatar still uploading… please wait')),
+      );
+      return;
+    }
     setState(() => _isSaving = true);
 
-    // Upload new avatar if selected
-    String? newAvatarUrl;
-    if (_avatarFile != null) {
-      newAvatarUrl = await _uploadAvatar();
-    }
+    // Avatar 는 _pickAvatar 에서 이미 upload 완료 → fileId 만 사용.
+    final newAvatarUrl = _pendingAvatarUrl;
 
     final updateData = <String, dynamic>{
       'name': _nameController.text.trim(),
@@ -478,6 +595,8 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
       'category': _selectedCategory,
       'joinPolicy': _joinPolicy,
       'isPublic': _joinPolicy != 'INVITE_ONLY',
+      'allowMemberInvite':
+          _joinPolicy == 'INVITE_ONLY' ? false : _allowMemberInvite,
       if (newAvatarUrl != null) 'avatarUrl': newAvatarUrl,
     };
 
@@ -487,6 +606,10 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
     if (newAvatarUrl != null && success) {
       _currentAvatarUrl = newAvatarUrl;
       _avatarFile = null;
+      _pendingAvatarUrl = null;
+      // 다른 화면들의 캐시도 새로 fetch — 채널 list 의 avatarUrl 동기화.
+      ref.invalidate(myChannelsProvider);
+      ref.invalidate(_adminDetailProvider(widget.channelId));
     }
     setState(() => _isSaving = false);
     if (mounted) {

@@ -1,16 +1,21 @@
 /// @file        auth_service.dart
-/// @description Challenge-response authentication service. Issues and refreshes JWT based on Ed25519 signatures.
+/// @description Challenge-response authentication service. Issues JWT pair
+///              based on Ed25519 signatures and hands the result off as a
+///              `TokenSnapshot` so the caller can store it via TokenManager.
+///              Phase 11 (2026-05-03): refresh logic moved to TokenManager.
+///              This service ONLY handles register, authenticate, isRegistered,
+///              and logout (best-effort push-token unregister).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-05-03 (Phase 11 — refreshToken/restoreToken removed; authenticate returns TokenSnapshot)
 ///
 /// @functions
 ///  - AuthService: authentication service class
 ///  - AuthService.register(): register new ID with server
-///  - AuthService.authenticate(): challenge-response authentication, returns JWT
-///  - AuthService.refreshToken(): refresh JWT token
+///  - AuthService.authenticate(): challenge-response, returns TokenSnapshot
 ///  - AuthService.isRegistered(): check whether registered with the server
+///  - AuthService.logout(): best-effort push-token unregister (token wipe is TokenManager.clear())
 
 import 'dart:convert';
 import 'dart:io';
@@ -20,8 +25,10 @@ import 'package:uuid/uuid.dart';
 
 import 'api_client.dart';
 import 'api_endpoints.dart';
+import 'token_manager.dart';
 import '../crypto/identity_manager.dart';
 import '../storage/secure_storage.dart';
+import '../../utils/version.dart';
 
 /// Challenge-response authentication service.
 ///
@@ -37,8 +44,6 @@ class AuthService {
   final IdentityManager identityManager;
   final SecureStorageService secureStorage;
 
-  static const _tokenKey = 'auth_token';
-  static const _refreshTokenKey = 'auth_refresh_token';
   static const _deviceIdKey = 'device_id';
 
   AuthService({
@@ -87,14 +92,19 @@ class AuthService {
     }
   }
 
-  /// Perform challenge-response auth and return JWT token.
+  /// Perform challenge-response auth and return a [TokenSnapshot].
+  ///
+  /// Phase 11: The caller is responsible for handing the returned snapshot to
+  /// `tokenManager.setFromLogin(snapshot)` so the SSoT picks it up. This
+  /// service no longer touches secure_storage for token persistence — that's
+  /// TokenManager's job (single key `auth_tokens_v2`).
   ///
   /// Steps:
   /// 1. POST /auth/challenge { snowchatId } -> { nonce, expiresAt }
   /// 2. Sign nonce with Ed25519 private key -> hex signature
   /// 3. POST /auth/verify { snowchatId, nonce, signature, deviceInfo }
-  /// 4. Store JWT + refresh token in secure storage
-  Future<String> authenticate() async {
+  /// 4. Decode JWT exp claim and return TokenSnapshot
+  Future<TokenSnapshot> authenticate() async {
     final snowId = await identityManager.getSnowChatId();
     if (snowId == null) {
       throw StateError('No identity found. Create or restore identity first.');
@@ -134,52 +144,25 @@ class AuthService {
     final token = verifyData['token'] as String;
     final refreshToken = verifyData['refreshToken'] as String;
 
-    // Step 4: Store tokens and set auth header
-    await secureStorage.write(_tokenKey, token);
-    await secureStorage.write(_refreshTokenKey, refreshToken);
-    apiClient.setAuthToken(token);
-
     debugPrint('[AuthService] Authenticated successfully');
-    return token;
-  }
-
-  /// Refresh the JWT token using the stored refresh token.
-  Future<String> refreshToken() async {
-    final currentRefreshToken = await secureStorage.read(_refreshTokenKey);
-    if (currentRefreshToken == null) {
-      throw StateError('No refresh token available');
-    }
-
-    final response = await apiClient.post(
-      ApiEndpoints.authRefresh,
-      data: {'refreshToken': currentRefreshToken},
+    return TokenSnapshot.fromTokens(
+      access: token,
+      refresh: refreshToken,
+      version: 1,
     );
-
-    final data = Map<String, dynamic>.from(response.data as Map);
-    final newToken = data['token'] as String;
-    final newRefreshToken = data['refreshToken'] as String;
-
-    await secureStorage.write(_tokenKey, newToken);
-    await secureStorage.write(_refreshTokenKey, newRefreshToken);
-    apiClient.setAuthToken(newToken);
-
-    return newToken;
   }
 
-  /// Try to restore a previously stored auth token.
-  /// Returns the token if found and sets it on the API client.
-  Future<String?> restoreToken() async {
-    final token = await secureStorage.read(_tokenKey);
-    if (token != null) {
-      apiClient.setAuthToken(token);
-    }
-    return token;
-  }
-
-  /// Clear all stored auth data (logout).
-  /// Unregisters push token from server before clearing credentials.
+  /// Best-effort push-token unregister. Phase 11: token wipe is now driven by
+  /// `TokenManager.clear()` — this method only sends the side-effect API call.
+  ///
+  /// Callers (settings_screen reset path) typically:
+  ///   1. tokenManager.clear()  — wipes envelope + emits logout event
+  ///   2. authService.logout()  — best-effort server-side push unregister
+  ///
+  /// Calling order is not strict because the API itself uses the bearer JWT;
+  /// if the JWT is already wiped, the push unregister silently fails (network
+  /// 401) and we don't surface that to the user.
   Future<void> logout() async {
-    // Unregister push token (server) — best-effort
     try {
       final deviceId = await secureStorage.read(_deviceIdKey);
       if (deviceId != null) {
@@ -191,10 +174,6 @@ class AuthService {
     } catch (_) {
       // Network failure on logout is OK — token will expire
     }
-
-    await secureStorage.delete(_tokenKey);
-    await secureStorage.delete(_refreshTokenKey);
-    apiClient.clearAuthToken();
   }
 
   /// Get stored device ID or create a new one.
@@ -250,6 +229,12 @@ class AuthService {
     final signedPreKey = base64Encode(List<int>.filled(32, 0));
     final signedPreKeySig = base64Encode(List<int>.filled(64, 0));
 
+    // Phase 8.2 Path B v4 (C2) — report client buildNumber so server can
+    // gate Path B always-push behind PATHB_MIN_CLIENT_VERSION (Plan §2.5).
+    // Field is omitted when version lookup fails so legacy server (no C0)
+    // ignores unknown key and so newer server doesn't blank existing value.
+    final appVersion = await getAppVersionForServer();
+
     return {
       'deviceId': deviceId,
       'identityKey': base64Encode(realPublicKey),
@@ -259,6 +244,7 @@ class AuthService {
       'registrationId': 0,
       'deviceName': _getDeviceName(),
       'osType': Platform.isIOS ? 'ios' : 'android',
+      if (appVersion != null) 'appVersion': appVersion,
     };
   }
 

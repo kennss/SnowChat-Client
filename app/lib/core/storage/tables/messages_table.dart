@@ -4,10 +4,19 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-01)
+/// @lastUpdated 2026-05-08 (schema v10 — replyToPreview + replyToSenderId
+///              columns added. The two fields were already populated in
+///              the in-memory Message model and round-tripped through the
+///              E2EE payload, but the drift insert paths only saved
+///              replyToId — so the quote text vanished as soon as drift's
+///              watch stream replaced the in-memory message with the
+///              persisted version. Tester report 2026-05-08 — "리플라이
+///              기능이 카톡처럼 한번더 보여지지는 않네요". Earlier
+///              2026-04-26: header + inline English translation;
+///              2026-04-01 schema v2 baseline.)
 ///
 /// @functions
-///  - LocalMessages: Drift local messages table class (21 columns)
+///  - LocalMessages: Drift local messages table class (23 columns)
 
 import 'package:drift/drift.dart';
 
@@ -72,7 +81,15 @@ class LocalMessages extends Table {
       boolean().withDefault(const Constant(false))();
 
   // === Reply / quote ===
+  // replyToId alone is not enough to render the WhatsApp-style quote
+  // bubble — we also need the sender label and a snippet of the original
+  // text, both inside the encrypted payload. Storing them denormalized
+  // here means renders work without an extra lookup against the parent
+  // row (which may not even be present locally if the reply arrived in a
+  // sync window before the original).
   TextColumn get replyToId => text().nullable()();
+  TextColumn get replyToPreview => text().nullable()();
+  TextColumn get replyToSenderId => text().nullable()();
 
   // === Group chat sender display name ===
   TextColumn get senderDisplayName => text().nullable()();

@@ -72,6 +72,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// dispose).
   bool _identityBannerDismissed = false;
 
+  /// 2026-05-06: anchor for missed-call bubble countdowns. The original
+  /// implementation counted from the message's insertedAt timestamp, so a
+  /// user entering the chat several minutes after a missed call would see
+  /// little or no countdown — defeating the "callback hint" intent of
+  /// call/CLAUDE.md §2.2. By anchoring on the moment the chat is opened
+  /// the user is guaranteed up to the full 5-minute window from when
+  /// they actually see the bubble. drift expiry remains insertion-based
+  /// (zero-trace cap), so this anchor is a display floor only — when the
+  /// drift row deletes earlier than the entered+5min would imply, the
+  /// bubble unmounts naturally with the message disappearance.
+  late final DateTime _screenEnteredAt;
+
   String get _myId => ref.read(currentSnowIdProvider) ?? '';
 
   /// Shared link preview service instance for this chat screen.
@@ -80,6 +92,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _screenEnteredAt = DateTime.now();
 
     // Phase 2: MarkReadHelper — drift DB SSoT for unread tracking
     _markReadHelper = MarkReadHelper(
@@ -860,8 +873,46 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return 'Chat';
   }
 
+  /// Resolve a snow ID into a display name for the reply-quote bubble.
+  ///
+  /// Search order:
+  ///  1. Any locally loaded message from the same sender — its
+  ///     senderDisplayName is the most accurate label and works for
+  ///     both 1:1 and group chats without needing the contact directory.
+  ///  2. The contact directory (1:1 friends, server-synced).
+  ///  3. Null — the bubble falls back to a shortened snow ID.
+  ///
+  /// Cheap O(N) scan over the messages list — only called for messages
+  /// that actually have a reply quote, and the messages list is bounded
+  /// by what's currently rendered in the chat screen.
+  String? _resolveReplyDisplayName(
+      List<Message> messages, String? senderId) {
+    if (senderId == null) return null;
+    for (final m in messages) {
+      if (m.senderSnowchatId == senderId &&
+          m.senderDisplayName != null &&
+          m.senderDisplayName!.isNotEmpty) {
+        return m.senderDisplayName;
+      }
+    }
+    final contacts = ref.read(contactProvider);
+    for (final c in contacts) {
+      if (c.snowChatId == senderId &&
+          c.displayName != null &&
+          c.displayName!.isNotEmpty) {
+        return c.displayName;
+      }
+    }
+    return null;
+  }
+
   static String? _ttlDisplayLabel(int? ttl) {
     if (ttl == null) return null;
+    // Disappearing options (disappearing_timer_selector.dart): 60, 300, 1800, 3600.
+    // Bug 2026-05-06 — earlier this branched on `ttl <= 300` first, so the
+    // 60-second selection (1m) fell through to the 5m branch. Order from
+    // smallest to largest so each bucket maps to its own label.
+    if (ttl <= 60) return '1m';
     if (ttl <= 300) return '5m';
     if (ttl <= 1800) return '30m';
     return '1h';
@@ -1360,7 +1411,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             children: [
                               if (showDate) _buildDateHeader(message.timestamp),
                               if (message.type == MessageType.system)
-                                SystemMessageBubble(message: message)
+                                SystemMessageBubble(
+                                  message: message,
+                                  screenEnteredAt: _screenEnteredAt,
+                                )
                               else
                                 Column(
                                   crossAxisAlignment: isMine
@@ -1382,6 +1436,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                       final translations = ref.watch(
                                           translationCacheProvider(widget.conversationId));
                                       final entry = translations[message.id];
+                                      // 2026-05-08 Phase 2 — resolve the
+                                      // reply-quote sender's display name
+                                      // from the loaded messages list so
+                                      // the bubble shows "Benjamin" /
+                                      // "pajooman003" instead of a snow
+                                      // ID. Falls back to contacts, then
+                                      // null (bubble's last-ditch is the
+                                      // shortened snow ID).
+                                      final replyToDisplay =
+                                          _resolveReplyDisplayName(
+                                        chatState.messages,
+                                        message.replyToSenderId,
+                                      );
                                       return MessageBubble(
                                         message: message,
                                         isMine: isMine,
@@ -1396,6 +1463,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                             _linkPreviewService,
                                         translatedText: entry?.translatedText,
                                         isTranslating: entry?.isLoading ?? false,
+                                        replyToSenderDisplayName:
+                                            replyToDisplay,
                                       );
                                     }),
                                     if (message.expiresAt != null)

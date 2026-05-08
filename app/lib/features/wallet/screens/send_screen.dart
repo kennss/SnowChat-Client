@@ -190,158 +190,181 @@ class _SendScreenState extends ConsumerState<SendScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Phase 4B — From wallet selector chip.
-            // On change, switch active via walletProvider.switchActive() →
-            // balance / tokens / signer auto-refresh against that wallet.
-            Builder(builder: (_) {
-              final activeId = ref.watch(activeWalletIdProvider);
-              if (activeId == null) return const SizedBox.shrink();
-              return Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: WalletPickerChip(
-                    selectedId: activeId,
-                    label: 'From',
-                    title: 'Send from',
-                    onChanged: (id) async {
-                      try {
-                        await ref
-                            .read(walletProvider.notifier)
-                            .switchActive(id);
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Switch failed: $e'),
-                              backgroundColor: const Color(0xFF111111),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                  ),
-                ),
-              );
-            }),
-
-            // Recipient address.
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: TextField(
-                controller: _addressController,
-                style: const TextStyle(color: _C.textPrimary, fontSize: 14),
-                decoration: InputDecoration(
-                  hintText: 'Address, SnowChat ID, or name.sol',
-                  hintStyle: const TextStyle(color: _C.textTertiary),
-                  filled: true,
-                  fillColor: _C.surfaceVariant,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        tooltip: 'Scan QR',
-                        icon: const Icon(Icons.qr_code_scanner,
-                            color: _C.textTertiary, size: 20),
-                        onPressed: _scanQrCode,
-                      ),
-                      IconButton(
-                        tooltip: 'Address book',
-                        icon: const Icon(Icons.book_outlined,
-                            color: _C.textTertiary, size: 20),
-                        onPressed: _openAddressBook,
-                      ),
-                      IconButton(
-                        tooltip: 'Paste',
-                        icon: const Icon(Icons.content_paste,
-                            color: _C.textTertiary, size: 20),
-                        onPressed: _pasteAddress,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-            // SNS resolution banner (Phase 6.1 §3.6 — anti-spoofing).
-            if (_resolving || _resolvedAddress != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _C.primaryBg,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: _C.primary, width: 1),
-                  ),
-                  child: _resolving
-                      ? const Row(
-                          children: [
-                            SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: _C.primary,
-                              ),
-                            ),
-                            SizedBox(width: 10),
-                            Text(
-                              'Resolving .sol domain…',
-                              style: TextStyle(
-                                color: _C.textSecondary,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Resolves to (verify before sending):',
-                              style: TextStyle(
-                                color: _C.textSecondary,
-                                fontSize: 11,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              _resolvedAddress!,
-                              style: const TextStyle(
-                                color: _C.primary,
-                                fontSize: 12,
-                                fontFamily: 'monospace',
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                ),
-              ),
-
-            // Amount input with keypad.
+            // Scrollable upper section — wraps wallet picker / recipient /
+            // SNS banner / AmountInput so the keypad never pushes the bottom
+            // CTA off-screen on small phones (Galaxy S23 6.1") + accessibility
+            // font scaling. Keeps Slide-to-confirm + Network speed always
+            // visible at the bottom (fixed CTA pattern, matches NFT/Marketplace
+            // send screens which already use SingleChildScrollView).
             Expanded(
-              child: AmountInput(
-                key: _amountKey,
-                symbol: _selectedToken?.symbol ?? 'SOL',
-                usdRate: _selectedToken != null && _selectedToken!.usdValueCents > BigInt.zero
-                    ? _selectedToken!.usdValueCents.toDouble() /
-                        100.0 /
-                        (double.tryParse(_selectedToken!.shortBalance) ?? 1.0)
-                    : null,
-                maxDecimals: _selectedToken?.decimals ?? 9,
+              child: SingleChildScrollView(
+                physics: const ClampingScrollPhysics(),
+                child: Column(
+                  children: [
+                    // Phase 4B — From wallet selector chip.
+                    // On change, switch active via walletProvider.switchActive() →
+                    // balance / tokens / signer auto-refresh against that wallet.
+                    Builder(builder: (_) {
+                      final activeId = ref.watch(activeWalletIdProvider);
+                      if (activeId == null) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: WalletPickerChip(
+                            selectedId: activeId,
+                            label: 'From',
+                            title: 'Send from',
+                            onChanged: (id) async {
+                              try {
+                                await ref
+                                    .read(walletProvider.notifier)
+                                    .switchActive(id);
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Switch failed: $e'),
+                                      backgroundColor: const Color(0xFF111111),
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                          ),
+                        ),
+                      );
+                    }),
+
+                    // Recipient address.
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      child: TextField(
+                        controller: _addressController,
+                        style: const TextStyle(
+                            color: _C.textPrimary, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'Address, SnowChat ID, or name.sol',
+                          hintStyle: const TextStyle(color: _C.textTertiary),
+                          filled: true,
+                          fillColor: _C.surfaceVariant,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: 'Scan QR',
+                                icon: const Icon(Icons.qr_code_scanner,
+                                    color: _C.textTertiary, size: 20),
+                                onPressed: _scanQrCode,
+                              ),
+                              IconButton(
+                                tooltip: 'Address book',
+                                icon: const Icon(Icons.book_outlined,
+                                    color: _C.textTertiary, size: 20),
+                                onPressed: _openAddressBook,
+                              ),
+                              IconButton(
+                                tooltip: 'Paste',
+                                icon: const Icon(Icons.content_paste,
+                                    color: _C.textTertiary, size: 20),
+                                onPressed: _pasteAddress,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // SNS resolution banner (Phase 6.1 §3.6 — anti-spoofing).
+                    if (_resolving || _resolvedAddress != null)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _C.primaryBg,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: _C.primary, width: 1),
+                          ),
+                          child: _resolving
+                              ? const Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: _C.primary,
+                                      ),
+                                    ),
+                                    SizedBox(width: 10),
+                                    Text(
+                                      'Resolving .sol domain…',
+                                      style: TextStyle(
+                                        color: _C.textSecondary,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Resolves to (verify before sending):',
+                                      style: TextStyle(
+                                        color: _C.textSecondary,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _resolvedAddress!,
+                                      style: const TextStyle(
+                                        color: _C.primary,
+                                        fontSize: 12,
+                                        fontFamily: 'monospace',
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+
+                    // Amount input with keypad. No longer Expanded — lives
+                    // inside scrollable region so its intrinsic height is
+                    // honored even when accessibility font scaling balloons it.
+                    AmountInput(
+                      key: _amountKey,
+                      symbol: _selectedToken?.symbol ?? 'SOL',
+                      usdRate: _selectedToken != null &&
+                              _selectedToken!.usdValueCents > BigInt.zero
+                          ? _selectedToken!.usdValueCents.toDouble() /
+                              100.0 /
+                              (double.tryParse(_selectedToken!.shortBalance) ??
+                                  1.0)
+                          : null,
+                      maxDecimals: _selectedToken?.decimals ?? 9,
+                    ),
+                  ],
+                ),
               ),
             ),
+
+            // --- Fixed bottom CTA strip (always visible, never clipped) ---
 
             // Network speed (priority fee tier).
             Padding(

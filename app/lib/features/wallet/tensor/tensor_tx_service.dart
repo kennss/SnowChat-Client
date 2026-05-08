@@ -31,6 +31,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:local_auth/local_auth.dart';
 import 'package:solana/encoder.dart';
 import 'package:solana/solana.dart';
@@ -318,12 +319,36 @@ class TensorTxService {
     // sol_transfer_service / spl_transfer_service / create_listing_screen
     // elsewhere in the app — allow device-credential fallback (PIN /
     // pattern / any enrolled biometric) and let the OS pick.
-    final ok = await _localAuth.authenticate(
-      localizedReason: reason,
-      options: const AuthenticationOptions(biometricOnly: false),
-    );
-    if (!ok) {
-      throw TensorTxException('biometric', 'Authentication denied');
+    try {
+      final ok = await _localAuth.authenticate(
+        localizedReason: reason,
+        options: const AuthenticationOptions(biometricOnly: false),
+      );
+      if (!ok) {
+        throw TensorTxException('biometric', 'Authentication denied');
+      }
+    } on PlatformException catch (e) {
+      // local_auth surfaces these when the device has no security set up
+      // OR no biometric is enrolled AND no device PIN/pattern is configured.
+      // Without translation, the raw "PlatformException(NotAvailable, …)" string
+      // bubbled all the way to the marketplace error banner (S23 user report,
+      // 2026-04-27). Convert to a user-actionable TensorTxException here.
+      final isMissingSecurity = e.code == 'NotAvailable' ||
+          e.code == 'NotEnrolled' ||
+          e.code == 'PasscodeNotSet' ||
+          e.code == 'auth_in_progress';
+      if (isMissingSecurity) {
+        throw TensorTxException(
+          'biometric',
+          'Set a screen lock (PIN, pattern, or biometric) in your device settings to confirm transactions.',
+        );
+      }
+      // User cancelled / locked out / hardware fault — keep the platform
+      // message but trim verbose null|null trailer.
+      throw TensorTxException(
+        'biometric',
+        'Authentication failed: ${e.message ?? e.code}',
+      );
     }
     steps.add('biometric-ok');
   }

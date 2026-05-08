@@ -240,6 +240,28 @@ class $LocalMessagesTable extends LocalMessages
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _replyToPreviewMeta = const VerificationMeta(
+    'replyToPreview',
+  );
+  @override
+  late final GeneratedColumn<String> replyToPreview = GeneratedColumn<String>(
+    'reply_to_preview',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _replyToSenderIdMeta = const VerificationMeta(
+    'replyToSenderId',
+  );
+  @override
+  late final GeneratedColumn<String> replyToSenderId = GeneratedColumn<String>(
+    'reply_to_sender_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _senderDisplayNameMeta = const VerificationMeta(
     'senderDisplayName',
   );
@@ -273,6 +295,8 @@ class $LocalMessagesTable extends LocalMessages
     remoteDeleted,
     mentionsSelf,
     replyToId,
+    replyToPreview,
+    replyToSenderId,
     senderDisplayName,
   ];
   @override
@@ -437,6 +461,24 @@ class $LocalMessagesTable extends LocalMessages
         replyToId.isAcceptableOrUnknown(data['reply_to_id']!, _replyToIdMeta),
       );
     }
+    if (data.containsKey('reply_to_preview')) {
+      context.handle(
+        _replyToPreviewMeta,
+        replyToPreview.isAcceptableOrUnknown(
+          data['reply_to_preview']!,
+          _replyToPreviewMeta,
+        ),
+      );
+    }
+    if (data.containsKey('reply_to_sender_id')) {
+      context.handle(
+        _replyToSenderIdMeta,
+        replyToSenderId.isAcceptableOrUnknown(
+          data['reply_to_sender_id']!,
+          _replyToSenderIdMeta,
+        ),
+      );
+    }
     if (data.containsKey('sender_display_name')) {
       context.handle(
         _senderDisplayNameMeta,
@@ -531,6 +573,14 @@ class $LocalMessagesTable extends LocalMessages
         DriftSqlType.string,
         data['${effectivePrefix}reply_to_id'],
       ),
+      replyToPreview: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}reply_to_preview'],
+      ),
+      replyToSenderId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}reply_to_sender_id'],
+      ),
       senderDisplayName: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}sender_display_name'],
@@ -564,6 +614,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
   final bool remoteDeleted;
   final bool mentionsSelf;
   final String? replyToId;
+  final String? replyToPreview;
+  final String? replyToSenderId;
   final String? senderDisplayName;
   const LocalMessage({
     required this.id,
@@ -585,6 +637,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
     required this.remoteDeleted,
     required this.mentionsSelf,
     this.replyToId,
+    this.replyToPreview,
+    this.replyToSenderId,
     this.senderDisplayName,
   });
   @override
@@ -612,6 +666,12 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
     map['mentions_self'] = Variable<bool>(mentionsSelf);
     if (!nullToAbsent || replyToId != null) {
       map['reply_to_id'] = Variable<String>(replyToId);
+    }
+    if (!nullToAbsent || replyToPreview != null) {
+      map['reply_to_preview'] = Variable<String>(replyToPreview);
+    }
+    if (!nullToAbsent || replyToSenderId != null) {
+      map['reply_to_sender_id'] = Variable<String>(replyToSenderId);
     }
     if (!nullToAbsent || senderDisplayName != null) {
       map['sender_display_name'] = Variable<String>(senderDisplayName);
@@ -644,6 +704,12 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
       replyToId: replyToId == null && nullToAbsent
           ? const Value.absent()
           : Value(replyToId),
+      replyToPreview: replyToPreview == null && nullToAbsent
+          ? const Value.absent()
+          : Value(replyToPreview),
+      replyToSenderId: replyToSenderId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(replyToSenderId),
       senderDisplayName: senderDisplayName == null && nullToAbsent
           ? const Value.absent()
           : Value(senderDisplayName),
@@ -675,6 +741,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
       remoteDeleted: serializer.fromJson<bool>(json['remoteDeleted']),
       mentionsSelf: serializer.fromJson<bool>(json['mentionsSelf']),
       replyToId: serializer.fromJson<String?>(json['replyToId']),
+      replyToPreview: serializer.fromJson<String?>(json['replyToPreview']),
+      replyToSenderId: serializer.fromJson<String?>(json['replyToSenderId']),
       senderDisplayName: serializer.fromJson<String?>(
         json['senderDisplayName'],
       ),
@@ -703,6 +771,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
       'remoteDeleted': serializer.toJson<bool>(remoteDeleted),
       'mentionsSelf': serializer.toJson<bool>(mentionsSelf),
       'replyToId': serializer.toJson<String?>(replyToId),
+      'replyToPreview': serializer.toJson<String?>(replyToPreview),
+      'replyToSenderId': serializer.toJson<String?>(replyToSenderId),
       'senderDisplayName': serializer.toJson<String?>(senderDisplayName),
     };
   }
@@ -727,6 +797,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
     bool? remoteDeleted,
     bool? mentionsSelf,
     Value<String?> replyToId = const Value.absent(),
+    Value<String?> replyToPreview = const Value.absent(),
+    Value<String?> replyToSenderId = const Value.absent(),
     Value<String?> senderDisplayName = const Value.absent(),
   }) => LocalMessage(
     id: id ?? this.id,
@@ -748,6 +820,12 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
     remoteDeleted: remoteDeleted ?? this.remoteDeleted,
     mentionsSelf: mentionsSelf ?? this.mentionsSelf,
     replyToId: replyToId.present ? replyToId.value : this.replyToId,
+    replyToPreview: replyToPreview.present
+        ? replyToPreview.value
+        : this.replyToPreview,
+    replyToSenderId: replyToSenderId.present
+        ? replyToSenderId.value
+        : this.replyToSenderId,
     senderDisplayName: senderDisplayName.present
         ? senderDisplayName.value
         : this.senderDisplayName,
@@ -793,6 +871,12 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
           ? data.mentionsSelf.value
           : this.mentionsSelf,
       replyToId: data.replyToId.present ? data.replyToId.value : this.replyToId,
+      replyToPreview: data.replyToPreview.present
+          ? data.replyToPreview.value
+          : this.replyToPreview,
+      replyToSenderId: data.replyToSenderId.present
+          ? data.replyToSenderId.value
+          : this.replyToSenderId,
       senderDisplayName: data.senderDisplayName.present
           ? data.senderDisplayName.value
           : this.senderDisplayName,
@@ -821,13 +905,15 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
           ..write('remoteDeleted: $remoteDeleted, ')
           ..write('mentionsSelf: $mentionsSelf, ')
           ..write('replyToId: $replyToId, ')
+          ..write('replyToPreview: $replyToPreview, ')
+          ..write('replyToSenderId: $replyToSenderId, ')
           ..write('senderDisplayName: $senderDisplayName')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     id,
     conversationId,
     senderSnowchatId,
@@ -847,8 +933,10 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
     remoteDeleted,
     mentionsSelf,
     replyToId,
+    replyToPreview,
+    replyToSenderId,
     senderDisplayName,
-  );
+  ]);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -872,6 +960,8 @@ class LocalMessage extends DataClass implements Insertable<LocalMessage> {
           other.remoteDeleted == this.remoteDeleted &&
           other.mentionsSelf == this.mentionsSelf &&
           other.replyToId == this.replyToId &&
+          other.replyToPreview == this.replyToPreview &&
+          other.replyToSenderId == this.replyToSenderId &&
           other.senderDisplayName == this.senderDisplayName);
 }
 
@@ -895,6 +985,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
   final Value<bool> remoteDeleted;
   final Value<bool> mentionsSelf;
   final Value<String?> replyToId;
+  final Value<String?> replyToPreview;
+  final Value<String?> replyToSenderId;
   final Value<String?> senderDisplayName;
   final Value<int> rowid;
   const LocalMessagesCompanion({
@@ -917,6 +1009,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
     this.remoteDeleted = const Value.absent(),
     this.mentionsSelf = const Value.absent(),
     this.replyToId = const Value.absent(),
+    this.replyToPreview = const Value.absent(),
+    this.replyToSenderId = const Value.absent(),
     this.senderDisplayName = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -940,6 +1034,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
     this.remoteDeleted = const Value.absent(),
     this.mentionsSelf = const Value.absent(),
     this.replyToId = const Value.absent(),
+    this.replyToPreview = const Value.absent(),
+    this.replyToSenderId = const Value.absent(),
     this.senderDisplayName = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
@@ -968,6 +1064,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
     Expression<bool>? remoteDeleted,
     Expression<bool>? mentionsSelf,
     Expression<String>? replyToId,
+    Expression<String>? replyToPreview,
+    Expression<String>? replyToSenderId,
     Expression<String>? senderDisplayName,
     Expression<int>? rowid,
   }) {
@@ -992,6 +1090,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
       if (remoteDeleted != null) 'remote_deleted': remoteDeleted,
       if (mentionsSelf != null) 'mentions_self': mentionsSelf,
       if (replyToId != null) 'reply_to_id': replyToId,
+      if (replyToPreview != null) 'reply_to_preview': replyToPreview,
+      if (replyToSenderId != null) 'reply_to_sender_id': replyToSenderId,
       if (senderDisplayName != null) 'sender_display_name': senderDisplayName,
       if (rowid != null) 'rowid': rowid,
     });
@@ -1017,6 +1117,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
     Value<bool>? remoteDeleted,
     Value<bool>? mentionsSelf,
     Value<String?>? replyToId,
+    Value<String?>? replyToPreview,
+    Value<String?>? replyToSenderId,
     Value<String?>? senderDisplayName,
     Value<int>? rowid,
   }) {
@@ -1040,6 +1142,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
       remoteDeleted: remoteDeleted ?? this.remoteDeleted,
       mentionsSelf: mentionsSelf ?? this.mentionsSelf,
       replyToId: replyToId ?? this.replyToId,
+      replyToPreview: replyToPreview ?? this.replyToPreview,
+      replyToSenderId: replyToSenderId ?? this.replyToSenderId,
       senderDisplayName: senderDisplayName ?? this.senderDisplayName,
       rowid: rowid ?? this.rowid,
     );
@@ -1105,6 +1209,12 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
     if (replyToId.present) {
       map['reply_to_id'] = Variable<String>(replyToId.value);
     }
+    if (replyToPreview.present) {
+      map['reply_to_preview'] = Variable<String>(replyToPreview.value);
+    }
+    if (replyToSenderId.present) {
+      map['reply_to_sender_id'] = Variable<String>(replyToSenderId.value);
+    }
     if (senderDisplayName.present) {
       map['sender_display_name'] = Variable<String>(senderDisplayName.value);
     }
@@ -1136,6 +1246,8 @@ class LocalMessagesCompanion extends UpdateCompanion<LocalMessage> {
           ..write('remoteDeleted: $remoteDeleted, ')
           ..write('mentionsSelf: $mentionsSelf, ')
           ..write('replyToId: $replyToId, ')
+          ..write('replyToPreview: $replyToPreview, ')
+          ..write('replyToSenderId: $replyToSenderId, ')
           ..write('senderDisplayName: $senderDisplayName, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -1793,8 +1905,8 @@ class Conversation extends DataClass implements Insertable<Conversation> {
   final int? disappearingTtl;
   final bool autoTranslateEnabled;
 
-  /// 채팅방별 번역 타겟 언어 (null이면 settings.preferredLanguage fallback).
-  /// 값: SupportedLanguages의 name — 'Korean', 'English', ...
+  /// Per-conversation translation target language (null falls back to settings.preferredLanguage).
+  /// Value: name from SupportedLanguages — 'Korean', 'English', ...
   final String? autoTranslateTargetLang;
   final int createdAt;
   final int updatedAt;
@@ -6328,16 +6440,16 @@ class AiMessage extends DataClass implements Insertable<AiMessage> {
   /// UUID
   final String id;
 
-  /// 'user' 또는 'assistant'
+  /// 'user' or 'assistant'
   final String role;
 
-  /// 메시지 텍스트
+  /// Message text
   final String content;
 
-  /// 세션 ID (대화 구분용)
+  /// Session ID (for separating conversations)
   final String sessionId;
 
-  /// 생성 시각
+  /// Created at
   final DateTime createdAt;
   const AiMessage({
     required this.id,
@@ -7539,7 +7651,7 @@ class PendingTransfer extends DataClass implements Insertable<PendingTransfer> {
   final String role;
   final String peerSnowchatId;
 
-  /// lamports / raw smallest units. BigInt-safe String (Float 금지).
+  /// lamports / raw smallest units. BigInt-safe String (no Float).
   final String amount;
   final String token;
   final String? mint;
@@ -7549,8 +7661,8 @@ class PendingTransfer extends DataClass implements Insertable<PendingTransfer> {
   /// pending | sent | completed | failed | timeout
   final String status;
 
-  /// Solana tx signature — sender 가 broadcast 후 set.
-  /// recoverPending() 이 RPC getSignatureStatus 조회에 사용.
+  /// Solana tx signature — set by sender after broadcast.
+  /// Used by recoverPending() for RPC getSignatureStatus lookup.
   final String? signature;
   final int createdAt;
   final int updatedAt;
@@ -8011,6 +8123,8 @@ typedef $$LocalMessagesTableCreateCompanionBuilder =
       Value<bool> remoteDeleted,
       Value<bool> mentionsSelf,
       Value<String?> replyToId,
+      Value<String?> replyToPreview,
+      Value<String?> replyToSenderId,
       Value<String?> senderDisplayName,
       Value<int> rowid,
     });
@@ -8035,6 +8149,8 @@ typedef $$LocalMessagesTableUpdateCompanionBuilder =
       Value<bool> remoteDeleted,
       Value<bool> mentionsSelf,
       Value<String?> replyToId,
+      Value<String?> replyToPreview,
+      Value<String?> replyToSenderId,
       Value<String?> senderDisplayName,
       Value<int> rowid,
     });
@@ -8140,6 +8256,16 @@ class $$LocalMessagesTableFilterComposer
 
   ColumnFilters<String> get replyToId => $composableBuilder(
     column: $table.replyToId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get replyToPreview => $composableBuilder(
+    column: $table.replyToPreview,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get replyToSenderId => $composableBuilder(
+    column: $table.replyToSenderId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -8253,6 +8379,16 @@ class $$LocalMessagesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get replyToPreview => $composableBuilder(
+    column: $table.replyToPreview,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get replyToSenderId => $composableBuilder(
+    column: $table.replyToSenderId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get senderDisplayName => $composableBuilder(
     column: $table.senderDisplayName,
     builder: (column) => ColumnOrderings(column),
@@ -8345,6 +8481,16 @@ class $$LocalMessagesTableAnnotationComposer
   GeneratedColumn<String> get replyToId =>
       $composableBuilder(column: $table.replyToId, builder: (column) => column);
 
+  GeneratedColumn<String> get replyToPreview => $composableBuilder(
+    column: $table.replyToPreview,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get replyToSenderId => $composableBuilder(
+    column: $table.replyToSenderId,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get senderDisplayName => $composableBuilder(
     column: $table.senderDisplayName,
     builder: (column) => column,
@@ -8401,6 +8547,8 @@ class $$LocalMessagesTableTableManager
                 Value<bool> remoteDeleted = const Value.absent(),
                 Value<bool> mentionsSelf = const Value.absent(),
                 Value<String?> replyToId = const Value.absent(),
+                Value<String?> replyToPreview = const Value.absent(),
+                Value<String?> replyToSenderId = const Value.absent(),
                 Value<String?> senderDisplayName = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => LocalMessagesCompanion(
@@ -8423,6 +8571,8 @@ class $$LocalMessagesTableTableManager
                 remoteDeleted: remoteDeleted,
                 mentionsSelf: mentionsSelf,
                 replyToId: replyToId,
+                replyToPreview: replyToPreview,
+                replyToSenderId: replyToSenderId,
                 senderDisplayName: senderDisplayName,
                 rowid: rowid,
               ),
@@ -8447,6 +8597,8 @@ class $$LocalMessagesTableTableManager
                 Value<bool> remoteDeleted = const Value.absent(),
                 Value<bool> mentionsSelf = const Value.absent(),
                 Value<String?> replyToId = const Value.absent(),
+                Value<String?> replyToPreview = const Value.absent(),
+                Value<String?> replyToSenderId = const Value.absent(),
                 Value<String?> senderDisplayName = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => LocalMessagesCompanion.insert(
@@ -8469,6 +8621,8 @@ class $$LocalMessagesTableTableManager
                 remoteDeleted: remoteDeleted,
                 mentionsSelf: mentionsSelf,
                 replyToId: replyToId,
+                replyToPreview: replyToPreview,
+                replyToSenderId: replyToSenderId,
                 senderDisplayName: senderDisplayName,
                 rowid: rowid,
               ),

@@ -8,7 +8,7 @@
 
 E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B158-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B158/snowchat-v1.0.0%2B158-20260426.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B270-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B270/snowchat-v1.0.0%2B270-20260508.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
@@ -32,13 +32,13 @@ Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked,
 
 ### Android
 
-**[⬇️ snowchat-v1.0.0+158-20260426.apk](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B158/snowchat-v1.0.0%2B158-20260426.apk)**
+**[⬇️ snowchat-v1.0.0+270-20260508.apk](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B270/snowchat-v1.0.0%2B270-20260508.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 
 ### iOS
 
-TestFlight build available on request via the Issues page. App Store submission is pending Phase 0 (legal entity / KYC / mainnet audit).
+TestFlight build available on request — email **kenntkim66@gmail.com** with your Apple ID and we'll send the invitation. App Store submission is pending Phase 0 (legal entity / KYC / mainnet audit).
 
 ---
 
@@ -47,7 +47,7 @@ TestFlight build available on request via the Issues page. App Store submission 
 ### 🔐 E2EE Messaging — Pure Dart Signal Protocol
 - Direct Dart implementation of X3DH + Double Ratchet (1:1) + Sender Key Hybrid (group).
 - No `libsignal` binary, no Platform Channel — pure Dart, three internal audits.
-- Disappearing messages, read receipts, typing indicators.
+- Disappearing messages, read receipts, typing indicators, WhatsApp-style reply quotes.
 - Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library, reusable in any Flutter project.
 
 ### 💼 Multi-Wallet (Solana, non-custodial)

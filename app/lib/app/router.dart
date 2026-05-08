@@ -3,7 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; DIAG print cleanup)
+/// @lastUpdated 2026-05-06 (option 2 Signal pattern: wrapped /call in a
+///              PopScope that blocks back navigation during an active call
+///              regardless of host Activity. Native CallActivity already
+///              swallows back-press while the keyguard is locked; this is
+///              the framework-level second line of defense for the
+///              MainActivity-hosted path (call accepted while unlocked).
+///              Earlier 2026-05-03 (v211): revert v210 _CallRouteHost iOS
+///              guard — auto-push gate moved to app.dart, router renders
+///              whatever app.dart pushed.)
 ///
 /// @functions
 ///  - routerProvider: Riverpod provider for the GoRouter instance
@@ -33,6 +41,7 @@ import '../features/contacts/screens/contact_list_screen.dart';
 import '../features/channels/screens/channel_list_screen.dart';
 import '../features/channels/screens/friend_list_screen.dart';
 import '../features/channels/screens/add_channel_screen.dart';
+import '../features/channels/screens/add_friend_screen.dart';
 import '../features/channels/screens/create_channel_screen.dart';
 import '../features/channels/screens/channel_info_screen.dart';
 import '../features/channels/screens/invite_link_screen.dart';
@@ -74,6 +83,24 @@ final rootNavigatorKey = GlobalKey<NavigatorState>();
 final _rootNavigatorKey = rootNavigatorKey;
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
 
+/// Deeplink rewriter — used by both the GoRouter `redirect` and `errorBuilder`
+/// fallback. Returns the rewritten internal path, or null if [loc] is not a
+/// known SnowChat deeplink form. Centralised so the two intercept points stay
+/// in sync.
+String? _rewriteDeeplink(String loc) {
+  const customPrefix = 'snowchat://invite/';
+  const httpsPrefix = 'https://snowchat.calidalab.ai/invite/';
+  if (loc.startsWith(customPrefix)) {
+    final code = loc.substring(customPrefix.length);
+    return code.isEmpty ? null : '/invite/$code';
+  }
+  if (loc.startsWith(httpsPrefix)) {
+    final code = loc.substring(httpsPrefix.length);
+    return code.isEmpty ? null : '/invite/$code';
+  }
+  return null;
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
   final isOnboarded = ref.watch(isOnboardedProvider);
   final requiresPinSetup = ref.watch(requiresPinSetupProvider);
@@ -97,6 +124,60 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: initialLocation,
+    // Last-line-of-defense for deeplinks the redirect somehow misses
+    // (some GoRouter versions evaluate the URI before redirect for path-only
+    // matches). Show a transparent loading frame while we push the corrected
+    // location, instead of rendering the raw "no routes" exception.
+    errorBuilder: (context, state) {
+      final rewritten = _rewriteDeeplink(state.matchedLocation) ??
+          _rewriteDeeplink(state.uri.toString());
+      if (rewritten != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          rootNavigatorKey.currentState?.context.go(rewritten);
+        });
+        return const Scaffold(
+          backgroundColor: SnowColors.background,
+          body: Center(
+            child: CircularProgressIndicator(color: SnowColors.primary),
+          ),
+        );
+      }
+      return Scaffold(
+        backgroundColor: SnowColors.background,
+        appBar: AppBar(title: const Text('Not found')),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('No route for: ${state.matchedLocation}',
+                  style: const TextStyle(color: SnowColors.textTertiary)),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => rootNavigatorKey.currentState?.context.go('/chat'),
+                child: const Text('Home'),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+    // Cold-start deeplink redirect — Flutter PlatformRouteInformationProvider
+    // delivers the launch URL (e.g. snowchat://invite/<code>) directly to
+    // GoRouter as initialLocation. GoRouter cannot match a full custom-scheme
+    // URI against path-style routes ("/invite/:code") and surfaces
+    // "GoException: no routes for location: snowchat://invite/<code>".
+    // Rewrite known custom-scheme URIs to their internal path form so the
+    // user never sees the error page, even before DeeplinkHandler.start
+    // wires up. Universal Link (Phase 2 https://snowchat.calidalab.ai/...)
+    // is also handled here for consistency.
+    //
+    // NOTE — state.matchedLocation 에 cold-start URI 가 안 들어올 수 있어서
+    // (GoRouter 가 Uri 파싱 후 path 만 사용하는 경우) state.uri 도 같이 검사.
+    redirect: (context, state) {
+      final rewritten = _rewriteDeeplink(state.matchedLocation) ??
+          _rewriteDeeplink(state.uri.toString());
+      return rewritten;
+    },
     routes: [
       // --- Onboarding ---
       GoRoute(
@@ -207,6 +288,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/add-channel',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const AddChannelScreen(),
+      ),
+      GoRoute(
+        path: '/add-friend',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AddFriendScreen(),
       ),
       GoRoute(
         path: '/create-channel',
@@ -502,20 +588,52 @@ class _CallRouteHost extends ConsumerWidget {
       }
     });
 
+    // Option 2 (Signal pattern, 2026-05-06): block back navigation while
+    // the call is in any non-idle state. CallActivity (Android) already
+    // swallows back-press when the keyguard is locked; this PopScope is
+    // the framework-level guard that also covers MainActivity-hosted
+    // paths (call accepted while the device is already unlocked) and iOS
+    // (where the gesture-pop would otherwise leak the user out of /call
+    // into chat / wallet routes underneath). The auto-pop on idle above
+    // remains the only legitimate exit, fired when CallNotifier ends.
+    final canExit = status == CallStatus.idle;
+    return PopScope(
+      canPop: canExit,
+      child: _buildCallScreen(context, status),
+    );
+  }
+
+  Widget _buildCallScreen(BuildContext context, CallStatus status) {
     switch (status) {
       case CallStatus.outgoing:
         return const OutgoingCallScreen();
       case CallStatus.incoming:
+        // v211 (2026-05-03): platform分岐 없음. /call route 진입 자체가
+        // app.dart 의 lifecycle/platform aware 가드로 제어됨 — iOS FG 만
+        // 여기 도달 가능 (BG/Lock 은 PushKit native CallKit 가 owns,
+        // Android 는 ConnectionService 가 owns).
         return const IncomingCallScreen();
       case CallStatus.connecting:
       case CallStatus.active:
       case CallStatus.ended:
         return const ActiveCallScreen();
       case CallStatus.idle:
-        return const Scaffold(
-          backgroundColor: Colors.black,
-          body: SizedBox.shrink(),
-        );
+        // 2026-05-04 fix v2: BG/lock 에서 전화받고 진입 시 black 회귀.
+        // 이전 fix (app.dart 의 global ref.listen) 는 prev != idle &&
+        // next == idle 의 *전이* 만 cover — BG 에서 isolate frozen 중에
+        // 상태가 이미 idle 로 끝난 케이스나 cold-launch from PushKit 에서
+        // recovery 가 fail 한 경우에는 transition 이 발생 안 해서 listener
+        // 가 fire 안 됨. router build 가 직접 호출하는 idle 케이스에서
+        // 매번 pop 스케줄 해서 어떤 path 든 cover.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted && context.canPop()) {
+            context.pop();
+          }
+        });
+        // pop 이 다음 frame 에서 fire — 그 동안은 underlying route 가 보여야
+        // 한다. Scaffold 의 default opaque background 대신 SizedBox.shrink()
+        // 만 return 해서 black 깜빡임 최소화.
+        return const SizedBox.shrink();
     }
   }
 }

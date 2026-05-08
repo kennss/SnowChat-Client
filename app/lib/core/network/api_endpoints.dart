@@ -179,8 +179,11 @@ abstract class ApiEndpoints {
   static String channelDelete(String channelId) => '/channels/$channelId';
   static String channelTransferOwnership(String channelId) =>
       '/channels/$channelId/transfer-ownership';
-  static String inviteInfo(String code) => '/invite/$code';
-  static String inviteJoin(String code) => '/invite/$code/join';
+  // 서버 mount 위치: app.use('/api/v2/channels', channelsRoutes) 안에
+  // router.get('/invite/:code') → 풀 경로 /api/v2/channels/invite/<code>.
+  // 따라서 client base (/api/v2) + endpoint = /channels/invite/<code>.
+  static String inviteInfo(String code) => '/channels/invite/$code';
+  static String inviteJoin(String code) => '/channels/invite/$code/join';
 
   // Files / Attachments
   static const String uploadFile = '/files/upload';
@@ -191,6 +194,8 @@ abstract class ApiEndpoints {
   static String device(String deviceId) => '/devices/$deviceId';
   static String devicePushToken(String deviceId) =>
       '/devices/$deviceId/push-token';
+  static String deviceVoipToken(String deviceId) =>
+      '/devices/$deviceId/voip-token';
 
   // Wallet
   static const String walletRegister = '/wallet';

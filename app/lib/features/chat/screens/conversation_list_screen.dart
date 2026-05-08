@@ -19,6 +19,7 @@ import '../../../app/deeplink_handler.dart';
 import '../../../app/providers.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
+import '../../../shared/widgets/snow_avatar.dart';
 import '../../group/widgets/group_invite_dialog.dart';
 import '../../channels/models/channel.dart';
 import '../../channels/providers/channel_provider.dart';
@@ -321,6 +322,14 @@ class _ConversationListScreenState
                   size: 20,
                 ),
                 const SizedBox(width: 6),
+                SnowAvatar(
+                  snowId: channel.id,
+                  size: SnowSizes.avatarMd,
+                  displayName: channel.name ?? '',
+                  avatarUrl: channel.avatarUrl,
+                  authHeader: ref.watch(authHeaderProvider),
+                ),
+                const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     '${channel.name ?? "Channel"} (${channel.memberCount})',

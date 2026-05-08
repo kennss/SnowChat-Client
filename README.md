@@ -48,7 +48,7 @@ TestFlight build available on request — email **kenntkim66@gmail.com** with yo
 - Direct Dart implementation of X3DH + Double Ratchet (1:1) + Sender Key Hybrid (group).
 - No `libsignal` binary, no Platform Channel — pure Dart, three internal audits.
 - Disappearing messages, read receipts, typing indicators, WhatsApp-style reply quotes.
-- Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library, reusable in any Flutter project.
+- Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library purpose-built in-house for SnowChat, now released as a reusable library for any Flutter project.
 
 ### 💼 Multi-Wallet (Solana, non-custodial)
 - BIP-39 mnemonic + SLIP-0010 derivation.

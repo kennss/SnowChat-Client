@@ -42,6 +42,44 @@ TestFlight build available on request — email **kenntkim66@gmail.com** with yo
 
 ---
 
+## 🧪 Try It (5-minute walkthrough)
+
+Designed so a judge or first-time visitor can verify every claim in this README on real hardware in five minutes.
+
+### 1. First launch — no signup
+Open the app → **Create new wallet**. The app generates a BIP-39 mnemonic and a SnowChat ID (`"snow"` + 32 hex characters). **Save the mnemonic — it is the only recovery path.** No email, no phone, no centralized account. You're now on the Chats tab.
+
+### 2. Test the E2EE messenger (needs two peers)
+- **With a second device:** install the app on it with a separate SnowChat ID. On either device, Chats tab → ✏️ pencil icon → enter the other peer's SnowChat ID → start chatting.
+- **Solo testing:** email **kenntkim66@gmail.com** and the author will act as the second peer for a live demo (E2EE 1:1, group chat, disappearing messages, reply quotes, voice / file attachments, VoIP voice call).
+
+To verify the **disappearing messages** flow: tap the timer icon in the message input → pick `1m` → send a message → watch it tick down and self-destruct on both peers.
+
+To verify **reply quotes**: long-press any message → Reply → send. The new message renders with the WhatsApp-style green quote box, persisted across restart.
+
+### 3. Test the on-chain marketplace (Solana Devnet)
+- **Network:** the wallet defaults to Devnet in this build — no flag needed.
+- **Faucet:** Wallet tab → Receive → copy the Solana address → paste into [faucet.solana.com](https://faucet.solana.com) and request 1 SOL.
+- **List a cNFT:** Wallet tab → NFTs → tap any cNFT in your wallet → **List for sale** → set a price. Listing fee 0%.
+- **Buy a cNFT:** another wallet (or the second test device) opens the marketplace → buy → settlement is atomic. **50% of the sale price routes to the verified-creator community fund** in the same transaction. The community-fund address is shown on the listing detail.
+- **Verify on-chain:** the transaction signature shown after the buy resolves on [Solana Explorer (devnet)](https://explorer.solana.com/?cluster=devnet) and the community-fund split shows as a discrete transfer instruction.
+
+Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketplace) on branch `feature/snowchat-community-fee-share`. Program ID is also printed under Settings → About in the app.
+
+### 4. Test the on-device AI (optional, ≥ 8 GB RAM device only)
+- Open the **SnowChat AI** tab. On a device with less than 8 GB RAM (e.g. iPhone 13) the app blocks the model download and shows an "AI unavailable on this device" dialog — that gate is the test. On a 8 GB+ device the model downloads on first tap and runs **fully on-device** (no server round-trip — verify with airplane mode).
+- iOS Korean translation uses the **Apple Translation API**; toggle it via the 🅰 icon in any chat.
+
+### 5. Test the VoIP voice call
+- From a 1:1 conversation, tap the 📞 phone icon. Both peers can receive on locked screen (CallKit on iOS, Telecom ConnectionService on Android). Decline / accept / end-call all work cold-launch.
+
+### What's *not* in this build
+- Mainnet — pending Phase 0 (legal entity, KYC, third-party audit).
+- App Store iOS distribution — TestFlight only.
+- Korean UI — locked to English at the OS level for V1 (the CallKit banner stays consistent on Korean-locale devices).
+
+---
+
 ## Features
 
 ### 🔐 E2EE Messaging — Pure Dart Signal Protocol

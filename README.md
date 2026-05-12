@@ -8,7 +8,7 @@
 
 E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B270-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B270/snowchat-v1.0.0%2B270-20260508.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B285-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B285/snowchat-v1.0.0%2B285-20260512.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
@@ -32,7 +32,7 @@ Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked,
 
 ### Android
 
-**[⬇️ snowchat-v1.0.0+270-20260508.apk](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B270/snowchat-v1.0.0%2B270-20260508.apk)**
+**[⬇️ snowchat-v1.0.0+285-20260512.apk](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B285/snowchat-v1.0.0%2B285-20260512.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 

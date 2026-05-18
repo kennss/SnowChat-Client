@@ -219,4 +219,4 @@ If you fork or run a network-modified version of this app, you must publish your
 
 **Kennt Kim** — [Calida Lab](https://snowchat.calidalab.ai)
 
-Built solo over four weeks. Submitting to [Colosseum Frontier](https://www.colosseum.com/) (Solana hackathon, 2026).
+Submitted to [Colosseum Frontier](https://www.colosseum.com/) (Solana hackathon, 2026).

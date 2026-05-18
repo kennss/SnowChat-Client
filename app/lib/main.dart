@@ -3,7 +3,20 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-06 (Fix E — _firebaseBackgroundHandler now branches on
+/// @lastUpdated 2026-05-11 (App-wide screen capture protection — moved
+///              ScreenProtector.protectDataLeakageOn() + preventScreenshotOn()
+///              from per-screen wiring (5 screens) to single one-shot init in
+///              main() before runApp. Never toggled off — every SnowChat
+///              screen is sensitive by policy (Zero-Knowledge + Sovereignty
+///              Stack narrative). Side benefit: the iOS "Off() at dispose
+///              races with audio session teardown → 30s freeze after end
+///              button" workaround (active_call_screen 2026-04-17) no longer
+///              needed because Off() is never called. Android FLAG_SECURE
+///              blocks capture + recording + thumbnails. iOS uses screen_protector
+///              UISecureTextField wrap — Flutter widget capture shows black,
+///              but texture-backed GPU surfaces (WebRTC video, raw bitmap
+///              renders) may bypass — verify visually after install. Earlier
+///              2026-05-06 (Fix E — _firebaseBackgroundHandler now branches on
 ///              type='call_cancel' to dismiss Telecom Connection from the BG
 ///              isolate without booting the main engine. Solves the cold-start
 ///              "Galaxy keeps ringing after iPhone cancels" matrix that only
@@ -25,6 +38,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:screen_protector/screen_protector.dart';
 import 'app/app.dart';
 import 'core/call/voip_push_handler.dart';
 import 'core/network/api_endpoints.dart';
@@ -157,6 +171,24 @@ void main() async {
   // refresh JWT". Without this, a parallel isolate could trigger a refresh
   // that wins the server-side jti CAS and clobbers main isolate's snapshot.
   TokenManager.registerMainIsolateOwner();
+
+  // App-wide screen capture protection — one-shot init, never toggled off.
+  // Every SnowChat screen is sensitive by policy; rather than per-screen wiring
+  // (which the codebase had on 5 screens until 2026-05-11) we apply protection
+  // globally. Recipients are also protected automatically: when both sides run
+  // SnowChat the sent messages are blocked from screenshot on the receiving
+  // device too. Side-channel attacks (camera-of-another-phone) remain unblockable
+  // — communicate that honestly in marketing copy.
+  //
+  // Android: FLAG_SECURE — blocks screenshot, screen recording, recents
+  // thumbnail. Official Android API, fully reliable.
+  // iOS: UISecureTextField wrap (screen_protector implementation) — Flutter
+  // widget content renders black in screenshots / screen recording / AirPlay
+  // mirroring. Undocumented Apple behavior used by Signal, Bitwarden, 1Password.
+  // Texture-backed GPU surfaces (WebRTC video, raw bitmap renders) may bypass —
+  // those code paths need explicit verification post-install. CLAUDE.md §6.
+  await ScreenProtector.protectDataLeakageOn();
+  await ScreenProtector.preventScreenshotOn();
 
   // Force dark status bar
   SystemChrome.setSystemUIOverlayStyle(

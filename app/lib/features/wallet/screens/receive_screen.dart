@@ -6,7 +6,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; Multi-Wallet Phase 4A in-screen wallet picker)
+/// @lastUpdated 2026-05-11 (share_plus 13.x API migration — iOS 26 iPhone silent fail
+///              when sharePositionOrigin missing. Previously: 2026-04-26.)
 ///
 /// @functions
 ///  - ReceiveScreen: receive screen widget showing QR code and wallet address
@@ -184,14 +185,22 @@ class _ReceiveScreenState extends ConsumerState<ReceiveScreen> {
                 SizedBox(
                   width: double.infinity,
                   height: 48,
-                  child: OutlinedButton.icon(
+                  child: Builder(builder: (btnContext) => OutlinedButton.icon(
                     onPressed: address == '---'
                         ? null
                         : () {
                             final subject = entry == null
                                 ? 'My Solana address'
                                 : '${entry.label} address';
-                            Share.share(address, subject: subject);
+                            final box = btnContext.findRenderObject()
+                                as RenderBox?;
+                            SharePlus.instance.share(ShareParams(
+                              text: address,
+                              subject: subject,
+                              sharePositionOrigin: box != null
+                                  ? box.localToGlobal(Offset.zero) & box.size
+                                  : null,
+                            ));
                           },
                     icon: const Icon(Icons.share, size: 18),
                     label: const Text('Share'),
@@ -207,7 +216,7 @@ class _ReceiveScreenState extends ConsumerState<ReceiveScreen> {
                         fontSize: 15,
                       ),
                     ),
-                  ),
+                  )),
                 ),
               ],
             ),

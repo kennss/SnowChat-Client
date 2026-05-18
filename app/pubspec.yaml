@@ -1,7 +1,7 @@
 name: snowchat
 description: E2EE Messenger + Solana Wallet
 publish_to: 'none'
-version: 1.0.0+270
+version: 1.0.0+295
 
 environment:
   sdk: ^3.11.0
@@ -58,9 +58,20 @@ dependencies:
   flutter_local_notifications: ^18.0.0
   firebase_core: ^3.0.0
   firebase_messaging: ^15.0.0
+  # App icon badge (Samsung One UI + Sony + Huawei + Apex launcher; iOS reads
+  # aps.badge from APNs payload). Pixel/AOSP shows notification dot via
+  # channel.showBadge, so we don't drive this plugin for Pixel — the dot path
+  # covers it. flutter_app_badger 1.5.0 was the first pick but it's missing
+  # the AGP 8 namespace declaration → assembleRelease fails. app_badge_plus
+  # is the actively-maintained fork that declares namespace cleanly.
+  app_badge_plus: ^1.1.2
 
   # Voice Messages
-  # record: ^5.0.5  # TODO: voice recording — disabled due to record_linux incompatibility
+  # record 5.0.5 was disabled in 2026 due to record_linux incompatibility.
+  # 6.x line declares platforms cleanly (iOS/Android/macOS/Windows/Web) so
+  # the linux failure mode is gone — re-enabled 2026-05-11 to back the voice
+  # message UI wiring (input-bar long-press → VoiceRecorder overlay).
+  record: ^6.2.0
   audioplayers: ^6.0.0
 
   # HTTP
@@ -70,7 +81,10 @@ dependencies:
   freezed_annotation: ^2.4.0
   json_annotation: ^4.8.0
   path_provider: ^2.1.0
-  share_plus: ^7.2.0
+  share_plus: ^12.0.1          # 2026-05-11: 7.x → 12.x. iOS 26 iPhone share sheet silent fail
+                               # (sharePositionOrigin 누락 시 no-op) 회피 — fix landed in 12.0.1.
+                               # SharePlus.instance.share(ShareParams(...)) API 로 마이그레이션 (3 call site).
+                               # 13.x 는 win32 ^6.0 요구 → device_info_plus 12.4 (win32 ^5.11) 와 충돌.
   url_launcher: ^6.2.0
   uuid: ^4.2.0
   convert: ^3.1.1
@@ -78,6 +92,11 @@ dependencies:
   file_picker: ^8.1.0
   flutter_image_compress: ^2.3.0
   open_filex: ^4.5.0
+  # PDF viewer (Apache-2.0, native PDFKit/PdfRenderer wrapper) — added 2026-05-11
+  # for in-app disappearing PDF viewing. Routing files through OpenFilex to
+  # external apps exposes Save/Share outside our control; pdfx renders inside
+  # our process so the disappearing TTL promise is preserved.
+  pdfx: ^2.9.2
   solana: ^0.31.2+1
   fl_chart: ^1.2.0
   connectivity_plus: ^7.1.1

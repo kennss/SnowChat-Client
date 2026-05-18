@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-20)
+/// @lastUpdated 2026-05-11 (Galaxy S23 One UI gesture bar clipped "Don't delete" — enable
+///              modal useSafeArea + bump trailing breathing space. Previously: 2026-04-26.)
 ///
 /// @functions
 ///  - DisappearingTimerSelector: bottom-sheet widget showing the 4 TTL options as radio buttons
@@ -39,6 +40,10 @@ Future<int?> showDisappearingTimerSelector(
   return showModalBottomSheet<int?>(
     context: context,
     backgroundColor: Colors.transparent,
+    // Samsung One UI renders a gesture-bar overlay at the bottom even when the
+    // app content technically clears the inset — without useSafeArea the last
+    // option ("Don't delete") sat under that overlay and was untappable.
+    useSafeArea: true,
     builder: (context) => DisappearingTimerSelector(currentTtl: currentTtl),
   );
 }
@@ -110,7 +115,7 @@ class DisappearingTimerSelector extends StatelessWidget {
               final isSelected = option.seconds == currentTtl;
               return _buildOption(context, option, isSelected);
             }),
-            const SizedBox(height: 12),
+            const SizedBox(height: 24),
           ],
         ),
       ),

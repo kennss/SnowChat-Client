@@ -81,7 +81,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>SnowChat AI uses location to answer location-based questions. All data stays on-device.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>SnowChat uses the microphone for end-to-end encrypted voice calls. Audio is transmitted peer-to-peer over DTLS-SRTP and never stored.</string>
+	<string>SnowChat uses the microphone for end-to-end encrypted voice calls and voice messages. Audio is transmitted peer-to-peer over DTLS-SRTP (calls) or as an encrypted attachment (voice messages), and never stored on our servers in plaintext.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>SnowChat AI uses photo access to search your photos. All data stays on-device.</string>
 	<key>UIApplicationSceneManifest</key>

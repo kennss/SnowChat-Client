@@ -3,7 +3,16 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-03-30)
+/// @lastUpdated 2026-05-11 (Route taps on PDF / TXT / MD attachments to our
+///              in-app PdfViewerScreen / TextFileViewerScreen instead of
+///              OpenFilex. The in-app viewers hide their Share button when
+///              message.expiresAt != null (Tier 1) so disappearing PDF/text
+///              files can no longer be saved out via the system share sheet.
+///              Other file types still hand off to OpenFilex — the sender-
+///              side whitelist in chat_provider blocks them in disappearing
+///              mode anyway, so non-disappearing files are the only remaining
+///              external-handoff path. Earlier 2026-04-26 header English
+///              translation; 2026-03-30 init.)
 ///
 /// @functions
 ///  - FileMessageBubble: file-message bubble StatefulWidget
@@ -22,6 +31,8 @@ import '../../../shared/constants/sizes.dart';
 import '../../../core/storage/tables/attachments_table.dart';
 import '../models/message.dart';
 import '../providers/attachment_provider.dart';
+import '../screens/pdf_viewer_screen.dart';
+import '../screens/text_file_viewer_screen.dart';
 import 'image_message_bubble.dart' show resolveAttachmentPath;
 
 class FileMessageBubble extends ConsumerStatefulWidget {
@@ -180,7 +191,7 @@ class _FileMessageBubbleState extends ConsumerState<FileMessageBubble> {
             builder: (context, snap) {
               if (snap.data == null) return _iconButton(Icons.download_rounded);
               return GestureDetector(
-                onTap: () => OpenFilex.open(snap.data!),
+                onTap: () => _openAttachment(snap.data!),
                 child: _iconButton(Icons.open_in_new_rounded),
               );
             },
@@ -249,8 +260,54 @@ class _FileMessageBubbleState extends ConsumerState<FileMessageBubble> {
     );
   }
 
-  Future<void> _openFile() async {
-    debugPrint('[FileMessageBubble] Opening file: ${widget.message.metadata?['fileName']}');
+  /// Route a tap-to-open based on MIME — in-app viewer for the types we can
+  /// render ourselves, OpenFilex hand-off for everything else.
+  ///
+  /// In-app viewers (PDF / TXT / MD) keep the decrypted file inside our
+  /// process, so the disappearing TTL promise is preserved end-to-end:
+  /// PdfViewerScreen and TextFileViewerScreen both hide their Share button
+  /// when `message.expiresAt != null` (Tier 1). For non-disappearing files
+  /// the in-app viewer is still a nicer UX than the external one, but the
+  /// difference is purely cosmetic in that case.
+  ///
+  /// Other MIME types fall through to OpenFilex — that path is only reachable
+  /// outside disappearing mode because the sender-side whitelist
+  /// (`_isDisappearingAllowedMime` in chat_provider.dart) blocks anything
+  /// other than image / pdf / text in disappearing mode.
+  Future<void> _openAttachment(String resolvedPath) async {
+    final mimeType =
+        (widget.message.metadata?['mimeType'] as String? ?? '').toLowerCase();
+    final fileName =
+        widget.message.metadata?['fileName'] as String? ?? widget.message.plaintext;
+
+    if (mimeType == 'application/pdf') {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PdfViewerScreen(
+            message: widget.message,
+            pdfPath: resolvedPath,
+            fileName: fileName,
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (mimeType.startsWith('text/')) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => TextFileViewerScreen(
+            message: widget.message,
+            filePath: resolvedPath,
+            fileName: fileName,
+            mimeType: mimeType,
+          ),
+        ),
+      );
+      return;
+    }
+
+    await OpenFilex.open(resolvedPath);
   }
 
   /// Get the appropriate file icon based on mimeType.

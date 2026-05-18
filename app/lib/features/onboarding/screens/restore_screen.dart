@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-05-11 (Removed per-screen ScreenProtector wiring — now
+///              applied app-wide in main.dart. Earlier 2026-04-26 header +
+///              inline English translation.)
 ///
 /// @functions
 ///  - RestoreScreen: identity-restore ConsumerStatefulWidget
@@ -12,7 +14,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:screen_protector/screen_protector.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/loading_overlay.dart';
@@ -35,21 +36,12 @@ class _RestoreScreenState extends ConsumerState<RestoreScreen> {
   bool get _isValidWordCount =>
       _words.length == 12 || _words.length == 24;
 
-  @override
-  void initState() {
-    super.initState();
-    // Mnemonic input — paste / IME may expose. Block screenshots (audit P1 A-7).
-    ScreenProtector.protectDataLeakageOn();
-    ScreenProtector.preventScreenshotOn();
-  }
+  // Screen capture protection (audit P1 A-7) is applied app-wide in main.dart
+  // — no per-screen wiring needed here.
 
   @override
   void dispose() {
     _controller.dispose();
-    Future<void>(() {
-      ScreenProtector.protectDataLeakageOff();
-      ScreenProtector.preventScreenshotOff();
-    });
     super.dispose();
   }
 

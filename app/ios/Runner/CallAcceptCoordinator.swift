@@ -33,9 +33,24 @@
 // @author      Kennt Kim
 // @company     Calida Lab
 // @created     2026-04-30
-// @lastUpdated 2026-04-29 (v195: 410 → softCleanup, do NOT endAllCalls — Dart
-//              parallel-fetch path consumed envelopes; native dismiss killed
-//              the call user just answered. Field-confirmed via Console.app)
+// @lastUpdated 2026-05-11 (three changes:
+//              1. active-call guard in expirePending_locked — skip endAllCalls
+//                 when an active call is detected. v195 carved out 410 via
+//                 softCleanup; this is the symmetric fix for
+//                 bgTaskExpired/watchdog cases. Field repro: iPhone callee
+//                 call dropped at active+30s after iOS clamped the 30s
+//                 UIBackgroundTask.
+//              2. Guard hardened to defense-in-depth: primary check is
+//                 SwiftFlutterCallkitIncomingPlugin.sharedInstance.activeCalls()
+//                 which reads the fork's PERSISTENT CallController (synced
+//                 since launch). Backup check is CXCallController() throwaway.
+//                 Either non-empty → skip dismiss + log which source matched
+//                 so the next repro is definitively diagnosable.
+//              3. logSafe NSLog → os_log("%{public}@"). NSLog string-interp
+//                 was auto-redacted to <private> in unified logging, so the
+//                 entire native fetch trace was invisible in Console.app
+//                 during diagnosis. Zero-Trace preserved (still nonce.prefix(8)
+//                 only). Previously: 2026-04-29 (v195 410 carve-out).)
 //
 // @functions
 //  - handleAccept(nonce, action, call): fulfill + start fetch flow
@@ -55,6 +70,7 @@ import UIKit
 import CallKit
 import Flutter
 import flutter_callkit_incoming
+import os.log
 
 @objc final class CallAcceptCoordinator: NSObject {
 
@@ -398,8 +414,41 @@ import flutter_callkit_incoming
         endBackgroundTask(for: nonce)
         completedNonces[nonce] = reason
         // Dismiss CallKit so user isn't stuck on "answered" UI with no audio.
+        //
+        // Active-call guard (2026-05-11): the Dart parallel-fetch path may have
+        // already injected envelopes and accepted the call by the time we get
+        // here — happens on bgTaskExpired/watchdog when iOS clamps our 30s
+        // background task while the user is mid-conversation. Dismissing then
+        // would kill the active call. v195 carved out the 410 case via
+        // softCleanup; this guard covers the bgTaskExpired/watchdog cases
+        // symmetrically.
+        //
+        // Defense-in-depth: two state sources, must both be empty to dismiss.
+        // (a) plugin.activeCalls() — reads the fork's PERSISTENT CallController
+        //     (alive since launch), so .callObserver.calls is fully synced. Most
+        //     reliable.
+        // (b) CXCallController() throwaway — backup. Apple docs say the
+        //     observer initializes synchronously on the current thread, but
+        //     field repros suggest a cold instance can race-return empty on
+        //     first read.
         DispatchQueue.main.async {
-            SwiftFlutterCallkitIncomingPlugin.sharedInstance?.endAllCalls()
+            let plugin = SwiftFlutterCallkitIncomingPlugin.sharedInstance
+            let pluginCalls = plugin?.activeCalls() ?? []
+            let pluginActive = !pluginCalls.isEmpty
+            let systemActive = CXCallController().callObserver.calls.contains { !$0.hasEnded }
+            if pluginActive || systemActive {
+                CallAcceptCoordinator.logSafe(
+                    "expirePending \(reason) — active call present "
+                    + "(plugin=\(pluginActive) system=\(systemActive)), skip endAllCalls "
+                    + "nonce=\(nonce.prefix(8))"
+                )
+            } else {
+                CallAcceptCoordinator.logSafe(
+                    "expirePending \(reason) — no active call, dismiss CallKit "
+                    + "nonce=\(nonce.prefix(8))"
+                )
+                plugin?.endAllCalls()
+            }
         }
         logSafe("expirePending \(reason) nonce=\(nonce.prefix(8))")
     }
@@ -420,7 +469,19 @@ import flutter_callkit_incoming
 
     // MARK: – Logging (Zero-Trace)
 
+    /// Unified-logging channel. Swift NSLog interpolates the message via `%@`
+    /// which iOS auto-redacts to `<private>` in Console.app — we hit this in
+    /// field repro on 2026-05-11 (active-call drop diagnosis): every
+    /// `[CallAcceptCoordinator]` line was masked, so we couldn't see which
+    /// fetch path stalled. os_log with `%{public}@` keeps Zero-Trace (only
+    /// nonce.prefix(8) ever reaches the message) while making the trace
+    /// visible to Console.app filters.
+    private static let osLog = OSLog(
+        subsystem: "ai.calidalab.snowchat",
+        category: "voip.coordinator"
+    )
+
     private static func logSafe(_ msg: String) {
-        NSLog("[CallAcceptCoordinator] \(msg)")
+        os_log("[CallAcceptCoordinator] %{public}@", log: osLog, type: .default, msg)
     }
 }

@@ -187,6 +187,13 @@ class SnowChatApp extends ConsumerWidget {
         // null→non-null transition triggers retryTokenRegistration().
         ref.watch(pushTokenAutoSyncProvider);
 
+        // App icon badge updater — keeps the launcher count in sync with
+        // drift's unread sum (Samsung One UI via ShortcutBadger / Pixel via
+        // notification dot / iOS via APNs + this fallback while the app is
+        // alive). Watching here keeps the underlying stream subscription
+        // alive for the lifetime of the root widget.
+        ref.watch(appBadgeUpdaterProvider);
+
         // Phase 8.1-D: Wire notification tap → chat room navigation
         ref.read(notificationServiceProvider).onNotificationTap =
             (conversationId) {

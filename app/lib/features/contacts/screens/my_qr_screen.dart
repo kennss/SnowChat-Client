@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-05-11 (share_plus 13.x API migration — iOS 26 iPhone silent fail
+///              when sharePositionOrigin missing. Previously: 2026-04-26.)
 ///
 /// @functions
 ///  - MyQrScreen: ConsumerWidget that displays my QR code
@@ -116,10 +117,12 @@ class MyQrScreen extends ConsumerWidget {
                   const SizedBox(width: SnowSizes.md),
 
                   // Share button
-                  OutlinedButton.icon(
-                    onPressed: () => _shareId(myId),
-                    icon: const Icon(Icons.share_rounded, size: 18),
-                    label: const Text('Share'),
+                  Builder(
+                    builder: (btnContext) => OutlinedButton.icon(
+                      onPressed: () => _shareId(btnContext, myId),
+                      icon: const Icon(Icons.share_rounded, size: 18),
+                      label: const Text('Share'),
+                    ),
                   ),
                 ],
               ),
@@ -141,7 +144,14 @@ class MyQrScreen extends ConsumerWidget {
   }
 
   /// Share SnowChat ID as text via share_plus.
-  void _shareId(String id) {
-    Share.share('Add me on SnowChat: $id');
+  /// sharePositionOrigin required on iPad and iOS 26 iPhone (share_plus ≥12.0.1).
+  void _shareId(BuildContext context, String id) {
+    final box = context.findRenderObject() as RenderBox?;
+    SharePlus.instance.share(ShareParams(
+      text: 'Add me on SnowChat: $id',
+      sharePositionOrigin: box != null
+          ? box.localToGlobal(Offset.zero) & box.size
+          : null,
+    ));
   }
 }

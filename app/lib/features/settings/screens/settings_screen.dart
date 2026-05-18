@@ -3,7 +3,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-05-11 (Privacy section: added read-only status tile
+///              "Screenshot blocked — always on" at top. App-wide capture
+///              protection is wired one-shot in main.dart and cannot be
+///              toggled — this tile exists so users see the policy and don't
+///              think their phone is malfunctioning. Earlier 2026-04-26
+///              header + inline English translation.)
 ///
 /// @functions
 ///  - SettingsScreen: settings ConsumerWidget
@@ -89,6 +94,19 @@ class SettingsScreen extends ConsumerWidget {
 
           // Privacy section
           _buildSectionHeader('Privacy'),
+          _buildStatusTile(
+            icon: Icons.no_photography_rounded,
+            title: 'Screenshot Protection',
+            // Two-line subtitle: status + honest platform caveat. Users see
+            // the policy explicitly so they don't think their phone is broken
+            // when a screenshot comes out black, and the iOS line manages
+            // expectations (texture-backed GPU surfaces may bypass).
+            subtitle:
+                'Always on. Screenshots and screen recordings show black.\n'
+                'iOS: best-effort (Apple does not allow apps to fully block '
+                'captures). Out-of-band photos with another camera cannot '
+                'be prevented.',
+          ),
           _buildSwitchTile(
             icon: Icons.visibility_rounded,
             title: 'Read Receipts',
@@ -293,6 +311,49 @@ class SettingsScreen extends ConsumerWidget {
         value: value,
         onChanged: onChanged,
         activeColor: SnowColors.primary,
+      ),
+    );
+  }
+
+  /// Read-only status tile — like a switch tile but no toggle, no tap.
+  /// Used for policies the user cannot configure (e.g. always-on screenshot
+  /// protection). The "Always on" badge marks it as informational not interactive.
+  Widget _buildStatusTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: SnowColors.textSecondary, size: 22),
+      title: Text(
+        title,
+        style: const TextStyle(
+          color: SnowColors.textPrimary,
+          fontSize: 15,
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(
+          color: SnowColors.textTertiary,
+          fontSize: 12,
+          height: 1.4,
+        ),
+      ),
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: SnowColors.primary.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Text(
+          'Always on',
+          style: TextStyle(
+            color: SnowColors.primary,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ),
     );
   }

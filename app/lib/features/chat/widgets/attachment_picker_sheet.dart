@@ -3,7 +3,18 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-02
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase F: added Send Asset option — 1:1 only)
+/// @lastUpdated 2026-05-11 (Tier 2A expanded: in disappearing mode the "File"
+///              option stays visible but the picker is constrained to PDF /
+///              TXT / MD via FilePicker.platform.pickFiles(type:
+///              FileType.custom, allowedExtensions:[...]). These three types
+///              have in-app viewers (pdf_viewer_screen, text_file_viewer_screen,
+///              image_viewer_screen), so the decrypted content never reaches
+///              an external system viewer where Save/Share could be invoked.
+///              Office / zip / binary files remain blocked — Flutter cannot
+///              render them in-app without OpenFilex handoff. Earlier same-day
+///              "File" option was hidden entirely; this is the expanded
+///              whitelist. 2026-04-26 header + inline English; 2026-04-20
+///              Wallet V2 Phase F Send Asset 1:1 only.)
 ///
 /// @functions
 ///  - AttachmentPickerSheet: bottom-sheet widget showing attachment-pick options (+ add friend + Send Asset)
@@ -30,12 +41,21 @@ class AttachmentPickerSheet extends StatelessWidget {
   /// Wallet V2 Phase 1 — shown only in 1:1 rooms (group/channel is a V1 limit).
   final VoidCallback? onSendAsset;
 
+  /// Tier 2A — when the conversation has an active disappearing TTL we
+  /// restrict attachments to photos only. The "File" option is hidden and
+  /// a banner explains the restriction. Once a non-image is handed to
+  /// OpenFilex the system viewer exposes save/forward outside our control,
+  /// so the disappearing TTL promise can be bypassed. Image attachments
+  /// stay in our in-app ImageViewer (Tier 1 already hides Share/Save there).
+  final bool disappearingActive;
+
   const AttachmentPickerSheet({
     super.key,
     required this.onImagesSelected,
     required this.onFileSelected,
     this.onAddFriend,
     this.onSendAsset,
+    this.disappearingActive = false,
   });
 
   @override
@@ -55,6 +75,30 @@ class AttachmentPickerSheet extends StatelessWidget {
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
+            if (disappearingActive)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.timer_rounded,
+                      size: 14,
+                      color: SnowColors.primary,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Disappearing mode — photos, PDF, and text only',
+                        style: TextStyle(
+                          color: SnowColors.primary.withValues(alpha: 0.85),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             _buildOption(
               context,
               icon: Icons.photo_library_rounded,
@@ -69,11 +113,14 @@ class AttachmentPickerSheet extends StatelessWidget {
               label: 'Camera',
               onTap: () => _takePhoto(context),
             ),
+            // File option: in disappearing mode the picker is restricted to
+            // PDF / TXT / MD (we have in-app viewers for these — no OpenFilex
+            // handoff). In normal mode any file type goes through.
             _buildOption(
               context,
               icon: Icons.insert_drive_file_rounded,
               color: Colors.blue,
-              label: 'File',
+              label: disappearingActive ? 'PDF / Text file' : 'File',
               onTap: () => _pickFile(context),
             ),
             if (onAddFriend != null)
@@ -161,7 +208,14 @@ class AttachmentPickerSheet extends StatelessWidget {
 
   Future<void> _pickFile(BuildContext context) async {
     Navigator.pop(context);
-    final result = await FilePicker.platform.pickFiles();
+    // In disappearing mode, constrain the picker to types we can render
+    // in-app: PDF / TXT / MD. Outside disappearing mode, any file goes
+    // through.
+    final result = await FilePicker.platform.pickFiles(
+      type: disappearingActive ? FileType.custom : FileType.any,
+      allowedExtensions:
+          disappearingActive ? const ['pdf', 'txt', 'md'] : null,
+    );
     if (result != null && result.files.isNotEmpty) {
       final file = result.files.first;
       if (file.path != null) {
@@ -188,6 +242,10 @@ class AttachmentPickerSheet extends StatelessWidget {
         return 'image/webp';
       case 'pdf':
         return 'application/pdf';
+      case 'txt':
+        return 'text/plain';
+      case 'md':
+        return 'text/markdown';
       case 'doc':
       case 'docx':
         return 'application/msword';

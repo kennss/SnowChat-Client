@@ -3,7 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-08 enable share/save button in imagePath mode as well)
+/// @lastUpdated 2026-05-11 (Tier 1 disappearing-message protection: Share/Save
+///              button hidden when message.expiresAt != null. Disappearing
+///              promise would be a lie if recipient could Share → Save Image
+///              and create a permanent copy that outlives the TTL. App-wide
+///              FLAG_SECURE / iOS secureTextEntry already block screenshots;
+///              this closes the in-app save path. Honest limit: out-of-band
+///              camera capture remains unblockable. Earlier 2026-04-26 header
+///              English translation; 2026-04-08 enable share/save in imagePath
+///              mode.)
 ///
 /// @functions
 ///  - ImageViewerScreen: full-screen image viewer StatefulWidget
@@ -203,8 +211,13 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                           // Previously gated only on imageBytes which hid the
                           // button for downloaded attachments (always passed
                           // via imagePath).
-                          if (widget.imagePath != null ||
-                              widget.imageBytes != null)
+                          //
+                          // Tier 1 disappearing protection: hide entirely when
+                          // the message has an expiry. Save → permanent copy
+                          // would defeat the TTL promise.
+                          if ((widget.imagePath != null ||
+                                  widget.imageBytes != null) &&
+                              widget.message?.expiresAt == null)
                             IconButton(
                               icon: const Icon(
                                 Icons.ios_share_rounded,

@@ -3,20 +3,36 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-03-30)
+/// @lastUpdated 2026-05-12 (Moved off `metadata['localPath']` onto the
+///              attachmentWatchProvider stream — the same path
+///              ImageMessageBubble / FileMessageBubble use. Sender now
+///              writes a real attachment row in chat_provider; recipient
+///              gets one from MessageQueue._processIncomingAttachments
+///              after the encrypted blob downloads and decrypts. Until
+///              this round voice was a special case that only ever
+///              consulted in-memory metadata, so cross-device delivery +
+///              receiver-side playback never worked — the metadata-only
+///              path didn't even include fileId. resolveAttachmentPath
+///              handles iOS container UUID rotation. Earlier 2026-04-26
+///              header English translation; 2026-03-30 init.)
 ///
 /// @functions
-///  - VoiceMessageBubble: StatefulWidget rendering the voice-message bubble
+///  - VoiceMessageBubble: ConsumerStatefulWidget rendering the voice-message bubble
 ///  - _VoiceMessageBubbleState: manages playback state, speed toggle, and progress bar
 
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/storage/database.dart';
+import '../../../core/storage/tables/attachments_table.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../models/message.dart';
+import '../providers/attachment_provider.dart';
+import 'image_message_bubble.dart' show resolveAttachmentPath;
 
 /// Voice message bubble with play/pause, waveform, duration, and speed toggle.
 ///
@@ -25,7 +41,7 @@ import '../models/message.dart';
 /// - Waveform progress bar in the middle
 /// - Duration label on the right
 /// - Speed toggle: 1x → 1.5x → 2x
-class VoiceMessageBubble extends StatefulWidget {
+class VoiceMessageBubble extends ConsumerStatefulWidget {
   final Message message;
   final bool isMine;
 
@@ -36,10 +52,10 @@ class VoiceMessageBubble extends StatefulWidget {
   });
 
   @override
-  State<VoiceMessageBubble> createState() => _VoiceMessageBubbleState();
+  ConsumerState<VoiceMessageBubble> createState() => _VoiceMessageBubbleState();
 }
 
-class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
+class _VoiceMessageBubbleState extends ConsumerState<VoiceMessageBubble> {
   final AudioPlayer _player = AudioPlayer();
 
   bool _isPlaying = false;
@@ -47,6 +63,11 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
   Duration _position = Duration.zero;
   Duration _totalDuration = Duration.zero;
   double _playbackSpeed = 1.0;
+
+  /// Resolved absolute path (from the attachment row). Null until the
+  /// download completes on the recipient side.
+  String? _resolvedPath;
+  String? _lastResolvedFromStored;
 
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<PlayerState>? _stateSub;
@@ -67,8 +88,7 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
       setState(() {
         _position = pos;
         if (_totalDuration.inMilliseconds > 0) {
-          _progress =
-              pos.inMilliseconds / _totalDuration.inMilliseconds;
+          _progress = pos.inMilliseconds / _totalDuration.inMilliseconds;
           _progress = _progress.clamp(0.0, 1.0);
         }
       });
@@ -102,24 +122,60 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
     super.dispose();
   }
 
+  /// Kick a resolve when the attachment row's localPath changes. Avoids
+  /// re-resolving on every Riverpod rebuild by short-circuiting on the
+  /// stored path string.
+  void _maybeResolve(LocalAttachment? att) {
+    final stored = att?.localPath;
+    if (stored == null) {
+      if (_resolvedPath != null || _lastResolvedFromStored != null) {
+        setState(() {
+          _resolvedPath = null;
+          _lastResolvedFromStored = null;
+        });
+      }
+      return;
+    }
+    if (stored == _lastResolvedFromStored && _resolvedPath != null) return;
+
+    _lastResolvedFromStored = stored;
+    resolveAttachmentPath(stored).then((abs) {
+      if (!mounted) return;
+      if (abs == _resolvedPath) return;
+      setState(() => _resolvedPath = abs);
+    });
+  }
+
   Future<void> _togglePlayback() async {
     if (_isPlaying) {
       await _player.pause();
-    } else {
-      final fileId = widget.message.metadata?['fileId'] as String?;
-      if (fileId == null) return;
-
-      // In production, this would download and decrypt the file first.
-      // For now, attempt to play from a local cache path if available.
-      final localPath = widget.message.metadata?['localPath'] as String?;
-      if (localPath != null) {
-        await _player.play(DeviceFileSource(localPath));
-      } else {
-        debugPrint('[VoiceMessageBubble] No local audio path available');
-      }
-
-      await _player.setPlaybackRate(_playbackSpeed);
+      return;
     }
+
+    final path = _resolvedPath;
+    if (path == null) {
+      _showError('Audio not ready yet');
+      return;
+    }
+
+    try {
+      await _player.play(DeviceFileSource(path));
+      await _player.setPlaybackRate(_playbackSpeed);
+    } catch (e, st) {
+      debugPrint('[VoiceMessageBubble] play threw: $e\n$st');
+      _showError('Playback failed: $e');
+    }
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   void _toggleSpeed() {
@@ -147,6 +203,33 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
     final displayDuration = _isPlaying
         ? _position
         : Duration(seconds: durationSeconds);
+
+    final attachments = ref.watch(attachmentWatchProvider(widget.message.id));
+    final att = attachments.maybeWhen(
+      data: (atts) => atts.isEmpty ? null : atts.first,
+      orElse: () => null,
+    );
+    final isDownloading =
+        att != null && att.transferState == TransferState.started;
+    final isFailed =
+        att != null && att.transferState == TransferState.failed;
+
+    // Schedule resolve outside build to avoid setState-during-build.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _maybeResolve(att);
+    });
+
+    final playReady = _resolvedPath != null;
+    final IconData playIcon = _isPlaying
+        ? Icons.pause_rounded
+        : isDownloading
+            ? Icons.downloading_rounded
+            : isFailed
+                ? Icons.error_outline_rounded
+                : playReady
+                    ? Icons.play_arrow_rounded
+                    : Icons.hourglass_empty_rounded;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -184,7 +267,7 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
                   children: [
                     // Play/Pause button
                     GestureDetector(
-                      onTap: _togglePlayback,
+                      onTap: playReady ? _togglePlayback : null,
                       child: Container(
                         width: 36,
                         height: 36,
@@ -195,9 +278,7 @@ class _VoiceMessageBubbleState extends State<VoiceMessageBubble> {
                               : SnowColors.primary.withValues(alpha: 0.2),
                         ),
                         child: Icon(
-                          _isPlaying
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
+                          playIcon,
                           size: 22,
                           color: widget.isMine
                               ? SnowColors.bubbleOutText

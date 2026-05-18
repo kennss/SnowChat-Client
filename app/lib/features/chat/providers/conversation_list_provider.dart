@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-13 fix: removeConversation matches both c.id and c.groupId)
+/// @lastUpdated 2026-05-14 (loadFromServer drift sync now runs ConversationDao.dedupeDirectByPeer afterward to heal Sealed Sender phantom direct rows whose unread counts were stuck in watchTotalUnreadCount's SUM but invisible in the UI)
 ///  - [DIAG] added enter/skip logging for _listenForIncomingMessages / _listenForGroupEvents
 ///  - Fix: listen for group_invite to auto-load group on creation
 ///  - Fix: _drainConversation() now stores metadata for file/image messages
@@ -168,6 +168,57 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       }
     };
 
+    // Sealed Sender 1:1 — the live socket listener can't update unread /
+    // preview because the wire-level envelope hides the sender. MessageQueue
+    // fires this callback after unseal + drift insert so the in-memory
+    // state mirrors what _listenForIncomingMessages does for non-sealed.
+    _ref.read(messageQueueProvider).onSealedMessageDecoded =
+        (convId, senderSnowId, preview, msgTime) {
+      // Match only direct rows. Group conversations include the sender in
+      // their member list (so participantIds.contains() would falsely match),
+      // and a sealed 1:1 envelope must never bleed into a group row's
+      // preview / unread badge.
+      final idx = state.indexWhere((c) =>
+          c.type == ConversationType.direct &&
+          (c.id == convId || c.participantIds.contains(senderSnowId)));
+      final isViewing = MarkReadHelper.isConversationActive(convId);
+      if (idx < 0) {
+        // First message in a brand-new conversation — surface it now.
+        final mySnowId = _ref.read(currentSnowIdProvider) ?? '';
+        debugPrint('[DIAG:ConvList] onSealedMessageDecoded: NEW conv $convId '
+            'from $senderSnowId');
+        final newConv = Conversation(
+          id: convId,
+          type: ConversationType.direct,
+          participantIds: [mySnowId, senderSnowId],
+          title: senderSnowId,
+          lastMessageText: preview,
+          lastMessageTime: msgTime,
+          lastMessageSenderId: senderSnowId,
+          unreadCount: isViewing ? 0 : 1,
+          createdAt: DateTime.now(),
+        );
+        state = [newConv, ...state];
+        _resolveSenderDisplayName(convId, senderSnowId);
+        return;
+      }
+      final existing = state[idx];
+      final updated = existing.copyWith(
+        lastMessageText: preview,
+        lastMessageTime: msgTime,
+        lastMessageSenderId: senderSnowId,
+        unreadCount:
+            isViewing ? existing.unreadCount : existing.unreadCount + 1,
+      );
+      final newList = [...state];
+      newList[idx] = updated;
+      newList.sort((a, b) => (b.lastMessageTime ?? b.createdAt)
+          .compareTo(a.lastMessageTime ?? a.createdAt));
+      state = newList;
+      debugPrint('[DIAG:ConvList] onSealedMessageDecoded: $convId '
+          'unread=${updated.unreadCount} viewing=$isViewing');
+    };
+
     // Phase 8.8: Wire GMK received callback to update specific group name
     _ref.read(messageQueueProvider).onGmkReceived = (groupId) async {
       final (gmk, _) = await GroupMetadataCrypto.loadGMK(groupId);
@@ -250,6 +301,53 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       debugPrint(
           '[ConversationList] Loaded ${serverConversations.length} '
           'conversations from server');
+
+      // Mirror server-loaded direct conversations into drift so the canonical
+      // server-CUID rows exist before any Sealed Sender envelope arrives.
+      // Without this, ConversationDao.findDirectByParticipant has no row to
+      // return (server-loaded convs live in in-memory state only) and
+      // _processSealedMessage falls back to senderId — sealed messages land
+      // in a phantom snow-id direct row separate from the canonical one.
+      final convDao = _ref.read(conversationDaoProvider);
+      for (final conv in serverConversations) {
+        try {
+          await convDao.findOrCreate(
+            id: conv.id,
+            type: 'direct',
+            participantIds: conv.participantIds,
+            title: conv.title,
+          );
+        } catch (e) {
+          debugPrint('[ConversationList] drift sync failed for '
+              '${conv.id}: $e');
+        }
+      }
+
+      // Dedupe phantom direct rows accumulated from Sealed Sender's foreign-
+      // convId fallback. The just-confirmed server-CUID set is the canonical
+      // preference; any other direct row pointing at the same peer is folded
+      // into it (messages migrated, unread summed, dup row deleted). Heals
+      // the badge-stuck regression where unread sat on a row the UI didn't
+      // surface (loadFromServer replaces in-memory state with the server
+      // list, hiding the phantom — but its unread still counted toward
+      // watchTotalUnreadCount's SUM).
+      try {
+        final canonicalIds =
+            serverConversations.map((c) => c.id).toSet();
+        final mySnow = _ref.read(currentSnowIdProvider) ?? '';
+        if (mySnow.isNotEmpty) {
+          final merged = await convDao.dedupeDirectByPeer(
+            mySnowId: mySnow,
+            canonicalIds: canonicalIds,
+          );
+          if (merged > 0) {
+            debugPrint(
+                '[ConversationList] dedupe merged $merged dup direct row(s)');
+          }
+        }
+      } catch (e) {
+        debugPrint('[ConversationList] dedupe failed (non-fatal): $e');
+      }
 
       // Load group conversations
       try {

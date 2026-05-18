@@ -12,7 +12,9 @@ list(APPEND FLUTTER_PLUGIN_LIST
   flutter_secure_storage_windows
   flutter_webrtc
   local_auth_windows
+  pdfx
   permission_handler_windows
+  record_windows
   share_plus
   sqlite3_flutter_libs
   url_launcher_windows

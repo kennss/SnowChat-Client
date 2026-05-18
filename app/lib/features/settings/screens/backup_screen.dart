@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-05-11 (Removed per-screen ScreenProtector wiring — now
+///              applied app-wide in main.dart. Earlier 2026-04-26 header +
+///              inline English translation.)
 ///
 /// @functions
 ///  - BackupScreen: ConsumerStatefulWidget that shows the recovery phrase from settings
@@ -12,7 +14,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:screen_protector/screen_protector.dart';
 import '../../../app/providers.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
@@ -31,23 +32,8 @@ class _BackupScreenState extends ConsumerState<BackupScreen> {
   List<String>? _mnemonic;
   bool _isLoadingMnemonic = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Settings → Recovery Phrase view — mnemonic plaintext is exposed.
-    // Block screenshots / background snapshots (audit P1 A-7).
-    ScreenProtector.protectDataLeakageOn();
-    ScreenProtector.preventScreenshotOn();
-  }
-
-  @override
-  void dispose() {
-    Future<void>(() {
-      ScreenProtector.protectDataLeakageOff();
-      ScreenProtector.preventScreenshotOff();
-    });
-    super.dispose();
-  }
+  // Screen capture protection (audit P1 A-7) is applied app-wide in main.dart
+  // — no per-screen wiring needed here.
 
   void _authenticate() {
     // In production, use local_auth for biometric verification

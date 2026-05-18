@@ -1,10 +1,14 @@
 /// @file        active_call_screen.dart
 /// @description Active call screen — timer, mute/speaker/end, 4-digit SAS (Phase 8.2 §3.3, §24.3).
-///              screen_protector enables Android FLAG_SECURE + iOS background snapshot block.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-04-26 (header + inline English translation; UI: English)
+/// @lastUpdated 2026-05-11 (Removed per-screen ScreenProtector wiring — now
+///              applied app-wide one-shot in main.dart. As side benefit the
+///              prior iOS dispose race (Off() pinning main thread on audio
+///              session teardown → 30s freeze after end button) goes away
+///              because Off() is never called anywhere. Earlier 2026-04-26
+///              header + inline English translation; UI: English.)
 ///
 /// @functions
 ///  - ActiveCallScreen.build(): active-call UI
@@ -15,7 +19,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:screen_protector/screen_protector.dart';
 
 import '../../../app/providers.dart';
 
@@ -43,9 +46,8 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen> {
     SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
     ]);
-    // Android FLAG_SECURE + iOS background snapshot block (§6)
-    ScreenProtector.protectDataLeakageOn();
-    ScreenProtector.preventScreenshotOn();
+    // Screen capture protection is applied app-wide in main.dart — no per-screen
+    // wiring needed. See CLAUDE.md §6.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       final startedAt = ref.read(callProvider).callStartedAt;
       if (startedAt == null) return;
@@ -66,14 +68,6 @@ class _ActiveCallScreenState extends ConsumerState<ActiveCallScreen> {
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
-    // ScreenProtector's ...Off() is a native call. On iOS, calling it
-    // at dispose time can race with audio session teardown and pin the
-    // main thread (observed: 30s freeze after end button). Yield via
-    // microtask.
-    Future<void>(() {
-      ScreenProtector.protectDataLeakageOff();
-      ScreenProtector.preventScreenshotOff();
-    });
     super.dispose();
   }
 

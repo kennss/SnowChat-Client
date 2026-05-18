@@ -3,7 +3,21 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-18 P1-2: rethrow on clearChat server failure — block silent local-clear)
+/// @lastUpdated 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
+///              disabled 상태였지만 두 blocker 가 모두 해소됨 — (a)
+///              production .env 의 persistent SEALED_SENDER_PRIVATE_KEY
+///              박힘 + server "loaded from environment" startup log
+///              확인, (b) sealed→regular fallback 코드 자체가 이미 제거
+///              + chat_provider catch 가 fail mark only + retry_handler
+///              가 fresh session 으로 self-heal (Phase 10 P0-A retry
+///              + messageSendLog) → "double-encrypt ratchet corruption"
+///              architectural 회피. sendSealedMessage 의 Step 4/5
+///              (cert fetch + IK lookup) 도 encrypt 앞으로 reorder
+///              해서 ratchet advance 후 throw 가능 지점 제거.
+///              Group sealed 은 fan-out 모델 변경 + push UX 정책 필요
+///              → V1.1 으로 분리. Earlier +283 sendVoiceMessage E2EE
+///              패턴; 2026-05-11 Tier 2A disappearing; 2026-04-26
+///              header English.)
 ///  - Phase 1 Step 6: ChatNotifier split (MessageRepository + MarkReadHelper extracted)
 ///  - Phase 8.7 round 9: top-level broadcastSenderKeyToGroup helper to
 ///    pre-distribute Sender Key Distribution Messages without waiting for
@@ -301,6 +315,19 @@ Future<int> broadcastSenderKeyToGroup({
   debugPrint('[DIAG:$diagTag] $groupId SKDM batch summary: '
       'ok=$sentOk failed=$failed');
   return sentOk;
+}
+
+/// MIME whitelist for disappearing-mode attachments. Must match the picker
+/// constraint in attachment_picker_sheet (FileType.custom +
+/// allowedExtensions=['pdf','txt','md']) and the in-app viewer routing in
+/// file_message_bubble. Any type added here also needs a viewer that does
+/// NOT route through OpenFilex / external apps — otherwise the
+/// disappearing TTL promise breaks.
+bool _isDisappearingAllowedMime(String mimeType) {
+  if (mimeType.startsWith('image/')) return true;
+  if (mimeType == 'application/pdf') return true;
+  if (mimeType.startsWith('text/')) return true;
+  return false;
 }
 
 class ChatState {
@@ -979,35 +1006,68 @@ class ChatNotifier extends StateNotifier<ChatState> {
         _updateMessageStatus(messageId, MessageStatus.failed);
       }
     } else {
-      // 1:1 E2EE path — always use regular Double Ratchet.
+      // 1:1 E2EE path. Sealed Sender wraps the Double Ratchet ciphertext
+      // so the server cannot read the senderId (messages row stores it as
+      // NULL with senderHash=HMAC binding for blind retry). Activation
+      // 2026-05-13 — the original April 13 disable was based on two
+      // hazards that are both resolved now:
+      //   1. Server's persistent SEALED_SENDER_PRIVATE_KEY env was missing.
+      //      Production .env now ships a 64-byte keypair; startup log
+      //      confirms "Server Ed25519 key loaded from environment".
+      //   2. A sealed→regular fallback used to double-encrypt and shred
+      //      the ratchet. That fallback was removed; the catch below
+      //      marks the message failed without re-encrypting. retry_handler
+      //      handles legitimate recovery via archiveAndResetSession on a
+      //      fresh session, not by re-encrypting on the same ratchet.
+      // Also sendSealedMessage now pre-fetches certificate + IK before
+      // encrypt() so a ratchet advance is never wasted on a throw.
       //
-      // Sealed Sender is disabled for 1:1 sends until the server configures a
-      // persistent SEALED_SENDER_PRIVATE_KEY. The ephemeral keypair generated
-      // on every server restart causes getCertificate() to fail, and the
-      // fallback path corrupts the ratchet state (double-encrypt: the sealed
-      // path's encrypt() advances the ratchet before the exception, so the
-      // fallback encrypt() produces a message at counter N+1 while step N was
-      // never sent — permanent decrypt failure on the recipient side).
-      debugPrint('[DIAG:Send] $messageId routing to 1:1 E2EE (regular DR) '
+      // VoIP signaling (call_signaling.dart) has been shipping sealed
+      // envelopes through the same SealedSenderService end-to-end in
+      // production since the certificate service stabilized — this is
+      // the message-side counterpart finally going live.
+      final useSealed = _e2eeHandler!.isSealedSenderAvailable;
+      debugPrint('[DIAG:Send] $messageId routing to 1:1 E2EE '
+          '${useSealed ? "(sealed)" : "(regular DR — sealed unavailable)"} '
           'recipientId=$recipientId');
       try {
-        await _e2eeHandler!.sendEncryptedMessage(
-          conversationId: conversationId,
-          recipientId: recipientId!,
-          text: text,
-          clientMessageId: messageId,
-          ttlSeconds: ttl,
-          replyToId: replyTo?.id,
-          replyToPreview: replyTo?.plaintext,
-          replyToSenderId: replyTo?.senderSnowchatId,
-          onAck: (response) {
-            if (!mounted) return;
-            debugPrint('[DIAG:Send] $messageId ACK: $response');
-            if (response is Map && response['error'] != null) {
-              _updateMessageStatus(messageId, MessageStatus.failed);
-            }
-          },
-        );
+        if (useSealed) {
+          await _e2eeHandler!.sendSealedMessage(
+            conversationId: conversationId,
+            recipientId: recipientId!,
+            text: text,
+            clientMessageId: messageId,
+            ttlSeconds: ttl,
+            replyToId: replyTo?.id,
+            replyToPreview: replyTo?.plaintext,
+            replyToSenderId: replyTo?.senderSnowchatId,
+            onAck: (response) {
+              if (!mounted) return;
+              debugPrint('[DIAG:Send] $messageId sealed ACK: $response');
+              if (response is Map && response['error'] != null) {
+                _updateMessageStatus(messageId, MessageStatus.failed);
+              }
+            },
+          );
+        } else {
+          await _e2eeHandler!.sendEncryptedMessage(
+            conversationId: conversationId,
+            recipientId: recipientId!,
+            text: text,
+            clientMessageId: messageId,
+            ttlSeconds: ttl,
+            replyToId: replyTo?.id,
+            replyToPreview: replyTo?.plaintext,
+            replyToSenderId: replyTo?.senderSnowchatId,
+            onAck: (response) {
+              if (!mounted) return;
+              debugPrint('[DIAG:Send] $messageId ACK: $response');
+              if (response is Map && response['error'] != null) {
+                _updateMessageStatus(messageId, MessageStatus.failed);
+              }
+            },
+          );
+        }
         debugPrint('[DIAG:Send] $messageId 1:1 send completed');
       } catch (e, st) {
         debugPrint('[DIAG:Send] $messageId 1:1 send EXCEPTION: $e\n$st');
@@ -1038,6 +1098,21 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }) async {
     if (_socketManager == null) return;
     if (!isGroup && recipientId == null) return;
+
+    // Tier 2A defense-in-depth: disappearing mode is restricted to MIME types
+    // we have in-app viewers for — image/* (image_viewer_screen),
+    // application/pdf (pdf_viewer_screen), text/* (text_file_viewer_screen).
+    // Anything else would route through OpenFilex on the receiving device,
+    // handing the decrypted file to a system viewer that exposes save/forward
+    // outside our control — the TTL promise would be a lie. The
+    // attachment_picker_sheet already constrains the picker in this mode, so
+    // reaching this branch with a disallowed MIME implies a non-UI caller
+    // (future code) or a modded sender. Log + abort.
+    if (state.disappearingTTL != null && !_isDisappearingAllowedMime(mimeType)) {
+      debugPrint('[ChatNotifier] sendFileMessage rejected — disallowed mime '
+          '($mimeType) in disappearing mode');
+      return;
+    }
 
     final messageId =
         'msg_${DateTime.now().millisecondsSinceEpoch}_${fileName.hashCode.abs()}';
@@ -1161,16 +1236,39 @@ class ChatNotifier extends StateNotifier<ChatState> {
         await _sendGroupE2EE(fileName, messageId, ttl, null,
             type: MessageType.file, metadata: metadata);
       } else {
+        // +286 활성된 1:1 sealed sender 가 file 에도 그대로 적용된다.
+        // metadata 는 fileId / fileKey / contentHash 등 attachment 복호화
+        // 정보 + filename 같은 PII 가 포함되므로, regular DR path 면 server
+        // 가 sender + filename + mime 모두 보지만 sealed path 면 senderId
+        // 만 NULL 로 마스킹된다. (filename + mime 은 여전히 sealed envelope
+        // 안에 있어서 server 는 못 봄.) attachmentWatchProvider 측 receive
+        // path 는 sealed 든 regular 든 동일하게 작동.
+        final useSealed = _e2eeHandler!.isSealedSenderAvailable;
+        debugPrint('[Chat] file 1:1 routing '
+            '${useSealed ? "(sealed)" : "(regular DR)"} '
+            'msgId=$messageId fileId=$fileId');
         try {
-          await _e2eeHandler!.sendEncryptedMessage(
-            conversationId: conversationId,
-            recipientId: recipientId!,
-            text: fileName,
-            clientMessageId: messageId,
-            type: MessageType.file,
-            metadata: metadata,
-            ttlSeconds: ttl,
-          );
+          if (useSealed) {
+            await _e2eeHandler!.sendSealedMessage(
+              conversationId: conversationId,
+              recipientId: recipientId!,
+              text: fileName,
+              clientMessageId: messageId,
+              type: MessageType.file,
+              metadata: metadata,
+              ttlSeconds: ttl,
+            );
+          } else {
+            await _e2eeHandler!.sendEncryptedMessage(
+              conversationId: conversationId,
+              recipientId: recipientId!,
+              text: fileName,
+              clientMessageId: messageId,
+              type: MessageType.file,
+              metadata: metadata,
+              ttlSeconds: ttl,
+            );
+          }
         } catch (e) {
           debugPrint('[Chat] E2EE file send failed: $e');
           _updateMessageStatus(messageId, MessageStatus.failed);
@@ -1191,13 +1289,45 @@ class ChatNotifier extends StateNotifier<ChatState> {
     required String audioPath,
     required int durationSeconds,
   }) async {
-    if (_socketManager == null || recipientId == null) return;
+    // Voice now follows the exact same E2EE path as files: encrypt the
+    // m4a body, upload the ciphertext, then send a Signal DR envelope
+    // whose plaintext is the file metadata (fileId + fileKey + duration +
+    // ...). Up through +282 sendVoiceMessage published a raw socket frame
+    // without `encryptedContent`, which the server rejects with
+    // `INVALID_REQUEST: recipientId and encryptedContent required` — so
+    // voice messages between Galaxy and iPhone never landed at all. Logged
+    // 2026-05-12 iPhone Console: AVError -11829 was the SENDER's own
+    // bubble failing on a 28-byte corrupt m4a (separate VoiceRecorder
+    // guard); the cross-device half was the missing encryption.
+    if (_socketManager == null) return;
+    if (!isGroup && recipientId == null) return;
+    if (_repo.fileService == null) {
+      debugPrint('[Chat] fileService unavailable — voice send aborted');
+      return;
+    }
+    if (_e2eeHandler == null) {
+      debugPrint('[Chat] E2EE handler unavailable — refusing to send voice '
+          '(message would have leaked audio metadata)');
+      return;
+    }
+
     state = state.copyWith(isSending: true);
 
     final messageId = 'msg_${DateTime.now().millisecondsSinceEpoch}_voice';
     final now = DateTime.now();
     final ttl = state.disappearingTTL;
+    // WAV chosen 2026-05-12 (+285) after record_ios m4a wrapping turned
+    // out to be permanently broken — see voice_recorder.dart header for
+    // the iPhone 17 logcat showing a 12-second recording stuck at 28
+    // bytes. mimeType has to match the container so the recipient's
+    // attachment download writes the right extension and audioplayers
+    // picks the right decoder on both ends.
+    final fileName = 'voice_${now.millisecondsSinceEpoch}.wav';
+    const mimeType = 'audio/wav';
 
+    // Optimistic local message — duration is enough to render the bubble.
+    // localPath / fileId get folded in once the upload completes and the
+    // permanent copy lands under snowchat_attachments/.
     final localMessage = Message(
       id: messageId,
       conversationId: conversationId,
@@ -1206,7 +1336,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       timestamp: now,
       type: MessageType.voice,
       status: MessageStatus.sending,
-      metadata: {'duration': durationSeconds, 'localPath': audioPath},
+      metadata: {'duration': durationSeconds, 'mimeType': mimeType},
       expiresAt: ttl != null ? now.add(Duration(seconds: ttl)) : null,
       ttlSeconds: ttl,
     );
@@ -1215,26 +1345,136 @@ class ChatNotifier extends StateNotifier<ChatState> {
       isSending: false,
     );
 
-    _repo.persistMessage(LocalMessagesCompanion(
-      id: Value(messageId),
-      conversationId: Value(conversationId),
-      senderSnowchatId: Value(_myId),
-      plaintext: const Value('Voice message'),
-      dateSent: Value(now.millisecondsSinceEpoch),
-      dateReceived: Value(now.millisecondsSinceEpoch),
-      type: const Value('voice'),
-      read: const Value(true),
-      outgoingStatus: const Value('sending'),
-    ));
+    try {
+      // 1. Encrypt audio + upload ciphertext (Zero-Knowledge).
+      final file = File(audioPath);
+      if (!await file.exists()) {
+        debugPrint('[Chat] voice file missing on disk: $audioPath');
+        _updateMessageStatus(messageId, MessageStatus.failed);
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      final fileSize = bytes.length;
 
-    _socketManager!.sendPrivateMessage({
-      'recipientId': recipientId,
-      'text': 'Voice message',
-      'type': 'voice',
-      'metadata': {'duration': durationSeconds, 'audioPath': audioPath},
-      if (ttl != null) 'expiresIn': ttl,
-    });
-    _scheduleDeletionIfNeeded(localMessage);
+      final encResult =
+          await FileEncryptor.encryptFile(Uint8List.fromList(bytes));
+      final fileId = await _repo.fileService!
+          .uploadEncryptedFile(encResult.encryptedData, encResult.contentHash);
+      final fileKeyB64 = base64Encode(encResult.fileKey);
+
+      // 2. Build E2EE metadata. `attachments: [...]` matches the multi-shape
+      // the recipient's MessageQueue._processIncomingAttachments consumes.
+      final metadata = <String, dynamic>{
+        'fileId': fileId,
+        'fileName': fileName,
+        'mimeType': mimeType,
+        'size': fileSize,
+        'duration': durationSeconds,
+        'fileKey': fileKeyB64,
+        'contentHash': encResult.contentHash,
+        'attachments': [
+          {
+            'fileId': fileId,
+            'fileName': fileName,
+            'mimeType': mimeType,
+            'size': fileSize,
+          }
+        ],
+      };
+
+      // 3. Persist drift row with full metadata + TTL columns. The drift
+      // watch stream will round-trip this back into in-memory state; if we
+      // omit any of {metadata, expiresIn, expireStarted} the in-memory
+      // copy gets clobbered with nulls a frame after rendering (the +281 /
+      // +282 regression line).
+      await _repo.persistMessage(LocalMessagesCompanion(
+        id: Value(messageId),
+        conversationId: Value(conversationId),
+        senderSnowchatId: Value(_myId),
+        plaintext: const Value('Voice message'),
+        dateSent: Value(now.millisecondsSinceEpoch),
+        dateReceived: Value(now.millisecondsSinceEpoch),
+        type: const Value('voice'),
+        metadata: Value(jsonEncode(metadata)),
+        read: const Value(true),
+        outgoingStatus: const Value('sending'),
+        expiresIn: Value(ttl ?? 0),
+        expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
+      ));
+
+      // 4. Copy plaintext m4a to the permanent attachment path so the
+      // sender-side voice bubble (and any later watch-stream rebuild) can
+      // play it without re-downloading from the server. Relative path keeps
+      // it immune to iOS container UUID rotation.
+      final dir = await getApplicationDocumentsDirectory();
+      final attachDir = Directory('${dir.path}/snowchat_attachments');
+      if (!attachDir.existsSync()) attachDir.createSync(recursive: true);
+      final relativePath = 'snowchat_attachments/$fileId.wav';
+      await file.copy('${dir.path}/$relativePath');
+
+      // 5. Attachment row — voice bubble watches this via attachmentWatchProvider
+      // (same provider the file / image bubbles use), so both sender and
+      // recipient resolve `localPath` through one path.
+      await _repo.attachmentDao?.insertAttachment(LocalAttachmentsCompanion(
+        id: Value('att_${messageId}_0'),
+        messageId: Value(messageId),
+        displayOrder: const Value(0),
+        contentType: Value(mimeType),
+        fileName: Value(fileName),
+        fileSize: Value(fileSize),
+        remoteFileId: Value(fileId),
+        localPath: Value(relativePath),
+        transferState: const Value(0), // DONE
+      ));
+
+      // 6. E2EE send (1:1 Double Ratchet or group Sender Key). Mirrors
+      // sendFileMessage's fork — sealed sender 활성 가능한 1:1 path 에서는
+      // sendSealedMessage 로 가서 server 가 senderId 를 모르게 된다.
+      if (isGroup) {
+        await _sendGroupE2EE('Voice message', messageId, ttl, null,
+            type: MessageType.voice, metadata: metadata);
+      } else {
+        final useSealed = _e2eeHandler!.isSealedSenderAvailable;
+        debugPrint('[Chat] voice 1:1 routing '
+            '${useSealed ? "(sealed)" : "(regular DR)"} '
+            'msgId=$messageId fileId=$fileId');
+        try {
+          if (useSealed) {
+            await _e2eeHandler!.sendSealedMessage(
+              conversationId: conversationId,
+              recipientId: recipientId!,
+              text: 'Voice message',
+              clientMessageId: messageId,
+              type: MessageType.voice,
+              metadata: metadata,
+              ttlSeconds: ttl,
+            );
+          } else {
+            await _e2eeHandler!.sendEncryptedMessage(
+              conversationId: conversationId,
+              recipientId: recipientId!,
+              text: 'Voice message',
+              clientMessageId: messageId,
+              type: MessageType.voice,
+              metadata: metadata,
+              ttlSeconds: ttl,
+            );
+          }
+        } catch (e) {
+          debugPrint('[Chat] E2EE voice send failed: $e');
+          _updateMessageStatus(messageId, MessageStatus.failed);
+          return;
+        }
+      }
+
+      if (ttl != null) {
+        _repo.expiringManager?.schedule(messageId, ttl);
+      }
+      _scheduleDeletionIfNeeded(localMessage);
+    } catch (e, st) {
+      debugPrint('[Chat] voice send exception: $e\n$st');
+      _updateMessageStatus(messageId, MessageStatus.failed);
+    }
   }
 
   /// Compute SHA-256 hash of bytes for upload integrity.

@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-03)
+/// @lastUpdated 2026-05-11 (Tier 1 disappearing protection wire-up fix —
+///              _ResolvingImage was opening ImageViewerScreen without passing
+///              the Message object, so viewer's `message.expiresAt` was always
+///              null and the Share button always rendered. The +277 viewer
+///              edit alone did nothing visible from the user's perspective.
+///              Now ImageMessageBubble.message threads through _ResolvingImage
+///              → ImageViewerScreen, restoring the intended Tier 1 behavior.
+///              Earlier 2026-04-26 header English translation; 2026-04-03 init.)
 ///
 /// @functions
 ///  - ImageMessageBubble: image-message bubble (ConsumerWidget, attachment watch)
@@ -90,8 +97,10 @@ class ImageMessageBubble extends ConsumerWidget {
                       if (att.transferState == TransferState.done &&
                           att.localPath != null) {
                         return _ResolvingImage(
+                          // Pass the full Message so the viewer can gate
+                          // Share/Save on message.expiresAt (Tier 1).
+                          message: message,
                           storedPath: att.localPath!,
-                          messageId: message.id,
                           fileName: fileName,
                           isMine: isMine,
                         );
@@ -166,14 +175,14 @@ class ImageMessageBubble extends ConsumerWidget {
 /// Async widget that resolves the stored path (relative/absolute/legacy)
 /// and displays the image once resolved.
 class _ResolvingImage extends StatefulWidget {
+  final Message message;
   final String storedPath;
-  final String messageId;
   final String fileName;
   final bool isMine;
 
   const _ResolvingImage({
+    required this.message,
     required this.storedPath,
-    required this.messageId,
     required this.fileName,
     required this.isMine,
   });
@@ -211,6 +220,7 @@ class _ResolvingImageState extends State<_ResolvingImage> {
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => ImageViewerScreen(
+              message: widget.message,
               imagePath: _resolvedPath!,
               fileName: widget.fileName,
             ),
@@ -218,7 +228,7 @@ class _ResolvingImageState extends State<_ResolvingImage> {
         );
       },
       child: Hero(
-        tag: 'image_${widget.messageId}',
+        tag: 'image_${widget.message.id}',
         child: Image.file(
           File(_resolvedPath!),
           width: double.infinity,

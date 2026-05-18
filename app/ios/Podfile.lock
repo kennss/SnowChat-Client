@@ -1,4 +1,6 @@
 PODS:
+  - app_badge_plus (1.2.10):
+    - Flutter
   - app_links (6.4.1):
     - Flutter
   - audio_session (0.0.1):
@@ -210,12 +212,16 @@ PODS:
     - Flutter
   - package_info_plus (0.4.5):
     - Flutter
+  - pdfx (1.0.0):
+    - Flutter
   - permission_handler_apple (9.3.0):
     - Flutter
   - photo_manager (3.9.0):
     - Flutter
     - FlutterMacOS
   - PromisesObjC (2.4.0)
+  - record_ios (1.2.0):
+    - Flutter
   - screen_protector (1.5.1):
     - Flutter
     - ScreenProtectorKit (= 1.5.1)
@@ -265,6 +271,7 @@ PODS:
   - WebRTC-SDK (144.7559.01)
 
 DEPENDENCIES:
+  - app_badge_plus (from `.symlinks/plugins/app_badge_plus/ios`)
   - app_links (from `.symlinks/plugins/app_links/ios`)
   - audio_session (from `.symlinks/plugins/audio_session/ios`)
   - audioplayers_darwin (from `.symlinks/plugins/audioplayers_darwin/darwin`)
@@ -290,8 +297,10 @@ DEPENDENCIES:
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
   - open_filex (from `.symlinks/plugins/open_filex/ios`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
+  - pdfx (from `.symlinks/plugins/pdfx/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
   - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
+  - record_ios (from `.symlinks/plugins/record_ios/ios`)
   - screen_protector (from `.symlinks/plugins/screen_protector/ios`)
   - share_plus (from `.symlinks/plugins/share_plus/ios`)
   - sqflite_darwin (from `.symlinks/plugins/sqflite_darwin/darwin`)
@@ -333,6 +342,8 @@ SPEC REPOS:
     - WebRTC-SDK
 
 EXTERNAL SOURCES:
+  app_badge_plus:
+    :path: ".symlinks/plugins/app_badge_plus/ios"
   app_links:
     :path: ".symlinks/plugins/app_links/ios"
   audio_session:
@@ -383,10 +394,14 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/open_filex/ios"
   package_info_plus:
     :path: ".symlinks/plugins/package_info_plus/ios"
+  pdfx:
+    :path: ".symlinks/plugins/pdfx/ios"
   permission_handler_apple:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
   photo_manager:
     :path: ".symlinks/plugins/photo_manager/darwin"
+  record_ios:
+    :path: ".symlinks/plugins/record_ios/ios"
   screen_protector:
     :path: ".symlinks/plugins/screen_protector/ios"
   share_plus:
@@ -401,6 +416,7 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/vibration/ios"
 
 SPEC CHECKSUMS:
+  app_badge_plus: 08a692638f84bc8170aab5aaf90225810fe131b6
   app_links: 585674be3c6661708e6cd794ab4f39fb9d8356f9
   audio_session: 19e9480dbdd4e5f6c4543826b2e8b0e4ab6145fe
   audioplayers_darwin: f15e209a3e856d1a7edcf98dc029f484fead2242
@@ -448,14 +464,16 @@ SPEC CHECKSUMS:
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   open_filex: 6e26e659846ec990262224a12ef1c528bb4edbe4
   package_info_plus: c0502532a26c7662a62a356cebe2692ec5fe4ec4
+  pdfx: 7b876b09de8b7a0bf444a4f82b439ffcff4ee1ec
   permission_handler_apple: 9878588469a2b0d0fc1e048d9f43605f92e6cec2
   photo_manager: d8a1055c2d3ee24fc300461c66e0defdec58b3d6
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
+  record_ios: 26294aaa39e4bb7665b0fef78bdc23d723b432f2
   screen_protector: 585e4a9744efa35ec4ba9a6877b22e46b8d48987
   ScreenProtectorKit: 6ceb3e0808341a9bc15d175bff40dfdd4b32da71
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   SDWebImageWebPCoder: 0e06e365080397465cc73a7a9b472d8a3bd0f377
-  share_plus: c3fef564749587fc939ef86ffb283ceac0baf9f5
+  share_plus: 8b6f8b3447e494cca5317c8c3073de39b3600d1f
   sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
   sqlite3: a51c07cf16e023d6c48abd5e5791a61a47354921
   sqlite3_flutter_libs: f9114e4bbe1f2e03dd543373c53d23245982ca13

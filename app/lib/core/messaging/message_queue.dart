@@ -6,7 +6,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-07
-/// @lastUpdated 2026-04-26 (header + inline English translation; P0-2 Stage B: IdentityKeyChangedException branch — route to Safety Number handler, block archiveAndResetSession)
+/// @lastUpdated 2026-05-14 (sealed routing 정공법: decrypted.conversationId is the sender's server-CUID — meaningless to the receiver and the source of phantom rows when both canonical + foreign-id rows coexist post-dedupe. Stop trusting it; always resolve by findDirectByParticipant, deterministic snow-id fallback when no row yet.)
 ///
 /// @functions
 ///  - MessageQueue: Single-worker FIFO queue for incoming message envelopes
@@ -34,6 +34,7 @@ import 'dart:typed_data';
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding, AppLifecycleState;
 import 'package:path_provider/path_provider.dart';
 
 import '../../features/chat/models/message.dart' show Message, MessageType;
@@ -101,6 +102,20 @@ class MessageQueue {
   /// Called when MessageQueue creates a new conversation in drift.
   /// ConversationListNotifier subscribes to merge it into in-memory state.
   void Function(String convId, String senderSnowId)? onNewConversation;
+
+  /// Called after a Sealed Sender message has been unsealed and inserted
+  /// into drift. The wire-level envelope hides the sender (zero-knowledge),
+  /// so the live socket listener in ConversationListNotifier skips sealed
+  /// envelopes ("SKIP own/null sender=null"). Without this callback the
+  /// in-memory list never increments unread or refreshes the last-message
+  /// preview for the remapped conversation. ConversationListNotifier wires
+  /// this and runs the same UPDATE branch that non-sealed messages get.
+  void Function(
+    String convId,
+    String senderSnowId,
+    String preview,
+    DateTime msgTime,
+  )? onSealedMessageDecoded;
   final FileService _fileService;
   final ExpiringMessageManager _expiringManager;
   final ApiClient _apiClient;
@@ -916,7 +931,35 @@ class MessageQueue {
     debugPrint('[DIAG:Sealed] $messageId start');
     final decrypted = await _e2eeHandler.decryptSealedMessage(envelope);
     final senderId = decrypted.senderSnowchatId;
-    final convId = decrypted.conversationId;
+    // Sealed Sender routing: the receiver MUST NOT route by the sender's
+    // embedded conversationId. That field is the sender's own server-CUID
+    // — every user has its own per-perspective row id for the same 1:1, so
+    // the sender's id is a foreign value to the receiver. Storing a row
+    // under that foreign id creates a phantom that loadFromServer later
+    // can't reconcile against the canonical row it pulls from the server,
+    // and both can coexist indefinitely (the source of the badge-stuck-
+    // at-N bug where unread sits on a row the UI never surfaces).
+    //
+    // Resolve by peer instead. When a direct row already exists for this
+    // sender — created either by loadFromServer (canonical CUID) or by a
+    // prior sealed receive (snow-id fallback) — use that row's id.
+    // Otherwise fall back to senderId (snow), which is deterministic per
+    // peer and dedupe-able later when loadFromServer brings in the
+    // canonical CUID.
+    final existing = await _conversationDao.findDirectByParticipant(senderId);
+    final String convId;
+    if (existing != null) {
+      convId = existing.id;
+      if (decrypted.conversationId != convId) {
+        debugPrint('[DIAG:Sealed] $messageId routed by peer: '
+            '${decrypted.conversationId} -> $convId (existing direct row)');
+      }
+    } else {
+      convId = senderId;
+      debugPrint('[DIAG:Sealed] $messageId no direct row for $senderId — '
+          'falling back to snow-id convId (dedupe will merge once '
+          'loadFromServer brings the canonical CUID)');
+    }
     debugPrint('[DIAG:Sealed] $messageId decrypted: from=$senderId convId=$convId');
 
     // Wallet V2 Phase B (D2 P0-1 fix): skip transfer control messages (Sealed path).
@@ -958,7 +1001,11 @@ class MessageQueue {
         tsStr != null ? DateTime.parse(tsStr) : DateTime.now();
     final ttl = decrypted.ttlSeconds;
 
-    // Ensure conversation row exists (same as _processPrivate1to1)
+    // Ensure conversation row exists (same as _processPrivate1to1).
+    // Note: in-memory state sync is handled exclusively by
+    // onSealedMessageDecoded below — firing onNewConversation here as well
+    // would double-count unread (the new-conv branch sets unreadCount=1,
+    // then the message-arrived branch adds +1 on top).
     final myId = _myIdResolver();
     await _conversationDao.findOrCreate(
       id: convId,
@@ -966,7 +1013,6 @@ class MessageQueue {
       participantIds: [myId, senderId],
       title: senderId,
     );
-    onNewConversation?.call(convId, senderId);
 
     final companion = LocalMessagesCompanion(
       id: Value(messageId),
@@ -1004,10 +1050,27 @@ class MessageQueue {
       isCurrentlyViewing: isViewing,
     );
     debugPrint('[DIAG:Sealed] $messageId INSERTED into drift convId=$convId');
+
+    // Sealed envelopes carry no senderDisplayName (zero-knowledge), so the
+    // banner / notification would fall back to a truncated snow id and the
+    // recipient sees a hex string instead of a nickname. After the convId
+    // remap the canonical drift row already holds the resolved display name
+    // (set by ConversationListNotifier's _resolveSenderDisplayName when the
+    // peer was first surfaced) — reuse it. Treat title == senderId as
+    // unresolved (the initial placeholder findOrCreate writes the snow id
+    // as a title until the server lookup completes).
+    final convRow = await _conversationDao.getConversation(convId);
+    final convTitle = convRow?.title;
+    final resolvedSenderName = (convTitle != null &&
+            convTitle.isNotEmpty &&
+            convTitle != senderId)
+        ? convTitle
+        : _truncateSnowId(senderId);
+
     _maybeShowMessageBanner(
       isViewing: isViewing,
       conversationId: convId,
-      senderId: senderId,
+      senderId: resolvedSenderName,
       plaintext: decrypted.plaintext,
     );
 
@@ -1025,16 +1088,35 @@ class MessageQueue {
       _processIncomingAttachments(messageId, decrypted.metadata!);
     }
 
-    // Show local notification with decrypted plaintext preview.
-    if (!isViewing) {
-      final senderName = (envelope['senderDisplayName'] as String?)
-          ?? _truncateSnowId(senderId);
+    // Drive ConversationListNotifier's unread + preview update. The socket
+    // listener can't do this for sealed envelopes — sender is null at the
+    // wire level — so the in-memory state would otherwise stay stale and
+    // the unread badge never appears.
+    onSealedMessageDecoded?.call(
+      convId,
+      senderId,
+      decrypted.plaintext,
+      timestamp,
+    );
+
+    // OS-level notification only when the app is NOT in the foreground.
+    // The in-app banner above already covers the FG case; firing both
+    // produces the duplicate "banner + toast" the user observed.
+    if (!isViewing && !_isAppInForeground()) {
       NotificationService().showMessageNotification(
-        senderName: senderName,
+        senderName: resolvedSenderName,
         preview: _notificationPreview(decrypted),
         conversationId: convId,
       );
     }
+  }
+
+  /// True when the app's UI is active and the in-app banner can be shown.
+  /// AppLifecycleState.resumed = visible & receiving input. inactive/paused/
+  /// hidden/detached all mean the OS notification path should win.
+  bool _isAppInForeground() {
+    final s = WidgetsBinding.instance.lifecycleState;
+    return s == AppLifecycleState.resumed;
   }
 
   Future<void> _processSKDM(Envelope envelope) async {

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; Wallet V2 Phase B: transfer_* dispatcher -> TransferEventBus + field validation)
+/// @lastUpdated 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
 ///
 /// @functions
 ///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class
@@ -64,8 +64,28 @@ class EncryptedMessageHandler {
   final SocketManager _socketManager;
   final GroupSessionManager? _groupSessionManager;
   final FileService? _fileService;
-  final SealedSenderService? _sealedSenderService;
-  final SenderCertificateManager? _senderCertificateManager;
+  // Sealed Sender service + certificate manager are lazy-wired.
+  // `sealedSenderServiceProvider` is a StateProvider whose initial value
+  // is null — the service activates only after `/auth/server-key` fetch,
+  // which happens post-login. Constructing this handler reads the
+  // current (often still-null) snapshot; the wireSealedSender() setter
+  // lets providers.dart push the activated instance in later without
+  // rebuilding the handler (and every consumer depending on it).
+  // Without the setter, _sealedSenderService stayed null forever and
+  // isSealedSenderAvailable returned false — production +286/+287
+  // landed 0 sealed messages even though the code path was wired.
+  SealedSenderService? _sealedSenderService;
+  SenderCertificateManager? _senderCertificateManager;
+
+  /// Set or replace the sealed sender service + certificate manager.
+  /// Called by providers.dart's ref.listen when the lazy-init completes.
+  void wireSealedSender({
+    required SealedSenderService? service,
+    required SenderCertificateManager? manager,
+  }) {
+    _sealedSenderService = service;
+    _senderCertificateManager = manager;
+  }
 
   /// Wallet V2 Phase B (2026-04-20): emit target after transfer_request /
   /// response / completed / failed payload dispatch. When null, transfer_*
@@ -446,7 +466,32 @@ class EncryptedMessageHandler {
     // Step 1: Ensure we have a session with the recipient
     await _sessionManager.ensureSession(recipientId);
 
-    // Step 2: Build the plaintext payload (JSON-encoded, never logged)
+    // Step 2: Pre-fetch every throw-capable dependency BEFORE encrypt.
+    //
+    // Original ordering put encrypt() at Step 3 and certificate fetch +
+    // identity-key lookup at Step 4/5. That meant any HTTP failure on
+    // getCertificate() or a missing cached IK left the Double Ratchet
+    // advanced (counter N → N+1) with no message on the wire — the next
+    // send would re-advance to N+2 and recipient's counter N+1 stayed
+    // empty forever. The disable-comment in chat_provider documented
+    // exactly that hazard. The architectural fix is to front-load every
+    // operation that can throw so once encrypt() runs the only remaining
+    // steps are in-memory crypto + socket emit (both effectively
+    // throw-free; transport failures here are absorbed by the same retry
+    // path as regular DR — recipient decrypt fails, retry_handler kicks
+    // session_reset, peer rebuilds on next message).
+    final certificate = await _senderCertificateManager!.getCertificate();
+    final recipientIdentityPubKey =
+        _sessionManager.signal.getRemoteIdentityKey(recipientId);
+    if (recipientIdentityPubKey == null) {
+      throw StateError(
+        'Sealed Sender: no cached identity key for $recipientId. '
+        'Cannot seal without recipient IK.',
+      );
+    }
+    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+
+    // Step 3: Build the plaintext payload (JSON-encoded, never logged)
     final payload = _buildPayload(
       text: text,
       type: type,
@@ -459,8 +504,7 @@ class EncryptedMessageHandler {
     );
     final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
 
-    // Step 3: Encrypt with Double Ratchet
-    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+    // Step 4: Encrypt with Double Ratchet (ratchet advances here).
     final encrypted = await _sessionManager.encrypt(
       recipientId,
       deviceId,
@@ -468,20 +512,7 @@ class EncryptedMessageHandler {
     );
     final drCiphertext = encrypted['ciphertext'] as Uint8List;
 
-    // Step 4: Get a valid SenderCertificate (cached or freshly fetched)
-    final certificate = await _senderCertificateManager!.getCertificate();
-
-    // Step 5: Get recipient's X25519 identity public key
-    final recipientIdentityPubKey =
-        _sessionManager.signal.getRemoteIdentityKey(recipientId);
-    if (recipientIdentityPubKey == null) {
-      throw StateError(
-        'Sealed Sender: no cached identity key for $recipientId. '
-        'Cannot seal without recipient IK.',
-      );
-    }
-
-    // Step 6: Seal the DR ciphertext
+    // Step 5: Seal the DR ciphertext (in-memory crypto).
     final sealedEnvelope = _sealedSenderService!.seal(
       recipientIdentityPubKey: recipientIdentityPubKey,
       drCiphertext: drCiphertext,
@@ -489,13 +520,24 @@ class EncryptedMessageHandler {
       messageContext: sealedType1to1,
     );
 
-    // Step 7: Send via socket 'sealed_message' event
+    // Step 6: Send via socket 'sealed_message' event.
     _socketManager.sendSealedMessage(
       recipientId: recipientId,
       sealedContent: base64Encode(sealedEnvelope),
       clientMessageId: clientMessageId,
       expiresIn: ttlSeconds,
       onAck: onAck,
+    );
+
+    // Step 7: Record plaintext in MessageSendLog so retry_handler can
+    // respond to blind-retry requests by re-encrypting under a fresh
+    // session. Mirrors the regular DR path's record() call at the end of
+    // sendEncryptedMessage.
+    _sessionManager.signal.messageSendLog.record(
+      clientMessageId,
+      plaintextBytes,
+      conversationId: conversationId,
+      isGroup: false,
     );
   }
 
@@ -545,9 +587,21 @@ class EncryptedMessageHandler {
     Map<String, dynamic> socketEvent,
     String messageId,
   ) async {
-    final sealedContent = socketEvent['sealedContent'] as String?;
+    // Sealed payload arrives under two different field names depending on
+    // transport: 'sealedContent' from the live socket relay (messageHandler
+    // rebuilds the envelope explicitly) and 'encryptedContent' from the REST
+    // fetchPending response (routes/messages.ts passes the raw DB column
+    // through). Without this fallback, every swipe-killed cold-start sealed
+    // message dead-letters on REST drain: the StateError fires, retries
+    // exhaust, _insertDecryptionFailedPlaceholder is skipped (senderId+convId
+    // both null on the wire — phantom guard returns early), and the ACK
+    // still fires — server deletes the ciphertext, message permanently lost
+    // while the push-driven badge sits at N with nothing in drift to clear
+    // it with.
+    final sealedContent = (socketEvent['sealedContent'] ??
+        socketEvent['encryptedContent']) as String?;
     if (sealedContent == null || sealedContent.isEmpty) {
-      throw StateError('Sealed message missing sealedContent');
+      throw StateError('Sealed message missing sealedContent/encryptedContent');
     }
 
     final conversationId =

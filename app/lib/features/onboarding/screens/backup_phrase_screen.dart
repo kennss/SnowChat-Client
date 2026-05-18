@@ -1,11 +1,13 @@
 /// @file        backup_phrase_screen.dart
 /// @description Recovery-phrase backup screen — show 24-word mnemonic, tap to reveal, confirm written-down then proceed to verification.
-///              Multi-Wallet Phase 1.5 (2026-04-25): screen_protector added — Android FLAG_SECURE +
-///              iOS background snapshot block. Security policy for mnemonic-exposing screens (audit P1 A-7).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-05-11 (Removed per-screen ScreenProtector wiring — now
+///              applied app-wide in main.dart. Earlier Multi-Wallet Phase 1.5
+///              2026-04-25 introduced screen_protector for mnemonic-exposing
+///              screens (audit P1 A-7); 2026-04-26 header + inline English
+///              translation.)
 ///
 /// @functions
 ///  - BackupPhraseScreen: recovery-phrase backup ConsumerStatefulWidget
@@ -14,7 +16,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:screen_protector/screen_protector.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../onboarding_provider.dart';
@@ -30,24 +31,8 @@ class BackupPhraseScreen extends ConsumerStatefulWidget {
 class _BackupPhraseScreenState extends ConsumerState<BackupPhraseScreen> {
   bool _revealed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Mnemonic display screen — block screenshots / background snapshots (P1 A-7).
-    ScreenProtector.protectDataLeakageOn();
-    ScreenProtector.preventScreenshotOn();
-  }
-
-  @override
-  void dispose() {
-    // Release protection on leave. Same pattern as active_call_screen —
-    // yield via microtask to avoid dispose race.
-    Future<void>(() {
-      ScreenProtector.protectDataLeakageOff();
-      ScreenProtector.preventScreenshotOff();
-    });
-    super.dispose();
-  }
+  // Screen capture protection (audit P1 A-7) is applied app-wide in main.dart
+  // — no per-screen wiring needed here.
 
   @override
   Widget build(BuildContext context) {

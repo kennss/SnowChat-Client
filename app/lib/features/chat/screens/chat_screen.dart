@@ -225,6 +225,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (_) => AttachmentPickerSheet(
+        // Tier 2A — when this conversation has disappearing TTL active, the
+        // sheet hides "File" and shows an informational banner.
+        disappearingActive: ref
+                .read(chatProvider(widget.conversationId))
+                .disappearingTTL !=
+            null,
         onImagesSelected: (paths) async {
           final notifier =
               ref.read(chatProvider(widget.conversationId).notifier);
@@ -1506,6 +1512,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             onAttachment: _showAttachmentSheet,
             onTimerTap: _showTimerSelector,
             disappearingTTL: chatState.disappearingTTL,
+            // WhatsApp / Telegram style — long-press mic in the input bar
+            // pops the VoiceRecorder overlay; release sends. The overlay
+            // owns recording lifecycle; the chat provider only sees a
+            // completed file path + duration.
+            onVoiceRecording: (path, duration) {
+              ref
+                  .read(chatProvider(widget.conversationId).notifier)
+                  .sendVoiceMessage(
+                    audioPath: path,
+                    durationSeconds: duration,
+                  );
+            },
             onTypingChanged: () {
               ref
                   .read(chatProvider(widget.conversationId).notifier)

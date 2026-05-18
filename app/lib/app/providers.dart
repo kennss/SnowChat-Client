@@ -71,6 +71,7 @@ import '../core/messaging/message_queue.dart';
 import '../core/call/voip_push_service.dart';
 import '../core/network/voip_native_bridge.dart';
 import '../core/notifications/notification_service.dart';
+import '../shared/services/badge_service.dart';
 import '../core/notifications/push_service.dart';
 import '../core/crypto/identity_manager.dart';
 import '../core/crypto/identity_pin_store.dart';
@@ -613,6 +614,20 @@ final conversationDaoProvider = Provider<ConversationDao>((ref) {
   return ref.read(snowDatabaseProvider).conversationDao;
 });
 
+/// Subscribes to the drift unread-sum stream and pushes the value to the
+/// OS launcher badge (iOS aps.badge from server pushes covers the killed /
+/// BG path; this provider keeps the badge accurate while the app is alive
+/// — read-receipts, navigations, and any drift mutation that changes
+/// unread counts flow through here). app.dart must `ref.watch` this for
+/// the subscription to stay live.
+final appBadgeUpdaterProvider = Provider<void>((ref) {
+  final dao = ref.read(conversationDaoProvider);
+  final sub = dao.watchTotalUnreadCount().listen((count) {
+    BadgeService.instance.setCount(count);
+  });
+  ref.onDispose(sub.cancel);
+});
+
 final attachmentDaoProvider = Provider<AttachmentDao>((ref) {
   return ref.read(snowDatabaseProvider).attachmentDao;
 });
@@ -769,6 +784,28 @@ final encryptedMessageHandlerProvider =
   // P0-2 Stage B: wire identity change handler so send-path TOFU mismatch
   // routes into the Safety Number pipeline instead of looping forever.
   handler.identityChangeHandler = ref.read(identityChangeHandlerProvider);
+
+  // Sealed Sender lazy-wire — sealedSenderServiceProvider is a
+  // StateProvider that flips from null to an activated service after
+  // `/auth/server-key` resolves (post-login). The handler was built with
+  // the still-null snapshot (read above), so without this listener
+  // _sealedSenderService stayed null forever and isSealedSenderAvailable
+  // returned false — observed 2026-05-13 +287: chat_provider's sealed
+  // branch logic was correct but every send fell through to regular DR
+  // because the runtime check kept seeing null. callSignalingProvider
+  // already uses ref.watch so VoIP was fine; switching the message
+  // handler to watch would force rebuild + dispose churn across every
+  // consumer (messageQueue, chat_provider family, ...). The setter
+  // approach updates the single live instance in-place.
+  ref.listen<SealedSenderService?>(sealedSenderServiceProvider,
+      (prev, next) {
+    if (prev != null || next == null) return;
+    final certMgr = ref.read(senderCertificateManagerProvider);
+    handler.wireSealedSender(service: next, manager: certMgr);
+    debugPrint('[Providers] Sealed Sender wired into EncryptedMessageHandler '
+        '(certMgr=${certMgr != null})');
+  });
+
   return handler;
 });
 

@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-05-11 (share_plus 13.x API migration — iOS 26 iPhone silent fail
+///              when sharePositionOrigin missing. Previously: 2026-04-26.)
 ///
 /// @functions
 ///  - InviteLinkScreen: invite-link create/manage screen
@@ -160,15 +161,23 @@ class _InviteLinkScreenState extends ConsumerState<InviteLinkScreen> {
           Row(
             children: [
               Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Share.share(
-                      'Join ${widget.channelName} on SnowChat!\n$_url',
-                      subject: 'SnowChat Invite',
-                    );
-                  },
-                  icon: const Icon(Icons.share_rounded, size: 18),
-                  label: const Text('Share via...'),
+                child: Builder(
+                  builder: (btnContext) => ElevatedButton.icon(
+                    onPressed: () {
+                      final box =
+                          btnContext.findRenderObject() as RenderBox?;
+                      SharePlus.instance.share(ShareParams(
+                        text:
+                            'Join ${widget.channelName} on SnowChat!\n$_url',
+                        subject: 'SnowChat Invite',
+                        sharePositionOrigin: box != null
+                            ? box.localToGlobal(Offset.zero) & box.size
+                            : null,
+                      ));
+                    },
+                    icon: const Icon(Icons.share_rounded, size: 18),
+                    label: const Text('Share via...'),
+                  ),
                 ),
               ),
             ],

@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-08 wallet transfer button removed — chat and wallet domains separated)
+/// @lastUpdated 2026-05-11 (Reverted voice mic disable in disappearing mode
+///              — was based on wrong assumption that voice routes through
+///              OpenFilex. Actually voice_message_bubble.dart plays via
+///              audioplayers in-app (DeviceFileSource), same threat class as
+///              images. Signal/Telegram/WhatsApp all allow voice in
+///              disappearing mode. Earlier same-day Tier 2A disabled voice;
+///              2026-04-26 header English translation; 2026-04-08 wallet
+///              transfer button removed.)
 ///
 /// @functions
 ///  - MessageInput: StatefulWidget rendering the message-input bar (voice recording / typing indicator supported)
@@ -12,6 +19,7 @@
 import 'package:flutter/material.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
+import 'voice_recorder.dart';
 
 /// Callback when a voice recording is completed.
 /// [path] — file path to the recorded audio.
@@ -77,6 +85,22 @@ class _MessageInputState extends State<MessageInput> {
 
   @override
   Widget build(BuildContext context) {
+    // While recording, swap the entire input bar for the VoiceRecorder
+    // overlay (hold-to-record, slide-to-cancel, send button). Same footprint
+    // — the overlay paints in the same bottom slot as the input row, so the
+    // chat scroll area never reflows.
+    if (_isRecording && widget.onVoiceRecording != null) {
+      return VoiceRecorder(
+        onRecordingComplete: (path, duration) {
+          widget.onVoiceRecording!(path, duration);
+          if (mounted) setState(() => _isRecording = false);
+        },
+        onCancel: () {
+          if (mounted) setState(() => _isRecording = false);
+        },
+      );
+    }
+
     final ttlLabel = _ttlLabel(widget.disappearingTTL);
 
     return Container(
@@ -206,28 +230,34 @@ class _MessageInputState extends State<MessageInput> {
             )
           else if (widget.onVoiceRecording != null)
             GestureDetector(
+              // Long-press swaps the input bar for the VoiceRecorder overlay
+              // (see top of build()). Real recording is owned by the overlay;
+              // this button just flips `_isRecording`.
               onLongPress: () {
                 setState(() => _isRecording = true);
               },
               onTap: () {
-                // Short tap toggles a hint or no-op
+                // Short-tap hint — WhatsApp/Telegram users expect long-press.
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Hold to record a voice message'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
               },
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(
-                  color: _isRecording
-                      ? SnowColors.error
-                      : SnowColors.surfaceLight,
+                decoration: const BoxDecoration(
+                  color: SnowColors.surfaceLight,
                   shape: BoxShape.circle,
                 ),
-                child: Icon(
+                child: const Icon(
                   Icons.mic_rounded,
                   size: 20,
-                  color: _isRecording
-                      ? SnowColors.textPrimary
-                      : SnowColors.textTertiary,
+                  color: SnowColors.textTertiary,
                 ),
               ),
             )

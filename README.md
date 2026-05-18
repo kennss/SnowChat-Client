@@ -20,7 +20,7 @@ E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund —
 
 ## What is SnowChat
 
-SnowChat fuses an **E2EE messenger**, a **multi-wallet**, an **on-chain NFT marketplace** (a Tensor-fork Anchor program), and a **community fund** where 50% of every trade flows back to the creator-led community — into one mobile app.
+SnowChat fuses an **E2EE messenger**, **encrypted community channels** (the Discord replacement), a **multi-wallet**, an **on-chain NFT marketplace** (a Tensor-fork Anchor program), and a **community fund** where 50% of every trade flows back to the creator-led community — into one mobile app.
 
 Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked, millions in NFTs drained. Tensor stripped creator royalties to compete on price, and creators lost the income that funded their community. Two stories, one root cause: intermediaries capturing value Web3 was supposed to return to creators and communities.
 
@@ -87,6 +87,13 @@ Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketpl
 - No `libsignal` binary, no Platform Channel — pure Dart, three internal audits.
 - Disappearing messages, read receipts, typing indicators, WhatsApp-style reply quotes.
 - Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library purpose-built in-house for SnowChat, now released as a reusable library for any Flutter project.
+
+### 🏘 Communities — Discord, but encrypted and on-chain
+- Persistent community channels — each channel is an E2EE group, server only ever sees ciphertext.
+- Sender Key Hybrid + pairwise fallback distribution — Signal's actual group protocol, not custom crypto. Out-of-order delivery, multi-generation key rotation, retry safety net all included.
+- One-tap channel invite links (`snowchat://invite/<code>`) — iOS Universal Links + Android App Links, no QR friction.
+- On-chain treasury baked in — every community is bound to a verified Metaplex collection that automatically receives the 50% marketplace-fee split on every trade. The treasury is on-chain and auditable; there is no multi-sig "trust us" layer.
+- No bot framework, no third-party server, no token to compromise — community membership lives in your wallet, channel content lives in your device. The Discord token-phishing vector that drained BAYC / MonkeyDAO / OpenSea is structurally absent.
 
 ### 💼 Multi-Wallet (Solana, non-custodial)
 - BIP-39 mnemonic + SLIP-0010 derivation.
@@ -191,6 +198,7 @@ flutter build apk --release --dart-define=SERVER_ENV=prod
 - ✅ Wallet V2 Phase 1 — 1:1 chat asset transfers (SOL / SPL / NFT, drift persistence, in-flight recovery)
 - ✅ Wallet V2 Phase 2 — Tensor-fork marketplace + 50% community-fee split (devnet deployed)
 - ✅ E2EE messenger — Pure Dart Signal Protocol, three internal audits
+- ✅ Encrypted community channels — Sender Key Hybrid groups + Metaplex collection binding (Discord replacement)
 - ✅ Multi-Wallet V1 — BIP-39 + SLIP-0010, Phantom-compatible derivation
 - ✅ VoIP — WebRTC + CallKit / ConnectionService (Phase 8.2 A~D, G, H)
 - ✅ On-device AI — Gemma 4 E2B + agentic Tool Use

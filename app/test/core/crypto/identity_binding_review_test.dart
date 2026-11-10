@@ -142,6 +142,12 @@ Map<String, dynamic> _directoryJson(TestParty p,
     };
 
 void main() {
+  // These suites exercise the alpha-only legacy (unbound / TOFU) policy, which
+  // the default build configuration disables. Mandatory-binding behaviour is
+  // covered separately in identity_binding_mandatory_test.dart.
+  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = true);
+  tearDownAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('H1 account-wide max epoch', () {

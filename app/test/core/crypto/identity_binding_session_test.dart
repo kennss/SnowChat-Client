@@ -49,6 +49,12 @@ List<IdentityStoreEvent> _collect(VerifiedIdentityStore store) {
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  // These suites exercise the alpha-only legacy (unbound / TOFU) policy, which
+  // the default build configuration disables. Mandatory-binding behaviour is
+  // covered separately in identity_binding_mandatory_test.dart.
+  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = true);
+  tearDownAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
+
   group('send side — createSession admission', () {
     late TestParty alice;
     late TestParty bob;

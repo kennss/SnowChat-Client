@@ -25,7 +25,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-10 (review fixes: M1 promotion compares only the IK against migrated Eds and treats a different legacy deviceId as reinstall evidence; M2 the blocked notice fires only on the transition; M4 admitDirectory() admits a device from the non-consuming directory BEFORE any one-time prekey is consumed)
+/// @lastUpdated 2026-11-11 (admitUnbound refuses every unbound peer with bindingRequired unless AppConfig.allowUnboundIdentity — mandatory bindings for beta / self-hosted). Earlier 2026-11-10 (review fixes: M1 promotion compares only the IK against migrated Eds and treats a different legacy deviceId as reinstall evidence; M2 the blocked notice fires only on the transition; M4 admitDirectory() admits a device from the non-consuming directory BEFORE any one-time prekey is consumed)
 ///
 /// @functions
 ///  - AdmittedIdentity: result of a successful admission
@@ -40,6 +40,9 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+import '../../app/app_config.dart';
 import 'identity_binding.dart';
 import 'identity_binding_exception.dart';
 import 'identity_key_changed_exception.dart';
@@ -115,7 +118,19 @@ class RemoteIdentityDirectory {
 class IdentityAdmission {
   final VerifiedIdentityStore store;
 
-  IdentityAdmission(this.store);
+  /// Whether unbound (legacy, TOFU) peers may be admitted at all. Defaults to
+  /// the build-time [AppConfig.allowUnboundIdentity] (false = mandatory).
+  final bool allowUnbound;
+
+  /// Test-only switch so the legacy-policy tests can run under the default
+  /// (mandatory) build configuration. Never set in production code.
+  @visibleForTesting
+  static bool? debugAllowUnboundOverride;
+
+  IdentityAdmission(this.store, {bool? allowUnbound})
+      : allowUnbound = allowUnbound ??
+            debugAllowUnboundOverride ??
+            AppConfig.allowUnboundIdentity;
 
   /// Emit a rejection event and return the exception for the caller to throw.
   IdentityBindingInvalidException reject(
@@ -370,6 +385,13 @@ class IdentityAdmission {
     required Uint8List? ed25519,
     Uint8List? accountPublicKey,
   }) async {
+    // Mandatory bindings (every beta / self-hosted build): an unbound peer is
+    // refused outright. Without this, a compromised server could strip the
+    // binding of a peer we have never seen bound and get its own keys
+    // accepted under TOFU — whether or not genuinely old clients exist.
+    if (!allowUnbound) {
+      throw reject(snowId, IdentityBindingFailure.bindingRequired);
+    }
     if (await store.latchedEpoch(snowId, fresh: true) != null) {
       throw reject(snowId, IdentityBindingFailure.downgrade);
     }

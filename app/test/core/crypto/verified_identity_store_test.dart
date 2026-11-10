@@ -17,6 +17,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:snowchat/core/crypto/identity_admission.dart';
 import 'package:pinenacl/ed25519.dart' as ed;
 import 'package:snowchat/core/crypto/key_derivation.dart';
 import 'package:snowchat/core/crypto/verified_identity_store.dart';
@@ -34,6 +35,12 @@ InMemorySecureStorage _unlocked() =>
     InMemorySecureStorage()..data['snow_chat_id'] = _snowB;
 
 void main() {
+  // These suites exercise the alpha-only legacy (unbound / TOFU) policy, which
+  // the default build configuration disables. Mandatory-binding behaviour is
+  // covered separately in identity_binding_mandatory_test.dart.
+  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = true);
+  tearDownAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
+
   group('legacy pin migration', () {
     test('bare pin → record, marker written, legacy deleted', () async {
       final s = _unlocked()..data['signal_identity_pin:$_snowA'] = _b64(1);

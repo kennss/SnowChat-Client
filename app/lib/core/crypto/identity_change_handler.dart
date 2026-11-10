@@ -22,7 +22,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-11-10 (B-2: event-driven from VerifiedIdentityStore —
+/// @lastUpdated 2026-11-11 (bindingRequired rejection text). Earlier 2026-11-10 (B-2: event-driven from VerifiedIdentityStore —
 ///              replaces handleMismatch(), which callers invoked from catch
 ///              blocks; Safety Number is no longer recomputed here because v2
 ///              is over ACCOUNT keys and does not change on device-key changes)
@@ -191,6 +191,12 @@ class IdentityChangeHandler {
             'intercepted. Verify this contact before sharing anything '
             'sensitive.';
       case IdentityEventKind.bindingRejected:
+        if (e.reason == IdentityBindingFailure.bindingRequired) {
+          return "This contact's app did not prove their identity, so "
+              "messages can't be exchanged. They may need to update SnowChat; "
+              'if they already have, someone may be trying to impersonate '
+              'them.';
+        }
         if (e.reason == IdentityBindingFailure.downgrade) {
           return 'This contact appears to be using an older SnowChat version '
               "that cannot prove their identity. Messages can't be exchanged "

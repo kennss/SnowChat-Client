@@ -7,7 +7,11 @@
 // @author      Kennt Kim
 // @company     Calida Lab
 // @created     2026-03-29
-// @lastUpdated 2026-05-06 (snowchat/device_capability MethodChannel — exposes
+// @lastUpdated 2026-11-11 (snowchat/file_protection MethodChannel — at-rest
+//              level 1: backup exclusion for the database / attachments
+//              directories and NSFileProtectionCompleteUnlessOpen for
+//              attachments; registered in both engine-bridge paths).
+//              Earlier 2026-05-06 (snowchat/device_capability MethodChannel — exposes
 //              ProcessInfo.physicalMemory to Dart so the SnowChat AI tile
 //              can RAM-gate the Gemma 4 E2B download/load. iPhone 13 (4 GB)
 //              OOMs on model load, so denial happens before the user
@@ -33,9 +37,11 @@
 //  - AppDelegate.providerDidReset(): CallKit system reset → Dart cleanup
 //  - AppDelegate.application(_:didRegisterForRemoteNotificationsWithDeviceToken:): APNs alert token → FirebaseMessaging forward (v215)
 //  - AppDelegate.application(_:didFailToRegisterForRemoteNotificationsWithError:): APNs register failure log (v215)
+//  - AppDelegate.registerFileProtectionChannel(messenger:): snowchat/file_protection (backup exclusion, CompleteUnlessOpen)
 //
 
 import AVFoundation
+import os.log
 import CallKit
 import FirebaseMessaging
 import Flutter
@@ -121,6 +127,9 @@ import flutter_local_notifications
       // and the 7000 MB cutoff live on the Dart side so iOS + Android stay
       // identical.
       registerDeviceCapabilityChannel(messenger: messenger)
+      // At-rest level 1 (2026-11-11): backup exclusion + attachment
+      // data-protection class for the Dart storage layer.
+      registerFileProtectionChannel(messenger: messenger)
       NSLog("[AppDelegate] All bridges registered via FlutterViewController")
     } else if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LlamaBridge") {
       let messenger = registrar.messenger()
@@ -140,6 +149,8 @@ import flutter_local_notifications
       // Phase 10 RAM gate (2026-05-06) — mirror in fallback path so cold
       // launches via the engineBridge route still expose the channel.
       registerDeviceCapabilityChannel(messenger: messenger)
+      // At-rest level 1 — mirror in the fallback path (cold launches).
+      registerFileProtectionChannel(messenger: messenger)
       NSLog("[AppDelegate] Bridges registered via engineBridge fallback")
     } else {
       NSLog("[AppDelegate] WARNING: Could not register bridges")
@@ -258,5 +269,105 @@ import flutter_local_notifications
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  // MARK: – At-rest file protection (level 1, 2026-11-11)
+  //
+  // MethodChannel `snowchat/file_protection`, driven by
+  // lib/core/storage/local_file_protection.dart.
+  //  - excludeFromBackup(path): NSURLIsExcludedFromBackupKey on a file or
+  //    directory. Set on the database DIRECTORY so SQLite -wal / -shm files
+  //    created later are covered as well.
+  //  - protectAttachmentDirectory(path): backup exclusion + default
+  //    data-protection class NSFileProtectionCompleteUnlessOpen for files
+  //    created inside the directory, then converts the files already there.
+  //    Returns the number of files that could not be converted (retried by
+  //    Dart on a later call — e.g. when the device is locked right now).
+  //  - protectAttachmentFile(path): CompleteUnlessOpen on one file.
+  // CompleteUnlessOpen: a file created while the device is locked stays
+  // writable while it is open (background message receipt keeps working);
+  // once closed it cannot be read until the user unlocks. NEVER used for the
+  // database, which must open in the background while locked after the first
+  // unlock (it keeps the container default, CompleteUntilFirstUserAuthentication).
+  private func registerFileProtectionChannel(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(
+      name: "snowchat/file_protection",
+      binaryMessenger: messenger
+    )
+    channel.setMethodCallHandler { call, result in
+      guard let args = call.arguments as? [String: Any],
+            let path = args["path"] as? String, !path.isEmpty else {
+        result(FlutterError(code: "BAD_ARG", message: "path missing", details: nil))
+        return
+      }
+      DispatchQueue.global(qos: .utility).async {
+        let reply: Any
+        switch call.method {
+        case "excludeFromBackup":
+          reply = AppDelegate.excludeFromBackup(path: path)
+        case "protectAttachmentDirectory":
+          reply = AppDelegate.protectAttachmentDirectory(path: path)
+        case "protectAttachmentFile":
+          reply = AppDelegate.setCompleteUnlessOpen(path: path)
+        default:
+          reply = FlutterMethodNotImplemented
+        }
+        DispatchQueue.main.async { result(reply) }
+      }
+    }
+  }
+
+  private static func excludeFromBackup(path: String) -> Bool {
+    var url = URL(fileURLWithPath: path)
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    do {
+      try url.setResourceValues(values)
+      return true
+    } catch {
+      os_log("[FileProtection] excludeFromBackup failed: %{public}@",
+             error.localizedDescription)
+      return false
+    }
+  }
+
+  private static func setCompleteUnlessOpen(path: String) -> Bool {
+    do {
+      try FileManager.default.setAttributes(
+        [.protectionKey: FileProtectionType.completeUnlessOpen],
+        ofItemAtPath: path
+      )
+      return true
+    } catch {
+      os_log("[FileProtection] setCompleteUnlessOpen failed: %{public}@",
+             error.localizedDescription)
+      return false
+    }
+  }
+
+  /// Returns the number of failures (directory attributes count as one each,
+  /// plus one per file that could not be converted).
+  private static func protectAttachmentDirectory(path: String) -> Int {
+    var failed = 0
+    if !excludeFromBackup(path: path) { failed += 1 }
+    // Directory class = default class of files created inside it later.
+    if !setCompleteUnlessOpen(path: path) { failed += 1 }
+    let fm = FileManager.default
+    let names = (try? fm.contentsOfDirectory(atPath: path)) ?? []
+    var converted = 0
+    for name in names {
+      let filePath = (path as NSString).appendingPathComponent(name)
+      var isDir: ObjCBool = false
+      guard fm.fileExists(atPath: filePath, isDirectory: &isDir), !isDir.boolValue else {
+        continue
+      }
+      let current = (try? fm.attributesOfItem(atPath: filePath))?[.protectionKey]
+        as? FileProtectionType
+      if current == .completeUnlessOpen { continue }
+      if setCompleteUnlessOpen(path: filePath) { converted += 1 } else { failed += 1 }
+    }
+    os_log("[FileProtection] attachments dir: %{public}d file(s) converted, %{public}d failure(s)",
+           converted, failed)
+    return failed
   }
 }

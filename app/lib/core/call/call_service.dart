@@ -6,7 +6,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-05-06 (Fix B revised — _handleRemoteEnd no longer silently
+/// @lastUpdated 2026-11-11 (_emit is a no-op once dispose() has closed the
+///              event controller — dispose() closes the controllers before its
+///              final _cleanup(), whose terminal emit used to throw an unhandled
+///              StateError on every Reset App / Delete Account). Earlier
+///              2026-05-06 (Fix B revised — _handleRemoteEnd no longer silently
 ///              returns when _callId == null. cold-start path: callee main
 ///              isolate decrypts call_end successfully (after long-idle ratchet
 ///              desync was self-healed by retry_receipt) but invite envelope
@@ -1447,6 +1451,15 @@ class CallService {
     String? overrideRemoteSnowchatId,
     String? overrideRemoteDisplayName,
   }) {
+    // Disposed-service guard (2026-11-11). dispose() closes the controllers
+    // BEFORE its final _cleanup() on purpose: listeners of a disposed service
+    // (CallNotifier during Reset App / Delete Account, when the database is
+    // already closed) must not receive that terminal event. Without this guard
+    // the add() below threw "Cannot add new events after calling close" as an
+    // unhandled async error on every dispose. A late emit from an in-flight
+    // startCall/acceptCall continuation after dispose is dropped the same way.
+    if (_eventController.isClosed) return;
+
     // Late-emit guard (2026-04-21 revision) — after _cleanup runs and `_callId=null`, a
     // late non-terminal emit (connecting/active) from startCall/acceptCall's async path
     // races and the UI flips from "call ended" back to "in call" — busy/offline-response

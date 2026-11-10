@@ -57,6 +57,7 @@
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:localeConfig="@xml/locales_config"><!-- 2026-05-08 i18n locale lock (Phase 0). Pairs with res/xml/locales_config.xml + build.gradle resourceConfigurations + MainActivity.attachBaseContext. Documented in Documentation/TO-DO/2026-05-07-app-locale-and-i18n.md. -->
         <!--
              Option 2 (dedicated CallActivity hosting a cached FlutterEngine)

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: deleteChat() now also sends a sealed_control 'delete_chat' to the peer so an OFFLINE peer loses the room too — ordered AFTER the server DELETE (purgePairRows would wipe a control queued before it) and BEFORE _localCleanup (which wipes the Signal session needed to encrypt it)). Earlier 2026-08-06 (deleteMessageForMe now calls ConversationListNotifier.refreshPreviewAfterDelete(conversationId) after the local delete — covers every sender delete/unsend path (deleteMessageForEveryone routes through it) so unsending the last message advances the Chats-list preview to the surviving newest message instead of lingering the deleted text). Earlier 2026-08-05 (outgoing send (text/file/voice) now persists via MessageRepository.persistOutgoingMessage, which refreshes the drift `conversations` snippet in the same transaction — previously the send path wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart; status updates still use persistMessage so they don't move the snippet). Earlier 2026-08-03 (F8: clearChat/deleteChat now resolve the shared server CUID via _serverConversationId() (idempotent find-or-create on the peer's snowchatId) before the server DELETE — a snow-id fallback room, created when the peer messages first, 404'd on the CUID-keyed endpoint so the server clear/delete silently no-op'd and Delete's "the other person also loses this conversation" promise broke; deleteChat also tombstones by the CUID so loadFromServer's filter matches). Earlier 2026-07-15 (sealed unsend: deleteMessageForEveryone routes 1:1 delete-for-everyone through EncryptedMessageHandler.sendSealedUnsend (server-opaque) with a client-side 5-min window; group stays on the plaintext server fan-out. Sealed read receipt: wire e2eeHandler + directPeerResolver into MarkReadHelper and e2eeHandler into MessageRepository so read receipts travel E2EE instead of plaintext message_read). Earlier 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
+/// @lastUpdated 2026-11-11 (at-rest level 1: sent file / voice copies go through AttachmentStorage.ensureDirectory() + protectFile() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: deleteChat() now also sends a sealed_control 'delete_chat' to the peer so an OFFLINE peer loses the room too — ordered AFTER the server DELETE (purgePairRows would wipe a control queued before it) and BEFORE _localCleanup (which wipes the Signal session needed to encrypt it)). Earlier 2026-08-06 (deleteMessageForMe now calls ConversationListNotifier.refreshPreviewAfterDelete(conversationId) after the local delete — covers every sender delete/unsend path (deleteMessageForEveryone routes through it) so unsending the last message advances the Chats-list preview to the surviving newest message instead of lingering the deleted text). Earlier 2026-08-05 (outgoing send (text/file/voice) now persists via MessageRepository.persistOutgoingMessage, which refreshes the drift `conversations` snippet in the same transaction — previously the send path wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart; status updates still use persistMessage so they don't move the snippet). Earlier 2026-08-03 (F8: clearChat/deleteChat now resolve the shared server CUID via _serverConversationId() (idempotent find-or-create on the peer's snowchatId) before the server DELETE — a snow-id fallback room, created when the peer messages first, 404'd on the CUID-keyed endpoint so the server clear/delete silently no-op'd and Delete's "the other person also loses this conversation" promise broke; deleteChat also tombstones by the CUID so loadFromServer's filter matches). Earlier 2026-07-15 (sealed unsend: deleteMessageForEveryone routes 1:1 delete-for-everyone through EncryptedMessageHandler.sendSealedUnsend (server-opaque) with a client-side 5-min window; group stays on the plaintext server fan-out. Sealed read receipt: wire e2eeHandler + directPeerResolver into MarkReadHelper and e2eeHandler into MessageRepository so read receipts travel E2EE instead of plaintext message_read). Earlier 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
 ///              disabled 상태였지만 두 blocker 가 모두 해소됨 — (a)
 ///              production .env 의 persistent SEALED_SENDER_PRIVATE_KEY
 ///              박힘 + server "loaded from environment" startup log
@@ -52,6 +52,7 @@ import '../../../core/storage/database.dart' hide Conversation;
 import '../models/conversation.dart';
 import '../models/message.dart';
 import '../../../core/storage/secure_storage.dart';
+import '../../../core/storage/local_file_protection.dart';
 import '../../ai/providers/ai_provider.dart';
 import '../../ai/providers/translation_provider.dart';
 import 'conversation_list_provider.dart';
@@ -1256,10 +1257,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
       // Store RELATIVE path — immune to iOS container UUID changes
       final ext = fileName.contains('.') ? fileName.split('.').last : 'jpg';
       final dir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${dir.path}/snowchat_attachments');
-      if (!attachDir.existsSync()) attachDir.createSync(recursive: true);
+      await AttachmentStorage.ensureDirectory();
       final relativePath = 'snowchat_attachments/$fileId.$ext';
       await File(filePath).copy('${dir.path}/$relativePath');
+      // File.copy carries source metadata — enforce the attachment class.
+      await AttachmentStorage.protectFile('${dir.path}/$relativePath');
 
       // Await attachment insert — must complete before socket send so that
       // updateMessageId(localId→serverCUID) in ACK handler finds the row.
@@ -1468,10 +1470,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
       // play it without re-downloading from the server. Relative path keeps
       // it immune to iOS container UUID rotation.
       final dir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${dir.path}/snowchat_attachments');
-      if (!attachDir.existsSync()) attachDir.createSync(recursive: true);
+      await AttachmentStorage.ensureDirectory();
       final relativePath = 'snowchat_attachments/$fileId.wav';
       await file.copy('${dir.path}/$relativePath');
+      // File.copy carries source metadata — enforce the attachment class.
+      await AttachmentStorage.protectFile('${dir.path}/$relativePath');
 
       // 5. Attachment row — voice bubble watches this via attachmentWatchProvider
       // (same provider the file / image bubbles use), so both sender and

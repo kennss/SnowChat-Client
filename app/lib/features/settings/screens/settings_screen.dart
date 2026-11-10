@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
+/// @lastUpdated 2026-11-11 (at-rest protection level 1: _performReset closes + deletes the encrypted drift DB and its SQLCipher key BEFORE the secure-storage wipe — files first, key last). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
 ///              chevron) and pushes /settings/profile → ProfileEditScreen to
 ///              edit the nickname. Previously 2026-05-11: Privacy section: added read-only status tile
 ///              "Screenshot blocked — always on" at top. App-wide capture
@@ -670,17 +670,19 @@ class SettingsScreen extends ConsumerWidget {
     //    and emits logout event so listeners (sealedSender / push) tear down.
     await ref.read(tokenManagerProvider).clear();
 
-    // 4. Clear secure storage (identity, PIN, Signal keys — token already
-    //    wiped in step 3, but deleteAll covers everything else).
-    await ref.read(secureStorageProvider).deleteAll();
-
-    // 5. Delete the drift database file. Close the connection first to release
-    //    the handle, then remove snowchat.db (+ WAL/SHM) so the on-disk store is
-    //    empty. Previously this only close()d the connection, leaving the file
-    //    on disk → a new identity reopened it and inherited the prior account's
-    //    conversations and messages (data-isolation leak).
+    // 4. Delete the encrypted drift database. Close the connection first to
+    //    release the handle, then remove the DB (+ WAL/SHM) and only THEN its
+    //    SQLCipher key, so the key never disappears while the database it
+    //    belongs to is still on disk. Previously this only close()d the
+    //    connection, leaving the file on disk → a new identity reopened it and
+    //    inherited the prior account's conversations and messages
+    //    (data-isolation leak). Runs before step 5 for that ordering reason.
     await ref.read(snowDatabaseProvider).close();
-    await deleteDriftDatabaseFile();
+    await deleteDriftDatabaseFile(ref.read(secureStorageProvider));
+
+    // 5. Clear secure storage (identity, PIN, Signal keys — token already
+    //    wiped in step 3, DB key in step 4, deleteAll covers everything else).
+    await ref.read(secureStorageProvider).deleteAll();
 
     // 6. Full in-app restart. Wiping secure storage + the drift file is not
     //    enough on its own: identity-scoped providers (conversation list,

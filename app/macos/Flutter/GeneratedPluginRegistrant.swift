@@ -28,7 +28,7 @@ import photo_manager
 import record_macos
 import share_plus
 import sqflite_darwin
-import sqlite3_flutter_libs
+import sqlcipher_flutter_libs
 import url_launcher_macos
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  At-rest protection level 1 (2026-11-11; whole-domain paths fixed to "." the same day) — Android 12+ backup / device-transfer
+  rules (android:dataExtractionRules). Kennt Kim / Calida Lab.
+
+  android:allowBackup="false" already disables cloud backup, but on apps that
+  target Android 12+ some OEMs still run device-to-device (D2D) transfers
+  unless these rules exclude the data. SnowChat keeps nothing that should ever
+  leave the device: the SQLCipher database (its key lives in the Keystore and
+  could not be restored anyway), the decrypted attachments, and the
+  Keystore-bound EncryptedSharedPreferences. Every domain is excluded for both
+  transfer types; the two paths that matter most are also listed explicitly.
+
+  getApplicationDocumentsDirectory() on Android = <dataDir>/app_flutter
+  (domain "root", path "app_flutter/...").
+
+  path="." means the whole domain. "./" is rejected by release lint
+  (FullBackupContent: no subdirectories allowed for the database / sharedpref
+  domains), so every whole-domain rule uses the bare "." form.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="app_flutter/snowchat_db/" />
+        <exclude domain="root" path="app_flutter/snowchat_attachments/" />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="app_flutter/snowchat_db/" />
+        <exclude domain="root" path="app_flutter/snowchat_attachments/" />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+    </device-transfer>
+</data-extraction-rules>

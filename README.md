@@ -8,7 +8,7 @@
 
 E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B305-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B305/snowchat-arm64-v8a.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B306-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B306/snowchat-arm64-v8a.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
@@ -32,7 +32,7 @@ Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked,
 
 ### Android
 
-**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+305)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B305/snowchat-arm64-v8a.apk)**
+**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+306)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B306/snowchat-arm64-v8a.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 
@@ -134,7 +134,7 @@ SnowChat IDs are **not phone numbers, not emails**. They are deterministic hashe
 
 | Layer | Stack |
 |-------|-------|
-| Mobile | Flutter 3.x · Dart · Riverpod · GoRouter · drift (SQLite) · `flutter_secure_storage` |
+| Mobile | Flutter 3.x · Dart · Riverpod · GoRouter · drift (SQLCipher-encrypted SQLite) · `flutter_secure_storage` |
 | E2EE | Pure Dart Signal Protocol · pinenacl · X25519 / Ed25519 / XSalsa20-Poly1305 / HMAC-SHA256 |
 | Solana | Anchor (Rust) · Tensor-fork marketplace · Compressed NFTs (Bubblegum) · Metaplex Token Metadata · SPL Token · Helius |
 | Wallet | BIP-39 · SLIP-0010 · `Ed25519HDKeyPair` · `local_auth` biometric gate |

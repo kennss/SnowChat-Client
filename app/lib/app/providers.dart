@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: identityPinStoreProvider → verifiedIdentityStoreProvider (wired to IdentityVerificationDao for the verified-peer lookup and to IdentityChangeHandler for user-visible identity events); app startup drops pre-v2 Safety Number rows once per launch (idempotent)). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: TransferService is no longer instantiated at startup when AppConfig.enableWallet is false, so incoming transfer requests cannot raise a confirm dialog). Earlier 2026-08-04 (deleteDriftDatabaseFile(): remove snowchat.db + WAL/SHM on app reset / account delete so a newly created identity does not inherit the prior account's conversations — path co-located with _openDb). Earlier 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
+/// @lastUpdated 2026-11-11 (At-rest protection level 1: snowDatabaseProvider opens the drift DB through SQLCipher via openEncryptedDatabase (random 256-bit key in secure storage, key creation main-isolate only, retry after a locked keychain); deleteDriftDatabaseFile(storage) deletes the DB files then the key; the iOS fresh-install keychain purge moved into ensureFreshInstallSecureStoragePurge() (memoized) and is awaited by the DB opener before the key is read; startup applies the attachments-dir protection). Earlier 2026-11-10 (B-2 Identity Binding v1: identityPinStoreProvider → verifiedIdentityStoreProvider (wired to IdentityVerificationDao for the verified-peer lookup and to IdentityChangeHandler for user-visible identity events); app startup drops pre-v2 Safety Number rows once per launch (idempotent)). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: TransferService is no longer instantiated at startup when AppConfig.enableWallet is false, so incoming transfer requests cannot raise a confirm dialog). Earlier 2026-08-04 (deleteDriftDatabaseFile(): remove snowchat.db + WAL/SHM on app reset / account delete so a newly created identity does not inherit the prior account's conversations — path co-located with _openDb). Earlier 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
 ///              tokenSnapshotProvider 로 derived. tokenManagerProvider KeepAlive
 ///              SSoT. AuthService 의 onTokenRefresh callback 폐기. socket /
 ///              push token sync 도 events stream 으로 listen)
@@ -22,7 +22,9 @@
 ///  - tokenSnapshotProvider: derived sync StateProvider exposing current TokenSnapshot
 ///  - authTokenProvider: legacy compat — projects tokenSnapshot.access (read-only)
 ///  - socketManagerProvider: SocketManager provider
-///  - snowDatabaseProvider: SnowDatabase provider
+///  - snowDatabaseProvider: SnowDatabase provider (SQLCipher-encrypted, see encrypted_database.dart)
+///  - ensureFreshInstallSecureStoragePurge(): memoized iOS fresh-install keychain purge (startup + DB opener)
+///  - deleteDriftDatabaseFile(storage): reset / account delete — DB files, then the DB key
 ///  - messageDaoProvider: MessageDao provider (drift DB SSoT)
 ///  - conversationDaoProvider: ConversationDao provider (drift DB SSoT)
 ///  - sessionStoreProvider: SessionStore provider
@@ -48,7 +50,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -94,6 +95,8 @@ import '../core/storage/daos/attachment_dao.dart';
 import '../core/storage/daos/ai_message_dao.dart';
 import '../core/storage/daos/identity_verification_dao.dart';
 import '../core/storage/secure_storage.dart';
+import '../core/storage/encrypted_database.dart';
+import '../core/storage/local_file_protection.dart';
 import '../features/settings/settings_provider.dart';
 import '../features/wallet/services/transfer_event_bus.dart';
 import '../features/wallet/services/transfer_service.dart';
@@ -124,40 +127,16 @@ final isLockedProvider = StateProvider<bool>((ref) => false);
 /// process restart bypassed the lock screen.
 final requiresPinSetupProvider = StateProvider<bool>((ref) => false);
 
-// --- App startup initialization ---
-/// Checks secure storage for existing identity, authenticates with server,
-/// and ONLY THEN hydrates app state (isOnboarded, isLocked).
-/// Must complete before the router is created.
-///
-/// Flow:
-///   1. hasIdentity? → false → /welcome (fresh install)
-///   2. authenticate() → 404 → /welcome (server DB reset)
-///   3. authenticate() → 403 → /welcome (multi-device block)
-///   4. authenticate() → network error → offline mode (show chat, can't send)
-///   5. authenticate() → success → set isOnboarded/isLocked → initialize E2EE
-final appStartupProvider = FutureProvider<bool>((ref) async {
-  final identityManager = ref.read(identityManagerProvider);
-  final secureStorage = ref.read(secureStorageProvider);
+/// Step 0 of app startup, also awaited by the database opener before it reads
+/// the database key: iOS Keychain fresh-install detection (Phase 8.7 TODO #8).
+/// Memoized per process so both callers share one run.
+Future<void>? _freshInstallPurge;
+Future<void> ensureFreshInstallSecureStoragePurge(
+        SecureStorageService secureStorage) =>
+    _freshInstallPurge ??= _runFreshInstallSecureStoragePurge(secureStorage);
 
-  // Step 0: iOS Keychain fresh-install detection (Phase 8.7 TODO #8).
-  //
-  // Apple's Keychain preserves items across app uninstall for every
-  // accessibility class — deliberate Apple behavior that breaks our
-  // "uninstall = wipe all sensitive data" assumption. Android's
-  // EncryptedSharedPreferences does NOT preserve, so this is a no-op there.
-  //
-  // Technique: the application documents directory IS wiped on uninstall
-  // on both platforms. We drop a plain-text install marker there. If the
-  // marker file is missing on startup but Keychain has stale entries from
-  // a previous install, we know this is a fresh install and must clear
-  // the Keychain before the flow below reads any stored identity / PIN.
-  //
-  // Without this, a malicious holder of a lost iPhone could:
-  //   (1) uninstall the app to bypass PIN,
-  //   (2) reinstall — Keychain still has identity + PIN,
-  //   (3) brute-force the PIN (6-digit, 30s lockout after 5 attempts),
-  //   (4) walk into the full chat history + mnemonic + wallet.
-  // With this, step (2) restarts the user in a true fresh-install state.
+Future<void> _runFreshInstallSecureStoragePurge(
+    SecureStorageService secureStorage) async {
   try {
     final docsDir = await getApplicationDocumentsDirectory();
     final markerFile = File(p.join(docsDir.path, 'install_marker'));
@@ -194,6 +173,49 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
     debugPrint('[AppStartup] install marker check failed '
         '(non-fatal): $e');
   }
+}
+
+// --- App startup initialization ---
+/// Checks secure storage for existing identity, authenticates with server,
+/// and ONLY THEN hydrates app state (isOnboarded, isLocked).
+/// Must complete before the router is created.
+///
+/// Flow:
+///   1. hasIdentity? → false → /welcome (fresh install)
+///   2. authenticate() → 404 → /welcome (server DB reset)
+///   3. authenticate() → 403 → /welcome (multi-device block)
+///   4. authenticate() → network error → offline mode (show chat, can't send)
+///   5. authenticate() → success → set isOnboarded/isLocked → initialize E2EE
+final appStartupProvider = FutureProvider<bool>((ref) async {
+  final identityManager = ref.read(identityManagerProvider);
+  final secureStorage = ref.read(secureStorageProvider);
+
+  // Step 0: iOS Keychain fresh-install detection (Phase 8.7 TODO #8).
+  //
+  // Apple's Keychain preserves items across app uninstall for every
+  // accessibility class — deliberate Apple behavior that breaks our
+  // "uninstall = wipe all sensitive data" assumption. Android's
+  // EncryptedSharedPreferences does NOT preserve, so this is a no-op there.
+  //
+  // Technique: the application documents directory IS wiped on uninstall
+  // on both platforms. We drop a plain-text install marker there. If the
+  // marker file is missing on startup but Keychain has stale entries from
+  // a previous install, we know this is a fresh install and must clear
+  // the Keychain before the flow below reads any stored identity / PIN.
+  //
+  // Without this, a malicious holder of a lost iPhone could:
+  //   (1) uninstall the app to bypass PIN,
+  //   (2) reinstall — Keychain still has identity + PIN,
+  //   (3) brute-force the PIN (6-digit, 30s lockout after 5 attempts),
+  //   (4) walk into the full chat history + mnemonic + wallet.
+  // With this, step (2) restarts the user in a true fresh-install state.
+  await ensureFreshInstallSecureStoragePurge(secureStorage);
+
+  // Level-1 at-rest protection: create / protect the attachments directory
+  // (iOS backup exclusion + CompleteUnlessOpen, sweep of existing files).
+  unawaited(AttachmentStorage.ensureDirectory().then((_) {},
+      onError: (Object e) =>
+          debugPrint('[AppStartup] attachments dir protection failed: $e')));
 
   // Phase 11 (2026-05-04 fresh-install fix): wire authTokenSyncProvider
   // BEFORE the no-identity early return. Previously the wire happened only
@@ -614,42 +636,33 @@ final socketManagerProvider = Provider<SocketManager>((ref) {
 });
 
 // --- Local Database (Drift) ---
-// File-based persistent database. Messages survive app restarts.
-LazyDatabase _openDb() {
-  return LazyDatabase(() async {
-    final sw = Stopwatch()..start();
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File(p.join(dir.path, 'snowchat.db'));
-    final exists = await file.exists();
-    debugPrint('[Perf] 💾 drift open start (exists=$exists)');
-    final db = NativeDatabase.createInBackground(file);
-    debugPrint('[Perf] 💾 drift LazyDatabase resolved: ${sw.elapsedMilliseconds}ms '
-        '(onCreate/onUpgrade will run on first query)');
-    return db;
-  });
+// File-based persistent database, encrypted at rest with SQLCipher (level 1,
+// 2026-11-11). Location, key handling, legacy-plaintext removal and the
+// retry-after-locked-keychain behaviour live in encrypted_database.dart.
+QueryExecutor _openDb(SecureStorageService storage) {
+  return openEncryptedDatabase(
+    storage: storage,
+    // Only the isolate that ran main() may CREATE the key; any other isolate
+    // can only read it. Combined with the per-isolate serialization and the
+    // read-after-write in DatabaseKeyManager, one database never gets two keys.
+    allowKeyCreation: TokenManager.isMainIsolateOwnerSync(),
+    // A stale key left in the iOS Keychain by a previous install must be
+    // purged before it could be adopted for a new database.
+    awaitBeforeKeyAccess: () => ensureFreshInstallSecureStoragePurge(storage),
+  );
 }
 
-/// Delete the drift database file (and its WAL/SHM sidecars) from disk.
-/// Used by the app-reset / account-delete flow so that a newly created identity
-/// does NOT inherit the previous account's conversations and messages. The
-/// SnowDatabase connection must be close()d BEFORE calling this; afterwards
-/// invalidate [snowDatabaseProvider] so the next access opens a fresh, empty
-/// database. Keeps the file-path definition co-located with [_openDb] so the
-/// two never drift apart.
-Future<void> deleteDriftDatabaseFile() async {
-  final dir = await getApplicationDocumentsDirectory();
-  for (final name in ['snowchat.db', 'snowchat.db-wal', 'snowchat.db-shm']) {
-    final f = File(p.join(dir.path, name));
-    try {
-      if (await f.exists()) await f.delete();
-    } catch (e) {
-      debugPrint('[Reset] failed to delete drift file $name: $e');
-    }
-  }
-}
+/// Delete the encrypted drift database (+ WAL/SHM, quarantine and legacy
+/// plaintext files) and THEN its key. Used by the app-reset / account-delete
+/// flow so that a newly created identity does NOT inherit the previous
+/// account's conversations and messages. The SnowDatabase connection must be
+/// close()d BEFORE calling this; afterwards invalidate [snowDatabaseProvider]
+/// so the next access opens a fresh, empty database under a fresh key.
+Future<void> deleteDriftDatabaseFile(SecureStorageService storage) =>
+    deleteEncryptedDatabase(storage);
 
 final snowDatabaseProvider = Provider<SnowDatabase>((ref) {
-  final db = SnowDatabase(_openDb());
+  final db = SnowDatabase(_openDb(ref.read(secureStorageProvider)));
   ref.onDispose(() => db.close());
   return db;
 });

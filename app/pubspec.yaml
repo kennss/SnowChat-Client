@@ -1,7 +1,7 @@
 name: snowchat
 description: E2EE Messenger + Solana Wallet
 publish_to: 'none'
-version: 1.0.0+305
+version: 1.0.0+306
 
 environment:
   sdk: ^3.11.0
@@ -23,7 +23,14 @@ dependencies:
 
   # Local DB
   drift: ^2.16.0
-  sqlite3_flutter_libs: ^0.5.0
+  # At-rest encryption (2026-11-11): SQLCipher replaces the stock sqlite3
+  # native library for the drift DB. 0.6.x is the last line compatible with
+  # package:sqlite3 2.x (drift < 2.32); the package is EOL upstream — the
+  # successor is drift >= 2.32 + sqlite3 3.x with the sqlite3mc build hook,
+  # which needs the analyzer / codegen stack upgraded first. SQLCipher files
+  # stay readable by sqlite3mc (cipher=sqlcipher, legacy=4), so no data reset.
+  sqlcipher_flutter_libs: ^0.6.8
+  sqlite3: ^2.9.4   # direct import of open.dart (SQLCipher library override)
 
   # Secure storage
   flutter_secure_storage: ^9.0.0
@@ -81,6 +88,7 @@ dependencies:
   freezed_annotation: ^2.4.0
   json_annotation: ^4.8.0
   path_provider: ^2.1.0
+  path: ^1.9.1                    # path joins (was used transitively; storage layer imports it directly)
   share_plus: ^12.0.1          # 2026-05-11: 7.x → 12.x. iOS 26 iPhone share sheet silent fail
                                # (sharePositionOrigin 누락 시 no-op) 회피 — fix landed in 12.0.1.
                                # SharePlus.instance.share(ShareParams(...)) API 로 마이그레이션 (3 call site).

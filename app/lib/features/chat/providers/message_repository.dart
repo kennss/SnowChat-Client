@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
+/// @lastUpdated 2026-11-11 (at-rest level 1: received attachments are written via AttachmentStorage.ensureDirectory() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
 ///
 /// @functions
 ///  - MessageRepository: message data layer (drift SSoT, server fetch, socket reception)
@@ -37,6 +37,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/network/file_service.dart';
 import '../../../core/network/socket_manager.dart';
 import '../../../core/storage/daos/attachment_dao.dart';
+import '../../../core/storage/local_file_protection.dart';
 import '../../../core/storage/daos/message_dao.dart';
 import '../../../core/storage/database.dart' hide Conversation;
 import '../../../core/storage/tables/attachments_table.dart';
@@ -589,10 +590,9 @@ class MessageRepository {
 
       // Save plaintext to local storage
       final dir = await getApplicationDocumentsDirectory();
-      final attachDir = Directory('${dir.path}/snowchat_attachments');
-      if (!attachDir.existsSync()) {
-        attachDir.createSync(recursive: true);
-      }
+      // Creates the dir with its at-rest policy (iOS: backup-excluded,
+      // CompleteUnlessOpen — writable while locked, unreadable once closed).
+      await AttachmentStorage.ensureDirectory();
       final ext = fileName.contains('.') ? fileName.split('.').last : 'bin';
       // Store relative path — immune to iOS container UUID changes
       final relativePath = 'snowchat_attachments/$fileId.$ext';

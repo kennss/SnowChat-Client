@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-03 (F4(a): "Send Message" now write-throughs the new 1:1 conversation into drift via ConversationDao.findOrCreate before navigating, so the Sealed Sender receive path routes the first reply to the same room instead of a separate snow-id room = conversation split. Matches the addConversation write-through the other two open sites get). Earlier 2026-04-26 (header English translation)
 ///  - Converted to ConsumerStatefulWidget — auto refresh on tab entry
 ///
 /// @functions
@@ -231,9 +231,24 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
                       data: {'recipientSnowchatId': contact.snowChatId},
                     );
                     final convId = (response.data as Map)['id'] as String;
+                    // F4(a) (2026-08-03): persist the room into drift so the
+                    // Sealed Sender receive path (findDirectByParticipant)
+                    // routes the first reply to THIS room instead of a separate
+                    // snow-id fallback room (conversation split). Mirrors the
+                    // addConversation write-through the other two open sites get
+                    // (this screen navigates by CUID without addConversation).
+                    final myId = ref.read(currentSnowIdProvider) ?? '';
+                    await convDao.findOrCreate(
+                      id: convId,
+                      type: 'direct',
+                      participantIds: [myId, contact.snowChatId],
+                      title: contact.displayName,
+                    );
                     // Refresh conversation list so the new conversation appears
                     ref.read(conversationListProvider.notifier).refresh();
-                    context.push('/chat/$convId');
+                    // Guard context across the awaits above (consistency with
+                    // the other two open sites).
+                    if (context.mounted) context.push('/chat/$convId');
                   } catch (e) {
                     debugPrint('[Contact] Failed to create conversation: $e');
                   }

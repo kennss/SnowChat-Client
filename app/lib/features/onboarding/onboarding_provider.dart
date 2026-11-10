@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-04 (setProfile now reflects the new nickname into currentDisplayNameProvider immediately, so a create-identity flow following an in-session reset shows the correct name without a cold start). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - OnboardingStep: onboarding-step enum (welcome, setupProfile, creating, backupPhrase, verifyPhrase, complete)
@@ -98,6 +98,11 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
     // Store PIN hash (never raw) and display name
     await secureStorage.storePin(pin);
     await secureStorage.storeDisplayName(nickname);
+    // Reflect the new nickname into the in-memory provider immediately.
+    // currentDisplayNameProvider is otherwise only hydrated from secure storage
+    // at app startup, so without this a create-identity flow that follows an
+    // in-session reset (no cold start) would keep showing the stale value.
+    _ref.read(currentDisplayNameProvider.notifier).state = nickname;
     // Phase 8.7 round 5: PIN is now on disk → router can stop redirecting
     // to /setup-profile and let the user reach /chat (or /pin-login on
     // next cold start, which is the desired locked-by-PIN state).

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
+/// @lastUpdated 2026-11-10 (B-2: identityForUser() non-consuming GET /keys/identity/:snowId + identityBinding PUT /keys/identity-binding). Earlier 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
 ///  - ApiEndpoints.groupLeave(): group leave endpoint
 ///  - ApiEndpoints.group(): specific group endpoint
 ///  - ApiEndpoints.groupMembers(): group members endpoint
@@ -19,6 +19,7 @@
 ///  - ApiEndpoints.getBaseUrl(): return platform-specific base URL
 ///  - ApiEndpoints.getSocketUrl(): return platform-specific socket URL
 ///  - ApiEndpoints.preKeysForUser(): prekey endpoint for a specific user
+///  - ApiEndpoints.identityForUser(): non-consuming identity directory of a user (B-2)
 ///  - ApiEndpoints.messagesForConversation(): messages endpoint for a specific conversation
 ///  - ApiEndpoints.conversation(): specific conversation endpoint
 ///  - ApiEndpoints.contact(): specific contact endpoint
@@ -112,6 +113,13 @@ abstract class ApiEndpoints {
   static const String preKeyCount = '/keys/prekey-count';
   static const String signedPreKey = '/keys/signed-prekey';
 
+  // B-2 Identity Binding v1
+  /// Non-consuming identity lookup (does NOT pop a one-time prekey).
+  static String identityForUser(String snowId) => '/keys/identity/$snowId';
+
+  /// Register / refresh our binding without uploading prekeys (PUT).
+  static const String identityBinding = '/keys/identity-binding';
+
   // Messages — Phase 6 queue model
   static const String sendMessage = '/messages/send';
   /// GET — Fetch pending+delivered messages from the per-user queue.
@@ -135,6 +143,9 @@ abstract class ApiEndpoints {
 
   // Users
   static String userLookup(String snowchatId) => '/users/$snowchatId';
+  static const String lookupByNick =
+      '/users/lookup-by-nick'; // POST — nick first-contact; returns one-time opaque inviteToken (no id/avatar)
+  static const String userProfile = '/users/profile'; // PUT — update displayName / avatar
 
   // Groups
   static const String groups = '/groups';
@@ -155,6 +166,8 @@ abstract class ApiEndpoints {
   static const String channels = '/channels';
   static const String personalChannel = '/channels/personal';
   static const String personalChannelAdd = '/channels/personal/add';
+  static const String personalChannelAddByToken =
+      '/channels/personal/add-by-token'; // POST — redeem a nick-invite opaque token
   static String personalChannelAccept(String channelId) =>
       '/channels/personal/accept/$channelId';
   static const String channelDiscover = '/channels/discover';

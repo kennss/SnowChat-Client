@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase F: + menu -> Send Asset option (1:1 only) -> TransferRequestScreen)
+/// @lastUpdated 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the + menu's Send Asset is offered only when AppConfig.enableWallet — it pushes TransferRequestScreen directly, so the router guard never covered it). Earlier 2026-08-05 (channel room default title fallback "Channel"→"Community"). Earlier 2026-08-03 (group message sender label resolves the name via roster/contacts/friends instead of a raw snow-id (resolveSenderName); the group/channel HEADER falls back to roster member names ("Dave, Carol") when the real name is unavailable (GMK not delivered / channel not loaded) instead of showing a bare "Group"; removed the local _truncateSnowId (folded into shared truncateSnowId)). Earlier 2026-07-15 (sealed read receipt: MarkReadHelper wired with e2eeHandler + directPeerResolver (direct → peer snowId, group → null) so reads travel E2EE). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase F: + menu -> Send Asset option (1:1 only) -> TransferRequestScreen)
 ///
 /// @functions
 ///  - ChatScreen: chat-screen ConsumerStatefulWidget
@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
+import '../../../app/app_config.dart';
 import '../../../core/network/link_preview_service.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
@@ -31,6 +32,7 @@ import '../../../shared/widgets/snowflake_background.dart';
 import '../providers/chat_provider.dart';
 import '../providers/conversation_list_provider.dart';
 import '../providers/mark_read_helper.dart';
+import '../utils/sender_name_resolver.dart';
 import '../widgets/disappearing_timer_selector.dart';
 import '../widgets/identity_change_banner.dart';
 import '../widgets/message_bubble.dart';
@@ -65,6 +67,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _scrollController = ScrollController();
   late final MarkReadHelper _markReadHelper;
   StreamSubscription<Map<String, dynamic>>? _groupDeletedSub;
+  StreamSubscription<Map<String, dynamic>>? _channelKickedSub;
   StreamSubscription<Map<String, dynamic>>? _channelOwnerChangedSub;
 
   /// P0-2: in-memory dismissal of the IdentityChangeBanner. Reset every
@@ -98,7 +101,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _markReadHelper = MarkReadHelper(
       conversationId: widget.conversationId,
       messageDao: ref.read(messageDaoProvider),
-      socketManager: ref.read(socketManagerProvider),
+      e2eeHandler: ref.read(encryptedMessageHandlerProvider),
+      // Direct chat → peer snowId; group → null (read receipts are 1:1 only).
+      directPeerResolver: () {
+        final conv = ref
+            .read(conversationListProvider)
+            .where((c) => c.id == widget.conversationId)
+            .firstOrNull;
+        if (conv == null || conv.type != ConversationType.direct) return null;
+        return conv.otherParticipant(_myId);
+      },
       expiringManager: ref.read(expiringMessageManagerProvider),
       myId: ref.read(currentSnowIdProvider) ?? '',
       onMarkedRead: (_) {
@@ -151,6 +163,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
     });
+
+    // Auto-pop when I am kicked from the community whose room I'm viewing.
+    // The server emits channel_member_left{youWereRemoved:true} directly to the
+    // kicked user; if that community owns the current room, leave it and notify.
+    // (The community itself is dropped from the lists by ConversationListNotifier.)
+    _channelKickedSub = sm.onChannelMemberLeft.listen((data) {
+      final youWereRemoved = data['youWereRemoved'] as bool? ?? false;
+      final channelId = data['channelId'] as String?;
+      if (!youWereRemoved || channelId == null) return;
+      final convs = ref.read(conversationListProvider);
+      final conv =
+          convs.where((c) => c.id == widget.conversationId).firstOrNull;
+      if (conv?.channelId == channelId) {
+        if (mounted) {
+          context.pop();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('You were removed from this community')),
+          );
+        }
+      }
+    });
   }
 
   @override
@@ -172,6 +206,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void dispose() {
     _groupDeletedSub?.cancel();
+    _channelKickedSub?.cancel();
     _channelOwnerChangedSub?.cancel();
     _markReadHelper.dispose();
     _scrollController.dispose();
@@ -260,7 +295,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               );
         },
         onAddFriend: () => _handleAddFriend(),
-        onSendAsset: (isDirect1to1 && peerSnowId.isNotEmpty)
+        // Send Asset opens TransferRequestScreen through Navigator.push, bypassing
+        // the router — so the route guard alone did not hide it.
+        onSendAsset: (AppConfig.enableWallet &&
+                isDirect1to1 &&
+                peerSnowId.isNotEmpty)
             ? () => _handleSendAsset(
                   peerSnowId: peerSnowId,
                   conversation: conversation,
@@ -491,7 +530,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         notifier.deleteMessageForMe(message.id);
         break;
       case MessageAction.deleteForEveryone:
-        await notifier.deleteMessageForEveryone(message.id);
+        final result = await notifier.deleteMessageForEveryone(message.id);
+        if (!mounted) break;
+        if (result == UnsendResult.unsent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Message unsent')),
+          );
+        } else {
+          // Couldn't propagate — the message was KEPT (not silently deleted) so
+          // it can be retried. Offer an explicit delete-for-me rather than doing
+          // it automatically (which would recreate the false "removed for
+          // everyone" belief).
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text("Couldn't unsend — check your connection"),
+              action: SnackBarAction(
+                label: 'Delete for me',
+                onPressed: () => notifier.deleteMessageForMe(message.id),
+              ),
+            ),
+          );
+        }
         break;
     }
   }
@@ -723,7 +782,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     .deleteChat();
                 if (peer != null && peer.isNotEmpty) {
                   try {
-                    await ref.read(identityPinStoreProvider).unpin(peer);
+                    // B-2: drop the identity record; the bound latch is kept
+                    // so this peer can never be downgraded to unbound keys.
+                    await ref.read(verifiedIdentityStoreProvider).remove(peer);
                     await ref
                         .read(identityVerificationDaoProvider)
                         .deleteByPeer(peer);
@@ -870,7 +931,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     for (final channel in channels) {
       for (final room in channel.rooms) {
         if (room.id == roomId) {
-          if (room.isDefaultRoom) return channel.name ?? 'Channel';
+          if (room.isDefaultRoom) return channel.name ?? 'Community';
           if (room.isSystemRoom) return 'System';
           return room.name;
         }
@@ -954,6 +1015,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       title = (recipientId != null && recipientId.isNotEmpty)
           ? '${recipientId.substring(0, recipientId.length.clamp(0, 10))}...'
           : 'Chat';
+    }
+    // A group/channel room whose real name isn't available yet (GMK not
+    // delivered, or channel not loaded) would show a bare "Group"/"Chat". Fall
+    // back to the roster member names instead — the roster is always local.
+    if (isGroupChat && (title == 'Group' || title == 'Chat' || title.isEmpty)) {
+      final rosterName =
+          groupDisplayNameFallback(ref, widget.conversationId, mySnowId: _myId);
+      if (rosterName != null && rosterName.isNotEmpty) title = rosterName;
     }
     final otherSnowId = conversation?.otherParticipant(_myId) ?? '';
     final ttlLabel = _ttlDisplayLabel(chatState.disappearingTTL);
@@ -1432,7 +1501,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                         padding: const EdgeInsets.only(left: 12, bottom: 2, top: 4),
                                         child: _SenderNameWithRole(
                                           senderSnowchatId: message.senderSnowchatId,
-                                          displayName: message.senderDisplayName ?? _truncateSnowId(message.senderSnowchatId),
+                                          envelopeName: message.senderDisplayName,
                                           color: _senderColor(message.senderSnowchatId),
                                           roomId: widget.conversationId,
                                         ),
@@ -1885,12 +1954,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return _senderColors[hash % _senderColors.length];
   }
 
-  String _truncateSnowId(String snowId) {
-    if (snowId.length > 12) {
-      return '${snowId.substring(0, 8)}...${snowId.substring(snowId.length - 4)}';
-    }
-    return snowId;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1900,13 +1963,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 class _SenderNameWithRole extends ConsumerWidget {
   const _SenderNameWithRole({
     required this.senderSnowchatId,
-    required this.displayName,
+    required this.envelopeName,
     required this.color,
     required this.roomId,
   });
 
   final String senderSnowchatId;
-  final String displayName;
+  /// Server-supplied sender name; null for sealed / receive-first senders, in
+  /// which case the name is resolved from roster/contacts/friends.
+  final String? envelopeName;
   final Color color;
   final String roomId;
 
@@ -1914,6 +1979,15 @@ class _SenderNameWithRole extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final groupState = ref.watch(groupDetailProvider(roomId));
     final detail = groupState;
+
+    // Resolve a human name (roster → contacts → friends → truncated snow-id)
+    // instead of rendering the raw snow-id when the envelope carries no name.
+    final displayName = resolveSenderName(
+      ref,
+      senderSnowchatId,
+      roomId: roomId,
+      envelopeName: envelopeName,
+    );
 
     // Determine role
     String? roleLabel;

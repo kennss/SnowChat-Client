@@ -8,24 +8,29 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-03 (Phase 11 — refreshToken/restoreToken removed; authenticate returns TokenSnapshot)
+/// @lastUpdated 2026-11-10 (B-2: the login nonce is signed via IdentityManager.signAuthChallenge (strict format — signing-oracle fix); deviceInfo carries identityKeyEd25519 + identityBinding so a freshly registered device row is bound from the start; records accountMaxIdentityBindingEpoch from the verify response (H1); on the 403 "deviceId is registered to another account" regenerates device_id and retries the full challenge once (L5); retries the 503 registration-conflict race with a short backoff without touching device_id). Earlier 2026-05-03 (Phase 11 — refreshToken/restoreToken removed; authenticate returns TokenSnapshot)
 ///
 /// @functions
 ///  - AuthService: authentication service class
 ///  - AuthService.register(): register new ID with server
-///  - AuthService.authenticate(): challenge-response, returns TokenSnapshot
+///  - AuthService.authenticate(): challenge-response (signAuthChallenge), returns TokenSnapshot
+///  - AuthService._buildDeviceInfo(): device payload incl. Ed25519 key + identity binding (B-2)
+///  - AuthService._isDeviceIdOwnedByAnotherAccount(): detect the 403 deviceId-conflict (L5)
+///  - AuthService._authenticateWithConflictRetry(): 503 registration-race backoff
 ///  - AuthService.isRegistered(): check whether registered with the server
 ///  - AuthService.logout(): best-effort push-token unregister (token wipe is TokenManager.clear())
 
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart' show DioException;
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import 'api_client.dart';
 import 'api_endpoints.dart';
 import 'token_manager.dart';
+import '../crypto/identity_binding.dart';
 import '../crypto/identity_manager.dart';
 import '../storage/secure_storage.dart';
 import '../../utils/version.dart';
@@ -105,6 +110,55 @@ class AuthService {
   /// 3. POST /auth/verify { snowchatId, nonce, signature, deviceInfo }
   /// 4. Decode JWT exp claim and return TokenSnapshot
   Future<TokenSnapshot> authenticate() async {
+    try {
+      return await _authenticateWithConflictRetry();
+    } on DioException catch (e) {
+      if (!_isDeviceIdOwnedByAnotherAccount(e)) rethrow;
+      // B-2 L5: our stored device_id belongs to another account on the
+      // server (e.g. a Keychain item that survived an account switch). The
+      // server refuses to rebind it — mint a fresh deviceId and retry ONCE
+      // with a brand-new challenge (the old nonce may already be consumed).
+      // This is the ONLY error that regenerates the deviceId.
+      debugPrint('[AuthService] deviceId owned by another account — '
+          'regenerating deviceId and retrying once');
+      await secureStorage.write(_deviceIdKey, const Uuid().v4());
+      return _authenticateWithConflictRetry();
+    }
+  }
+
+  /// Backoff for the server's transient 503 "Device registration conflict.
+  /// Please retry." (concurrent-registration race on /auth/verify).
+  static const List<Duration> _conflictRetryDelays = [
+    Duration(milliseconds: 400),
+    Duration(milliseconds: 1200),
+  ];
+
+  /// Full challenge/verify, retried with a short backoff ONLY on the 503
+  /// registration-conflict race. Never regenerates the deviceId and never
+  /// surfaces as an auth failure while retries remain (no forced logout).
+  Future<TokenSnapshot> _authenticateWithConflictRetry() async {
+    for (var attempt = 0;; attempt++) {
+      try {
+        return await _authenticateOnce();
+      } on DioException catch (e) {
+        final retryable = e.response?.statusCode == 503;
+        if (!retryable || attempt >= _conflictRetryDelays.length) rethrow;
+        debugPrint('[AuthService] device registration conflict (503) — '
+            'retry ${attempt + 1}/${_conflictRetryDelays.length}');
+        await Future<void>.delayed(_conflictRetryDelays[attempt]);
+      }
+    }
+  }
+
+  /// True for the server's 403 "deviceId is registered to another account".
+  static bool _isDeviceIdOwnedByAnotherAccount(DioException e) {
+    if (e.response?.statusCode != 403) return false;
+    final body = e.response?.data;
+    return body != null &&
+        body.toString().contains('deviceId is registered to another account');
+  }
+
+  Future<TokenSnapshot> _authenticateOnce() async {
     final snowId = await identityManager.getSnowChatId();
     if (snowId == null) {
       throw StateError('No identity found. Create or restore identity first.');
@@ -121,8 +175,11 @@ class AuthService {
     );
     final nonce = challengeData['nonce'] as String;
 
-    // Step 2: Sign nonce with Ed25519 private key (hex-encoded signature)
-    final signatureHex = await identityManager.signString(nonce);
+    // Step 2: Sign nonce with Ed25519 private key (hex-encoded signature).
+    // B-2 §3.1: signAuthChallenge refuses (FormatException → login aborted)
+    // any nonce that is not the server's `uuidv4-base36(ms)` shape, so the
+    // login challenge cannot be abused as a general account-key oracle.
+    final signatureHex = await identityManager.signAuthChallenge(nonce);
 
     // Step 3: Build device info and verify
     final deviceId = await _getOrCreateDeviceId();
@@ -143,6 +200,22 @@ class AuthService {
     );
     final token = verifyData['token'] as String;
     final refreshToken = verifyData['refreshToken'] as String;
+
+    // B-2 H1: remember the account-wide max binding epoch so every later
+    // mint lands above it (a restore / fresh install has no local history).
+    // A soft-rejected login binding is repaired by the prekey-count
+    // self-check right after initialize().
+    try {
+      await identityManager.recordAccountMaxBindingEpoch(
+          verifyData['accountMaxIdentityBindingEpoch']);
+      if (verifyData['bindingAccepted'] == false) {
+        debugPrint('[AuthService] login binding soft-rejected '
+            '(${verifyData['bindingRejectReason']}) — self-check will repair');
+      }
+    } catch (e) {
+      debugPrint('[AuthService] account max epoch not recorded: '
+          '${e.runtimeType}');
+    }
 
     debugPrint('[AuthService] Authenticated successfully');
     return TokenSnapshot.fromTokens(
@@ -235,9 +308,38 @@ class AuthService {
     // ignores unknown key and so newer server doesn't blank existing value.
     final appVersion = await getAppVersionForServer();
 
+    // B-2 Identity Binding v1: ship the Signal Ed25519 key and the account-
+    // signed binding with the device registration so the server row is bound
+    // from the first request (no unbound window). Omitted only when the Ed
+    // key does not exist yet; the prekey upload / self-check covers that.
+    Map<String, dynamic>? bindingFields;
+    final ed25519 = await identityManager.getSignalVerifyKey();
+    if (ed25519 != null &&
+        ed25519.length == 32 &&
+        realPublicKey.length == 32 &&
+        IdentityBindingV1.isValidDeviceId(deviceId)) {
+      try {
+        final binding = await identityManager.currentIdentityBinding(
+          deviceId: deviceId,
+          identityKey: realPublicKey,
+          ed25519: ed25519,
+        );
+        bindingFields = {
+          'identityKeyEd25519': base64Encode(ed25519),
+          'identityBinding': binding.wire.toWireJson(),
+        };
+      } catch (e) {
+        // Never block login on the binding: the prekey upload and the
+        // prekey-count self-check (PUT /keys/identity-binding) repair it.
+        debugPrint('[AuthService] identity binding unavailable at login: '
+            '${e.runtimeType}');
+      }
+    }
+
     return {
       'deviceId': deviceId,
       'identityKey': base64Encode(realPublicKey),
+      ...?bindingFields,
       'signedPreKey': signedPreKey,
       'signedPreKeySig': signedPreKeySig,
       'signedPreKeyId': 0,

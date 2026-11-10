@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header English translation; channel avatar image pick + server upload implemented)
+/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings). Earlier 2026-04-26 (header English translation; channel avatar image pick + server upload implemented)
 ///
 /// @functions
 ///  - CreateChannelScreen: channel-creation form
@@ -126,7 +126,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
       setState(() => _isCreating = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to create channel: $e')),
+          SnackBar(content: Text('Failed to create community: $e')),
         );
       }
     }
@@ -141,7 +141,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => context.pop(),
         ),
-        title: const Text('Create Channel'),
+        title: const Text('Create Community'),
       ),
       body: Column(
         children: [
@@ -179,7 +179,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
             const SizedBox(height: 8),
             Center(
               child: Text(
-                _avatarFile != null ? 'Tap to change' : 'Upload Channel Icon',
+                _avatarFile != null ? 'Tap to change' : 'Upload Community Icon',
                 style: const TextStyle(
                     color: SnowColors.textTertiary, fontSize: 12),
               ),
@@ -188,7 +188,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
             const SizedBox(height: SnowSizes.lg),
 
             // Channel name
-            const Text('Channel Name *',
+            const Text('Community Name *',
                 style: TextStyle(
                     color: SnowColors.textPrimary,
                     fontWeight: FontWeight.w600)),
@@ -197,7 +197,8 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
               controller: _nameController,
               onChanged: (_) => setState(() {}),
               maxLength: 50,
-              decoration: const InputDecoration(hintText: 'Enter channel name'),
+              decoration:
+                  const InputDecoration(hintText: 'Enter community name'),
             ),
 
             const SizedBox(height: SnowSizes.md),
@@ -213,7 +214,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
               maxLines: 3,
               maxLength: 500,
               decoration:
-                  const InputDecoration(hintText: 'What is this channel about?'),
+                  const InputDecoration(hintText: 'What is this community about?'),
             ),
 
             const SizedBox(height: SnowSizes.md),
@@ -281,7 +282,7 @@ class _CreateChannelScreenState extends ConsumerState<CreateChannelScreen> {
                         width: 20,
                         height: 20,
                         child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('Create Channel'),
+                    : const Text('Create Community'),
               ),
             ),
           ),

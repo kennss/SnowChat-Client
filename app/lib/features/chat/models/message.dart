@@ -72,6 +72,18 @@ class Message {
   bool get isExpired =>
       expiresAt != null && DateTime.now().isAfter(expiresAt!);
 
+  /// How long after sending a message may still be unsent (deleted for
+  /// everyone). Single source of truth shared by the context-menu gate and the
+  /// dispatch guard so they can never drift apart.
+  static const Duration unsendWindow = Duration(minutes: 5);
+
+  /// Whether this message is still within the unsend window. Past it, the
+  /// "Delete for Everyone" option is hidden — the sealed unsend control is not
+  /// sent for old messages, so offering it would falsely imply the peer's copy
+  /// was removed.
+  bool get isWithinUnsendWindow =>
+      DateTime.now().difference(timestamp) < unsendWindow;
+
   bool isMine(String mySnowId) => senderSnowchatId == mySnowId;
 
   /// For voice messages, extract duration in seconds.

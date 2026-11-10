@@ -1,32 +1,38 @@
 /// @file        verify_identity_screen.dart
-/// @description Safety Number verification screen for a 1:1 peer. Computes
-///              (or reads from cache) the Signal-compatible 60-digit
-///              fingerprint between the local user and the peer's currently
-///              pinned Ed25519 identity key, displays it as a 6×2 grid,
-///              shows a context-appropriate "key changed" banner if the
-///              IdentityVerifications row indicates a recent TOFU mismatch,
-///              and exposes:
-///                - Mark as Verified toggle (writes to IdentityVerificationDao)
-///                - Show QR code action (peer scan)
-///                - Help dialog explaining what a Safety Number is
+/// @description Safety Number verification screen for a 1:1 peer.
 ///
-///              On first open, if no DAO row exists yet, the screen
-///              computes the number from the IdentityPinStore (TOFU pin
-///              keyed by "snowId:deviceId") and upserts a row so the
-///              cached value is available for subsequent screen opens
-///              without 5200 SHA-512 rounds in the UI thread.
+///              B-2 Safety Number v2 (2026-11-10): the 60-digit number is an
+///              ACCOUNT fingerprint — computed over both users' ACCOUNT public
+///              keys (the keys the SnowChat IDs are derived from) with
+///              algorithm version 2. It answers "is the SnowChat ID I am
+///              talking to really this person's account?" (friend-add snowId
+///              substitution). Device-key changes of the same account do not
+///              change it; those are proven by the account-signed identity
+///              binding and only produce an informational notice.
+///              The peer's account key comes from VerifiedIdentityStore (bound
+///              or invite-pinned) or, for peers without a binding, from the
+///              non-consuming identity directory — accepted only if it derives
+///              the peer's snowId.
+///
+///              A legacy peer whose keys changed while marked verified is
+///              blocked (§5.5); marking verified here adopts the pending keys,
+///              clears the block and asks the server to redeliver held
+///              messages.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-04-18
+/// @lastUpdated 2026-11-10 (B-2: Safety Number v2 over account keys; re-verify
+///              flow unblocks a pending legacy key change)
 ///
 /// @functions
 ///  - VerifyIdentityScreen: ConsumerStatefulWidget for the verify flow
-///  - _resolvePeerKey(): pull peer Ed25519 from DAO → PinStore → null
-///  - _computeOrLoadSafetyNumber(): cache-first Safety Number resolution
+///  - _bootstrap(): resolve both account keys and compute / load the v2 number
+///  - _resolvePeerAccountKey(): store → identity directory (derive-checked)
+///  - _toggleVerified(): mark verified (re-verify unblocks pending changes)
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -34,7 +40,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
+import '../../../core/crypto/identity_binding.dart';
 import '../../../core/crypto/safety_number.dart';
+import '../../../core/storage/daos/identity_verification_dao.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
@@ -61,6 +69,10 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
   Object? _error;
   bool _busy = true;
 
+  /// Legacy peer whose keys changed while verified — messaging is paused
+  /// until the user re-verifies (B-2 §5.5).
+  bool _pendingKeyChange = false;
+
   @override
   void initState() {
     super.initState();
@@ -69,15 +81,59 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
     });
   }
 
+  Future<Uint8List?> _resolvePeerAccountKey() async {
+    final store = ref.read(verifiedIdentityStoreProvider);
+    final rec = await store.get(widget.peerSnowchatId);
+    if (rec?.accountPublicKey != null) return rec!.accountPublicKey;
+    final dir = await ref
+        .read(signalSessionManagerProvider)
+        .fetchIdentityDirectory(widget.peerSnowchatId);
+    final key = dir.accountPublicKey;
+    if (!IdentityBindingV1.accountKeyMatchesSnowId(
+        key, widget.peerSnowchatId)) {
+      return null;
+    }
+    await store.rememberAccountKey(widget.peerSnowchatId, key);
+    return key;
+  }
+
   Future<void> _bootstrap() async {
     try {
       final dao = ref.read(identityVerificationDaoProvider);
       final identityManager = ref.read(identityManagerProvider);
-      final pinStore = ref.read(identityPinStoreProvider);
+      final store = ref.read(verifiedIdentityStoreProvider);
 
-      // 1. DAO cache hit?
-      final existing = await dao.getByPeer(widget.peerSnowchatId);
-      if (existing != null && existing.safetyNumber.length == 60) {
+      final rec = await store.get(widget.peerSnowchatId);
+      _pendingKeyChange = rec?.hasPendingChange ?? false;
+
+      final mySnow = await identityManager.getSnowChatId();
+      final myAccount = await identityManager.getPublicKey();
+      if (mySnow == null || mySnow.isEmpty || myAccount == null) {
+        throw StateError('Local identity unavailable');
+      }
+
+      Uint8List? peerAccount;
+      try {
+        peerAccount = await _resolvePeerAccountKey();
+      } catch (_) {
+        peerAccount = null;
+      }
+      if (peerAccount == null) {
+        if (mounted) {
+          setState(() {
+            _busy = false;
+            _error = "Couldn't load ${widget.peerDisplayName}'s account key. "
+                'Check your connection and try again.';
+          });
+        }
+        return;
+      }
+
+      // Cache hit only for a v2 row computed over this exact account key.
+      final existing = await dao.getCurrentByPeer(widget.peerSnowchatId);
+      if (existing != null &&
+          existing.safetyNumber.length == 60 &&
+          existing.pinnedEd25519 == base64Encode(peerAccount)) {
         if (mounted) {
           setState(() {
             _digits60 = existing.safetyNumber;
@@ -87,51 +143,18 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
         return;
       }
 
-      // 2. Otherwise compute from IdentityPinStore. We don't know the device
-      //    ID for sure, but the current single-device assumption (CLAUDE.md)
-      //    means the session key is "snowId:<some-device>". Try the cached
-      //    deviceId first, then fall back to scanning known prefixes.
-      final mySnow = await identityManager.getSnowChatId();
-      final myEd = await identityManager.getPublicKey();
-      if (mySnow == null || mySnow.isEmpty || myEd == null) {
-        throw StateError('Local identity unavailable');
-      }
-
-      Uint8List? peerKey;
-      try {
-        final deviceId = await ref
-            .read(signalSessionManagerProvider)
-            .getDeviceIdForRecipient(widget.peerSnowchatId);
-        peerKey = await pinStore
-            .getPinned('${widget.peerSnowchatId}:$deviceId');
-      } catch (_) {
-        // No cached deviceId — this peer hasn't received a message from us
-        // yet. Surface a friendly message instead of crashing.
-      }
-
-      if (peerKey == null) {
-        if (mounted) {
-          setState(() {
-            _busy = false;
-            _error = 'No verified key on file yet. Send a message to '
-                '${widget.peerDisplayName} to establish a session, then '
-                'come back here.';
-          });
-        }
-        return;
-      }
-
       final digits = SafetyNumber.compute(
         mySnowId: mySnow,
-        myEd25519: myEd,
+        myEd25519: myAccount,
         theirSnowId: widget.peerSnowchatId,
-        theirEd25519: peerKey,
+        theirEd25519: peerAccount,
+        version: IdentityVerificationDao.currentVersion,
       );
 
       // Cache for subsequent opens. Does not flip wasPreviouslyVerified.
       await dao.upsertVerification(
         snowchatId: widget.peerSnowchatId,
-        ed25519Key: peerKey,
+        ed25519Key: peerAccount,
         safetyNumber: digits,
       );
 
@@ -153,9 +176,22 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
 
   Future<void> _toggleVerified(bool next, bool currentlyVerified) async {
     final dao = ref.read(identityVerificationDaoProvider);
-    if (next == currentlyVerified) return;
+    if (next == currentlyVerified && !(next && _pendingKeyChange)) return;
     if (next) {
+      // Re-verification adopts a pending legacy key change and lifts the
+      // block, then asks the server to redeliver messages we held back.
+      final store = ref.read(verifiedIdentityStoreProvider);
+      final adopted = await store.acceptPendingChange(widget.peerSnowchatId);
+      ref
+          .read(signalSessionManagerProvider)
+          .clearIdentityRejection(widget.peerSnowchatId);
       await dao.markVerified(widget.peerSnowchatId);
+      if (adopted) {
+        if (mounted) setState(() => _pendingKeyChange = false);
+        final queue = ref.read(messageQueueProvider);
+        queue.releaseHeldForPeer(widget.peerSnowchatId);
+        unawaited(queue.fetchPending());
+      }
     } else {
       await dao.markUnverified(widget.peerSnowchatId);
     }
@@ -171,14 +207,13 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
           style: TextStyle(color: SnowColors.textPrimary),
         ),
         content: const Text(
-          'Each conversation has a unique safety number derived from both '
-          "users' identity keys. If you and your contact see the same "
-          'number, no one is intercepting your messages.\n\n'
-          'If the number changes unexpectedly, your contact may have '
-          'reinstalled the app — but it could also mean someone is trying '
-          'to impersonate them. Verify the new number out-of-band (in '
-          'person, video call) before continuing to share sensitive '
-          'information.',
+          'The safety number is a fingerprint of both accounts. If you and '
+          'your contact see the same number, the SnowChat ID you are talking '
+          "to really is your contact's account.\n\n"
+          "Each device's keys are signed by its account, so a reinstall does "
+          "not change this number. Compare it only when both of you run "
+          'the latest SnowChat version — older versions show a different '
+          'number. Compare out-of-band (in person, video call).',
           style: TextStyle(color: SnowColors.textSecondary, height: 1.4),
         ),
         actions: [
@@ -295,6 +330,10 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
         ),
         const SizedBox(height: SnowSizes.lg),
 
+        // --- Pending legacy key change (blocked until re-verified) ---
+        if (_pendingKeyChange) const _PendingChangeBanner(),
+        if (_pendingKeyChange) const SizedBox(height: SnowSizes.md),
+
         // --- Mismatch banner (if applicable) ---
         if (mismatchActive)
           _ChangedBanner(wasPreviouslyVerified: wasPreviouslyVerified),
@@ -325,7 +364,7 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
             border: Border.all(color: SnowColors.divider),
           ),
           child: SwitchListTile(
-            value: verified,
+            value: verified && !_pendingKeyChange,
             title: const Text(
               'Mark as Verified',
               style: TextStyle(color: SnowColors.textPrimary),
@@ -340,7 +379,8 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
               ),
             ),
             activeThumbColor: SnowColors.primary,
-            onChanged: (next) => _toggleVerified(next, verified),
+            onChanged: (next) =>
+                _toggleVerified(next, verified && !_pendingKeyChange),
           ),
         ),
         const SizedBox(height: SnowSizes.md),
@@ -437,6 +477,38 @@ class _ChangedBanner extends StatelessWidget {
   }
 }
 
-// Suppress unused-import warning (StreamSubscription kept for future hooks)
-// ignore: unused_element
-const _keep = StreamSubscription;
+/// B-2 §5.5: shown while a verified legacy contact's key change is pending.
+class _PendingChangeBanner extends StatelessWidget {
+  const _PendingChangeBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(SnowSizes.md),
+      decoration: BoxDecoration(
+        color: SnowColors.error.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: SnowColors.error.withValues(alpha: 0.6)),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.pause_circle_outline_rounded, color: SnowColors.error),
+          SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              "This contact's security keys changed after you verified them. "
+              'Messaging is paused. Compare the number below with your '
+              'contact, then turn on "Mark as Verified" to continue.',
+              style: TextStyle(
+                color: SnowColors.textPrimary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

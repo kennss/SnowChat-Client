@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
+/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: identityPinStoreProvider → verifiedIdentityStoreProvider (wired to IdentityVerificationDao for the verified-peer lookup and to IdentityChangeHandler for user-visible identity events); app startup drops pre-v2 Safety Number rows once per launch (idempotent)). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: TransferService is no longer instantiated at startup when AppConfig.enableWallet is false, so incoming transfer requests cannot raise a confirm dialog). Earlier 2026-08-04 (deleteDriftDatabaseFile(): remove snowchat.db + WAL/SHM on app reset / account delete so a newly created identity does not inherit the prior account's conversations — path co-located with _openDb). Earlier 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
 ///              tokenSnapshotProvider 로 derived. tokenManagerProvider KeepAlive
 ///              SSoT. AuthService 의 onTokenRefresh callback 폐기. socket /
 ///              push token sync 도 events stream 으로 listen)
@@ -42,6 +42,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'app_config.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -74,7 +75,7 @@ import '../core/notifications/notification_service.dart';
 import '../shared/services/badge_service.dart';
 import '../core/notifications/push_service.dart';
 import '../core/crypto/identity_manager.dart';
-import '../core/crypto/identity_pin_store.dart';
+import '../core/crypto/verified_identity_store.dart';
 import '../core/crypto/session_store.dart';
 import '../core/crypto/signal_protocol_service.dart';
 import '../core/crypto/signal_session_manager.dart';
@@ -270,6 +271,22 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   // the user MUST establish a PIN before reaching the main app.
   ref.read(requiresPinSetupProvider.notifier).state = !hasPin;
 
+  // Step 3.5 (B-2 Safety Number v2): drop pre-v2 verification rows — their
+  // cached numbers and "verified" marks were computed over mismatched key
+  // types (SC-14) and never meant anything. Idempotent, so no marker needed.
+  // Also instantiates the identity-change handler so identity store events
+  // emitted during the cold-start queue drain are rendered.
+  try {
+    ref.read(identityChangeHandlerProvider);
+    final dropped =
+        await ref.read(identityVerificationDaoProvider).dropPreV2Rows();
+    if (dropped > 0) {
+      debugPrint('[AppStartup] Safety Number v2: reset $dropped v1 row(s)');
+    }
+  } catch (e) {
+    debugPrint('[AppStartup] Safety Number v2 migration deferred: $e');
+  }
+
   // Step 4: Initialize E2EE (ensures identity key is on server)
   // Phase 11 fix: tokenManager.snapshot 직접 체크. authTokenProvider 는
   // tokenManagerProvider.events broadcast Stream 의 microtask-deferred
@@ -303,13 +320,22 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
     // after the fact → emit transfer_completed retroactively (P0-1 persistence fix).
     // fire-and-forget — failures retry on the next startup (rows aged 1h+ are
     // auto-cleaned via timeout).
-    Future<void>(() async {
-      try {
-        await ref.read(transferServiceProvider).recoverPending();
-      } catch (e) {
-        debugPrint('[AppStartup] transfer recoverPending failed (non-fatal): $e');
-      }
-    });
+    //
+    // Skipped entirely when the wallet is compiled out: reading the provider
+    // instantiates TransferService, which subscribes to TransferEventBus and
+    // pops a confirm dialog whenever a peer sends a transfer request — a
+    // signing prompt for a wallet the user cannot see. The bus is a broadcast
+    // stream with no replay, so with no subscriber those requests are dropped
+    // and the sender's request times out.
+    if (AppConfig.enableWallet) {
+      Future<void>(() async {
+        try {
+          await ref.read(transferServiceProvider).recoverPending();
+        } catch (e) {
+          debugPrint('[AppStartup] transfer recoverPending failed (non-fatal): $e');
+        }
+      });
+    }
   }
 
   return true;
@@ -320,15 +346,21 @@ final secureStorageProvider = Provider<SecureStorageService>((ref) {
   return SecureStorageService();
 });
 
-// --- Identity Pin Store (Vuln 2 Stage A: TOFU pin for remote Ed25519 keys) ---
-final identityPinStoreProvider = Provider<IdentityPinStore>((ref) {
-  return IdentityPinStore(ref.read(secureStorageProvider));
+// --- Verified Identity Store (B-2 Identity Binding v1; replaces the TOFU
+// IdentityPinStore). The verified-peer lookup is wired lazily to the DAO so
+// this provider does not force the database open before it is needed.
+final verifiedIdentityStoreProvider = Provider<VerifiedIdentityStore>((ref) {
+  final store = VerifiedIdentityStore(ref.read(secureStorageProvider));
+  store.verifiedLookup =
+      (snowId) => ref.read(identityVerificationDaoProvider).isVerified(snowId);
+  ref.onDispose(store.dispose);
+  return store;
 });
 
 // --- Signal Protocol Service (Pure Dart) ---
 final signalProtocolServiceProvider = Provider<SignalProtocolService>((ref) {
   return SignalProtocolService(
-    identityPinStore: ref.read(identityPinStoreProvider),
+    identityStore: ref.read(verifiedIdentityStoreProvider),
   );
 });
 
@@ -597,6 +629,25 @@ LazyDatabase _openDb() {
   });
 }
 
+/// Delete the drift database file (and its WAL/SHM sidecars) from disk.
+/// Used by the app-reset / account-delete flow so that a newly created identity
+/// does NOT inherit the previous account's conversations and messages. The
+/// SnowDatabase connection must be close()d BEFORE calling this; afterwards
+/// invalidate [snowDatabaseProvider] so the next access opens a fresh, empty
+/// database. Keeps the file-path definition co-located with [_openDb] so the
+/// two never drift apart.
+Future<void> deleteDriftDatabaseFile() async {
+  final dir = await getApplicationDocumentsDirectory();
+  for (final name in ['snowchat.db', 'snowchat.db-wal', 'snowchat.db-shm']) {
+    final f = File(p.join(dir.path, name));
+    try {
+      if (await f.exists()) await f.delete();
+    } catch (e) {
+      debugPrint('[Reset] failed to delete drift file $name: $e');
+    }
+  }
+}
+
 final snowDatabaseProvider = Provider<SnowDatabase>((ref) {
   final db = SnowDatabase(_openDb());
   ref.onDispose(() => db.close());
@@ -648,8 +699,11 @@ final identityChangeHandlerProvider = Provider<IdentityChangeHandler>((ref) {
   final handler = IdentityChangeHandler(
     dao: ref.read(identityVerificationDaoProvider),
     messageDao: ref.read(messageDaoProvider),
-    identityManager: ref.read(identityManagerProvider),
+    conversationDao: ref.read(conversationDaoProvider),
   );
+  // B-2: identity events (legacy key change, device keys changed, binding
+  // rejected, suspected interception) are rendered from the store stream.
+  handler.attachStore(ref.read(verifiedIdentityStoreProvider));
   ref.onDispose(handler.dispose);
   return handler;
 });
@@ -685,9 +739,6 @@ final signalSessionManagerProvider = Provider<SignalSessionManager>((ref) {
     identityManager: ref.read(identityManagerProvider),
     sessionStore: ref.read(sessionStoreProvider),
     socketManager: ref.read(socketManagerProvider),
-    // Wallet V2 Phase F: TOFU pin store wired so getPeerEd25519PublicKey
-    // takes the cache-hit path (TransferService walletAddressSig verification).
-    identityPinStore: ref.read(identityPinStoreProvider),
   );
 });
 
@@ -734,16 +785,47 @@ final sealedSenderAutoInitProvider = FutureProvider<void>((ref) async {
     return;
   }
   if (ref.read(sealedSenderServiceProvider) != null) return; // already active
-  try {
-    final apiClient = ref.read(apiClientProvider);
-    final response = await apiClient.get('/auth/server-key');
-    final verifyKeyB64 = response.data['verifyKey'] as String;
-    final verifyKey = base64Decode(verifyKeyB64);
-    ref.read(sealedSenderServiceProvider.notifier).state =
-        SealedSenderService(serverVerifyKey: verifyKey);
-    debugPrint('[SealedSender] activated (authToken trigger)');
-  } catch (e) {
-    debugPrint('[SealedSender] init failed (non-fatal): $e');
+
+  // Retry with backoff. A SINGLE transient /auth/server-key failure must not
+  // leave SealedSenderService null for the whole session: when it is null
+  // callSignaling → callService → callProvider all collapse to the
+  // _UnavailableCallService placeholder, so startCall throws "VoIP not
+  // initialized — SealedSender service unavailable" while messaging keeps
+  // working (the socket reads tokenManager.snapshot directly, bypassing this
+  // provider chain). pajooman03 field report 2026-06-08: flaky Galaxy, msgs
+  // OK but calls dead until app restart (restart re-ran this one-shot and the
+  // fetch happened to succeed). The endpoint is a cheap public GET, so a few
+  // bounded retries are safe and turn the hard failure into self-healing.
+  // Can also be re-triggered on demand via ref.invalidate (call-attempt path).
+  const backoff = <Duration>[
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 20),
+  ];
+  for (var attempt = 0;; attempt++) {
+    // Token may have been revoked while we were waiting between retries.
+    if (ref.read(authTokenProvider) == null) return;
+    try {
+      final apiClient = ref.read(apiClientProvider);
+      final response = await apiClient.get('/auth/server-key');
+      final verifyKeyB64 = response.data['verifyKey'] as String;
+      final verifyKey = base64Decode(verifyKeyB64);
+      ref.read(sealedSenderServiceProvider.notifier).state =
+          SealedSenderService(serverVerifyKey: verifyKey);
+      debugPrint('[SealedSender] activated (authToken trigger, '
+          'attempt ${attempt + 1})');
+      return;
+    } catch (e) {
+      if (attempt >= backoff.length) {
+        debugPrint('[SealedSender] init failed after ${attempt + 1} attempts '
+            '— VoIP stays unavailable until re-triggered (resume / retry): $e');
+        return;
+      }
+      debugPrint('[SealedSender] init attempt ${attempt + 1} failed, retrying '
+          'in ${backoff[attempt].inSeconds}s: $e');
+      await Future<void>.delayed(backoff[attempt]);
+    }
   }
 });
 
@@ -781,8 +863,7 @@ final encryptedMessageHandlerProvider =
     senderCertificateManager: ref.read(senderCertificateManagerProvider),
     transferEventBus: ref.read(transferEventBusProvider),
   );
-  // P0-2 Stage B: wire identity change handler so send-path TOFU mismatch
-  // routes into the Safety Number pipeline instead of looping forever.
+  // B-2: instantiating the handler subscribes it to identity store events.
   handler.identityChangeHandler = ref.read(identityChangeHandlerProvider);
 
   // Sealed Sender lazy-wire — sealedSenderServiceProvider is a
@@ -835,7 +916,7 @@ final messageQueueProvider = Provider<MessageQueue>((ref) {
       await signaling.injectEnvelope(envelopeBase64);
     },
   );
-  // P0-2 Stage B: route receive-path TOFU mismatch into Safety Number pipeline.
+  // B-2: instantiating the handler subscribes it to identity store events.
   queue.identityChangeHandler = ref.read(identityChangeHandlerProvider);
   // Phase 8.8: onGmkReceived callback is wired by ConversationListNotifier
   // to avoid circular import (providers.dart cannot import conversation_list_provider.dart).
@@ -1104,10 +1185,32 @@ final callProvider = StateNotifierProvider<CallNotifier, CallState>((ref) {
 /// by the real CallNotifier later).
 class _IdleCallNotifier extends CallNotifier {
   _IdleCallNotifier(Ref ref)
-      : super(
+      : _ref = ref,
+        super(
           callService: _UnavailableCallService(),
           callKitManager: ref.read(callKitManagerProvider),
         );
+
+  final Ref _ref;
+
+  /// Bug D self-heal (2026-06-08): SealedSender wasn't ready when this notifier
+  /// was built (sealedSenderAutoInit's fetch failed, or it exhausted its retry
+  /// loop while the device was offline). Instead of the raw placeholder throw,
+  /// kick a re-init — the user is clearly online and interacting now — so the
+  /// next tap can succeed once sealedSenderServiceProvider flips and callProvider
+  /// rebuilds into the real CallNotifier. We intentionally do NOT transition to
+  /// `outgoing` (no phantom OutgoingCallScreen for a call that never started).
+  @override
+  Future<void> startCall({
+    required String recipientSnowchatId,
+    required bool alwaysRelay,
+    String? remoteDisplayName,
+    String? senderDisplayName,
+  }) async {
+    _ref.invalidate(sealedSenderAutoInitProvider);
+    throw StateError(
+        'Call service is still starting up — please try again in a moment.');
+  }
 }
 
 /// Placeholder CallService — operations throw, but event streams are no-op.

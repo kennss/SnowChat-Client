@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-06 (option 2 Signal pattern: wrapped /call in a
+/// @lastUpdated 2026-11-10 (B-2: first-contact deeplinks forward the inviter account key ?k= to AddFriendScreen via addFriendDeeplinkPath()). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: /settings/network and /settings/hidden-wallets are now behind AppConfig.enableWallet like the other wallet routes). Earlier 2026-08-05 (bottom-nav "Channels"→"Communities"; Channel→Community route display fallbacks). Earlier 2026-05-06 (option 2 Signal pattern: wrapped /call in a
 ///              PopScope that blocks back navigation during an active call
 ///              regardless of host Activity. Native CallActivity already
 ///              swallows back-press while the keyguard is locked; this is
@@ -51,8 +51,10 @@ import '../features/channels/screens/channel_admin_screen.dart';
 import '../features/contacts/screens/add_contact_screen.dart';
 import '../features/contacts/screens/blocked_contacts_screen.dart';
 import '../features/contacts/screens/my_qr_screen.dart';
+import 'deeplink_handler.dart' show addFriendDeeplinkPath;
 import '../features/settings/screens/settings_screen.dart';
 import '../features/settings/screens/device_management_screen.dart';
+import '../features/settings/screens/profile_edit_screen.dart';
 import '../features/settings/screens/network_settings_screen.dart';
 import '../features/settings/screens/hidden_wallets_screen.dart';
 import '../features/settings/screens/backup_screen.dart';
@@ -88,18 +90,31 @@ final _shellNavigatorKey = GlobalKey<NavigatorState>();
 /// known SnowChat deeplink form. Centralised so the two intercept points stay
 /// in sync.
 String? _rewriteDeeplink(String loc) {
-  const customPrefix = 'snowchat://invite/';
-  const httpsPrefix = 'https://snowchat.calidalab.ai/invite/';
-  if (loc.startsWith(customPrefix)) {
-    final code = loc.substring(customPrefix.length);
+  // Community invite forms → /invite/<code>.
+  const inviteCustom = 'snowchat://invite/';
+  const inviteHttps = 'https://snowchat.calidalab.ai/invite/';
+  if (loc.startsWith(inviteCustom)) {
+    final code = loc.substring(inviteCustom.length);
     return code.isEmpty ? null : '/invite/$code';
   }
-  if (loc.startsWith(httpsPrefix)) {
-    final code = loc.substring(httpsPrefix.length);
+  if (loc.startsWith(inviteHttps)) {
+    final code = loc.substring(inviteHttps.length);
     return code.isEmpty ? null : '/invite/$code';
+  }
+  // Friend first-contact forms → /add-friend?id=<id> (A shares their own id).
+  const userCustom = 'snowchat://user/';
+  const userHttps = 'https://snowchat.calidalab.ai/u/';
+  // B-2: the link may carry the inviter's account key as `?k=<64 hex>`.
+  for (final prefix in const [userCustom, userHttps]) {
+    if (!loc.startsWith(prefix)) continue;
+    final id = loc.substring(prefix.length).split(RegExp(r'[/?#]')).first;
+    if (id.isEmpty) return null;
+    final k = Uri.tryParse(loc)?.queryParameters['k'];
+    return addFriendDeeplinkPath(id, k);
   }
   return null;
 }
+
 
 final routerProvider = Provider<GoRouter>((ref) {
   final isOnboarded = ref.watch(isOnboardedProvider);
@@ -292,7 +307,13 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/add-friend',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const AddFriendScreen(),
+        // ?id=<snowchatId> arrives from a snowchat://user/<id> first-contact
+        // deeplink (QR scan / shared link) — AddFriendScreen opens straight to
+        // the SnowChat-ID confirm, pre-filled with that id.
+        builder: (_, state) => AddFriendScreen(
+          initialId: state.uri.queryParameters['id'],
+          initialAccountKeyHex: state.uri.queryParameters['k'],
+        ),
       ),
       GoRoute(
         path: '/create-channel',
@@ -311,7 +332,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, state) => ChannelAdminScreen(
           channelId: state.pathParameters['channelId']!,
-          channelName: state.uri.queryParameters['name'] ?? 'Channel',
+          channelName: state.uri.queryParameters['name'] ?? 'Community',
         ),
       ),
       GoRoute(
@@ -331,7 +352,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, state) => InviteLinkScreen(
           groupId: state.pathParameters['groupId']!,
-          channelName: state.uri.queryParameters['name'] ?? 'Channel',
+          channelName: state.uri.queryParameters['name'] ?? 'Community',
         ),
       ),
       GoRoute(
@@ -366,16 +387,23 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, __) => const BackupScreen(),
       ),
       GoRoute(
+        path: '/settings/profile',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const ProfileEditScreen(),
+      ),
+      GoRoute(
         path: '/settings/devices',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const DeviceManagementScreen(),
       ),
-      GoRoute(
+      // Solana network toggle + hidden sub-wallets are wallet-only screens. Without
+      // the guard they stayed reachable in an ENABLE_WALLET=false build.
+      if (AppConfig.enableWallet) GoRoute(
         path: '/settings/network',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const NetworkSettingsScreen(),
       ),
-      GoRoute(
+      if (AppConfig.enableWallet) GoRoute(
         path: '/settings/hidden-wallets',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const HiddenWalletsScreen(),
@@ -549,7 +577,7 @@ class _MainShellState extends ConsumerState<_MainShell> {
             const BottomNavigationBarItem(
               icon: Icon(Icons.forum_rounded),
               activeIcon: Icon(Icons.forum_rounded),
-              label: 'Channels',
+              label: 'Communities',
             ),
             if (AppConfig.enableWallet)
               const BottomNavigationBarItem(

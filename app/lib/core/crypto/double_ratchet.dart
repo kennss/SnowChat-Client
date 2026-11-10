@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-10 (B-2 §5.6: sessions persist remoteIdentityKey — the peer X25519 IK used in X3DH — so sessions can be re-verified against a bound identity). Earlier: 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - EncryptedMessage: Encrypted message data class (ciphertext + ratchet key + message number)
@@ -377,6 +377,12 @@ class DoubleRatchetSession {
   int? preKeySignedPreKeyId;
   int? preKeyOneTimePreKeyId;
 
+  /// B-2 §5.6: the remote X25519 identity key this session was established
+  /// with (X3DH). Null only for sessions persisted before B-2 (backfilled by
+  /// SignalProtocolService on load). Used to refuse/purge sessions that do not
+  /// match a peer's account-bound identity key.
+  Uint8List? remoteIdentityKey;
+
   Map<String, dynamic> toJson() => {
         'rootKey': _bytesToHex(rootKey),
         'sendingChainKey':
@@ -398,6 +404,8 @@ class DoubleRatchetSession {
           'preKeySignedPreKeyId': preKeySignedPreKeyId,
         if (preKeyOneTimePreKeyId != null)
           'preKeyOneTimePreKeyId': preKeyOneTimePreKeyId,
+        if (remoteIdentityKey != null)
+          'remoteIdentityKey': _bytesToHex(remoteIdentityKey!),
       };
 
   /// Deserialize session state from a JSON map.
@@ -428,7 +436,10 @@ class DoubleRatchetSession {
           ? _hexToBytes(json['ephemeralPublicKey'] as String)
           : null
       ..preKeySignedPreKeyId = json['preKeySignedPreKeyId'] as int?
-      ..preKeyOneTimePreKeyId = json['preKeyOneTimePreKeyId'] as int?;
+      ..preKeyOneTimePreKeyId = json['preKeyOneTimePreKeyId'] as int?
+      ..remoteIdentityKey = json['remoteIdentityKey'] != null
+          ? _hexToBytes(json['remoteIdentityKey'] as String)
+          : null;
   }
 }
 

@@ -3,7 +3,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-03 (Phase 11 fix — connect() async + pre-flight
+/// @lastUpdated 2026-08-03 (removed the dead onUserRegistered stream + user_registered listener — the server no longer broadcasts user_registered globally, per the contact-directory privacy fix). Earlier 2026-07-15 (sealed_control: sendSealedMessage control flag +
+///              preserve server-sent envelope type in the sealed_message
+///              listener; plaintext sendReadReceipt/ackMessage removed — read
+///              receipts now travel E2EE). Earlier 2026-05-03 (Phase 11 fix — connect() async + pre-flight
 ///              `await ensureFreshToken!()` + library auto-reconnect disabled
 ///              (`setReconnectionAttempts(0)`) + `_connecting` single-flight
 ///              guard. Original Phase 11 cut over only wired the reactive
@@ -23,8 +26,7 @@
 ///              emits app_state=background on inactive too. Earlier
 ///              2026-04-26: header English translation; Layer 7 send-time
 ///              actual socket state check + stale _isConnected self-heal.)
-///  - onUserRegistered: new user registration notification stream
-///  - added user_registered/online_users socket event listeners
+///  - added online_users socket event listener
 ///  - SocketManager.sendPrivateMessage(): T0-pattern 1:1 message send (ack callback support)
 ///  - SocketManager.sendGroupMessage(): group message event send
 ///  - SocketManager.onGroupMessage: group message receive stream
@@ -45,10 +47,8 @@
 ///  - SocketManager.sendPrivateMessage(): T0-pattern 1:1 message send
 ///  - SocketManager.sendTyping(): send typing indicator
 ///  - SocketManager.stopTyping(): send typing stop
-///  - SocketManager.ackMessage(): message receive acknowledgement
-///  - SocketManager.sendReadReceipt(): send read receipt
 ///  - SocketManager.emit(): general-purpose socket event send
-///  - SocketManager.sendSealedMessage(): Sealed Sender 1:1 message send (sealed_message event)
+///  - SocketManager.sendSealedMessage(): Sealed Sender 1:1 message send (sealed_message event; control=true for silent E2EE control envelopes)
 ///  - SocketManager.sendSealedGroupMessage(): Sealed Sender group message send (sealed_group_message event)
 ///  - SocketManager.sendMessageRetryRequest(): 1:1 decryption failure retry request (Sealed Sender included)
 ///  - SocketManager.sendGroupMessageRetryRequest(): group decryption failure retry request
@@ -106,8 +106,6 @@ class SocketManager with WidgetsBindingObserver {
       StreamController<Map<String, dynamic>>.broadcast();
   // Vuln 3 (Stage 3): fan-out when a group admin clears messages for all members
   final _groupMessagesClearedController =
-      StreamController<Map<String, dynamic>>.broadcast();
-  final _userRegisteredController =
       StreamController<Map<String, dynamic>>.broadcast();
   final _groupMemberAddedController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -192,8 +190,6 @@ class SocketManager with WidgetsBindingObserver {
   /// payload: { groupChatId, clearedBy (snowchatId), clearedAt (ISO) }
   Stream<Map<String, dynamic>> get groupMessagesClearedStream =>
       _groupMessagesClearedController.stream;
-  Stream<Map<String, dynamic>> get onUserRegistered =>
-      _userRegisteredController.stream;
   Stream<Map<String, dynamic>> get onMessageStatus =>
       _messageStatusController.stream;
   Stream<Map<String, dynamic>> get onTyping => _typingController.stream;
@@ -571,15 +567,18 @@ class SocketManager with WidgetsBindingObserver {
     });
 
     // Phase 10.1: Sealed Sender message — server relays opaque blob
-    // with type='sealed'. Feeds into same envelope stream so MessageQueue
-    // can dispatch to EncryptedMessageHandler.decryptSealedMessage().
+    // with type='sealed' (or 'sealed_control' for silent E2EE control
+    // envelopes like read receipts). Feeds into same envelope stream so
+    // MessageQueue can dispatch to the right handler.
     socket.on('sealed_message', (data) {
       if (data is Map) {
         final envelope = Map<String, dynamic>.from(data);
-        // Inject type='sealed' so MessageQueue can discriminate
-        envelope['type'] = 'sealed';
+        // Preserve the server-sent type — 'sealed_control' must NOT be
+        // stomped to 'sealed' or control envelopes would render as
+        // phantom chat messages. Default 'sealed' for old envelopes.
+        envelope['type'] = (envelope['type'] as String?) ?? 'sealed';
         final id = envelope['id'] ?? envelope['messageId'];
-        debugPrint('[DIAG:Socket] sealed_message RECEIVED id=$id');
+        debugPrint('[DIAG:Socket] sealed_message RECEIVED id=$id type=${envelope['type']}');
         _incomingEnvelopeController.add(envelope);
       }
     });
@@ -689,13 +688,6 @@ class SocketManager with WidgetsBindingObserver {
       }
     });
 
-    // New user registered notification (real-time contact update)
-    socket.on('user_registered', (data) {
-      debugPrint('[SocketManager] user_registered received');
-      if (data is Map) {
-        _userRegisteredController.add(Map<String, dynamic>.from(data));
-      }
-    });
 
     // Profile updated (displayName change) — real-time contact refresh
     socket.on('profile_updated', (data) {
@@ -1017,11 +1009,15 @@ class SocketManager with WidgetsBindingObserver {
   /// [sealedContent]: Base64-encoded sealed envelope bytes
   /// [clientMessageId]: Client-generated local ID for round-trip matching
   /// [expiresIn]: Optional TTL in seconds
+  /// [control]: Silent E2EE control envelope (read receipt etc.) — server
+  ///            stores it as type='sealed_control': no push, no badge count,
+  ///            pruned by the 7-day control cleanup.
   void sendSealedMessage({
     required String recipientId,
     required String sealedContent,
     required String clientMessageId,
     int? expiresIn,
+    bool control = false,
     Function(dynamic)? onAck,
   }) {
     if (!_isReadyToSend()) {
@@ -1029,12 +1025,13 @@ class SocketManager with WidgetsBindingObserver {
       onAck?.call({'error': {'code': 'NOT_CONNECTED', 'message': 'Socket not connected'}});
       return;
     }
-    debugPrint('[SocketManager] Sending sealed_message to $recipientId');
+    debugPrint('[SocketManager] Sending sealed_message to $recipientId (control=$control)');
     _socket!.emitWithAck('sealed_message', {
       'recipientId': recipientId,
       'sealedContent': sealedContent,
       'clientMessageId': clientMessageId,
       if (expiresIn != null) 'expiresIn': expiresIn,
+      if (control) 'control': true,
     }, ack: (response) {
       debugPrint('[SocketManager] sealed_message ack: $response');
       onAck?.call(response);
@@ -1097,28 +1094,38 @@ class SocketManager with WidgetsBindingObserver {
     }
   }
 
-  /// Send typing start indicator.
-  void sendTyping(String conversationId) {
+  /// Send a typing-start indicator.
+  ///
+  /// Metadata-min Batch 2 (2026-08-07): 1:1 typing is peer-addressed — pass
+  /// [recipientSnowchatId] and the server relays ONLY to that peer, carrying
+  /// the typer's snow-id (no global broadcast, no server-side pair id). Group
+  /// typing still uses the shared [conversationId] (the groupId is symmetric).
+  void sendTyping({String? conversationId, String? recipientSnowchatId}) {
     if (!_isReadyToSend()) return;
-    _socket!.emit('typing_start', {'conversationId': conversationId});
+    _socket!.emit('typing_start',
+        _typingPayload(conversationId, recipientSnowchatId));
   }
 
-  /// Send typing stop indicator.
-  void stopTyping(String conversationId) {
+  /// Send a typing-stop indicator (see [sendTyping] for addressing).
+  void stopTyping({String? conversationId, String? recipientSnowchatId}) {
     if (!_isReadyToSend()) return;
-    _socket!.emit('typing_stop', {'conversationId': conversationId});
+    _socket!.emit('typing_stop',
+        _typingPayload(conversationId, recipientSnowchatId));
   }
 
-  /// Send read receipts for a list of message IDs.
-  void sendReadReceipt(List<String> messageIds) {
-    if (!_isReadyToSend()) return;
-    _socket!.emit('message_read', {'messageIds': messageIds});
+  Map<String, dynamic> _typingPayload(
+      String? conversationId, String? recipientSnowchatId) {
+    if (recipientSnowchatId != null) {
+      return {'recipientSnowchatId': recipientSnowchatId};
+    }
+    return {'conversationId': conversationId};
   }
 
-  /// Acknowledge message receipt (legacy, use sendReadReceipt instead).
-  void ackMessage(String messageId) {
-    sendReadReceipt([messageId]);
-  }
+  // sendReadReceipt() / ackMessage() REMOVED (2026-07-15, metadata
+  // minimization): the plaintext 'message_read' emit let the server observe
+  // who-read-whom-and-when, and the server handler is gone. Read receipts
+  // now travel as sealed E2EE control envelopes — see
+  // EncryptedMessageHandler.sendSealedReadReceipt().
 
   /// Get the last buffered online_users data (for late subscribers).
   Map<String, dynamic>? get lastOnlineUsersData => _lastOnlineUsersData;
@@ -1182,7 +1189,6 @@ class SocketManager with WidgetsBindingObserver {
     _messageDeletedController.close();
     _chatDeletedController.close();
     _groupMessagesClearedController.close();
-    _userRegisteredController.close();
     _groupMemberAddedController.close();
     _groupMemberRemovedController.close();
     _groupUpdatedController.close();

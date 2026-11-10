@@ -18,6 +18,7 @@
 ///  - FriendActions: add/accept/remove friend actions
 ///  - channelCategories: category constants
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -439,6 +440,47 @@ class FriendActions {
       return (res.data['status'] as String?) ?? 'pending';
     } catch (e) {
       debugPrint('[FriendActions] Add friend failed: $e');
+      return 'error';
+    }
+  }
+
+  /// Nick first-contact lookup (design B). Exact-match; returns whether a user
+  /// holds the nick + a one-time OPAQUE inviteToken (NOT the target's id/avatar)
+  /// + whether the nick was recently reassigned (impersonation hint). Rate-
+  /// limited server-side → [rateLimited] distinguishes a 429 from a genuine miss.
+  Future<({bool exists, String? inviteToken, bool recentlyReassigned, bool rateLimited})>
+      lookupByNick(String nick) async {
+    try {
+      final apiClient = _ref.read(apiClientProvider);
+      final res = await apiClient
+          .post(ApiEndpoints.lookupByNick, data: {'nick': nick.trim()});
+      final d = Map<String, dynamic>.from(res.data as Map);
+      return (
+        exists: d['exists'] == true,
+        inviteToken: d['inviteToken'] as String?,
+        recentlyReassigned: d['recentlyReassigned'] == true,
+        rateLimited: false,
+      );
+    } catch (e) {
+      final limited = e is DioException && e.response?.statusCode == 429;
+      if (!limited) debugPrint('[FriendActions] lookupByNick failed: $e');
+      return (exists: false, inviteToken: null, recentlyReassigned: false, rateLimited: limited);
+    }
+  }
+
+  /// Send a friend request by redeeming a nick-invite opaque token. Returns the
+  /// same status strings as [addFriend], plus 'expired' when the token is gone.
+  Future<String> addFriendByToken(String inviteToken) async {
+    try {
+      final apiClient = _ref.read(apiClientProvider);
+      final res = await apiClient.post(
+        ApiEndpoints.personalChannelAddByToken,
+        data: {'inviteToken': inviteToken},
+      );
+      return (res.data['status'] as String?) ?? 'pending';
+    } catch (e) {
+      if (e is DioException && e.response?.statusCode == 410) return 'expired';
+      debugPrint('[FriendActions] addFriendByToken failed: $e');
       return 'error';
     }
   }

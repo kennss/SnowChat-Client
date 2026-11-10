@@ -4,7 +4,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-18 P0-2 Safety Number: added insertLocalSystemMessage helper)
+/// @lastUpdated 2026-08-05 (getLatestDisplayableMessage(): latest non-system/non-deleted row per conversation, ordered by dateReceived — backfills the Chats-list preview when the server returns no 1:1 snippet and the outgoing send path never wrote one). Earlier 2026-07-15 (sealed read receipt: markOutgoingAsRead() batch-flips own sent/delivered rows to 'read' — guarded by senderSnowchatId==myId so peer-echoed foreign ids are no-ops). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-18 P0-2 Safety Number: added insertLocalSystemMessage helper)
 ///
 /// @functions
 ///  - MessageDao: messages DAO class
@@ -22,6 +22,7 @@
 ///  - markNotified(): mark notification as sent
 ///  - searchMessages(): plaintext message search (case-insensitive, substring match)
 ///  - getMessagesForConversation(): query messages for a conversation
+///  - getLatestDisplayableMessage(): latest non-system/non-deleted row for Chats-list preview backfill
 ///  - insertMessage(): insert message (legacy, backward compat)
 ///  - updatePlaceholder(): replace decryption-failure placeholder with decrypted plaintext (Phase 10 P0-F)
 ///  - deleteMessage(): delete message
@@ -407,6 +408,27 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
     }
   }
 
+  /// Sealed read receipt (2026-07-15): flip our own outgoing rows to 'read'
+  /// in one batch (blue double-check). Guarded to rows WE sent ([myId]) whose
+  /// status is 'sent'/'delivered' — a peer echoing foreign or already-read
+  /// ids matches zero rows, so re-receipts are idempotent and 'read' never
+  /// downgrades. Returns the number of rows updated (0 is a benign no-op,
+  /// e.g. a receipt racing the local→server id swap).
+  Future<int> markOutgoingAsRead(
+    List<String> messageIds, {
+    required String myId,
+  }) async {
+    if (messageIds.isEmpty) return 0;
+    return (update(localMessages)
+          ..where((m) =>
+              m.id.isIn(messageIds) &
+              m.senderSnowchatId.equals(myId) &
+              m.outgoingStatus.isIn(['sent', 'delivered'])))
+        .write(const LocalMessagesCompanion(
+      outgoingStatus: Value('read'),
+    ));
+  }
+
   // ---------------------------------------------------------------------------
   // Remote delete
   // ---------------------------------------------------------------------------
@@ -504,6 +526,36 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
   Future<LocalMessage?> getMessageById(String messageId) {
     return (select(localMessages)
           ..where((m) => m.id.equals(messageId)))
+        .getSingleOrNull();
+  }
+
+  /// Latest displayable message for a conversation (for Chats-list preview
+  /// backfill).
+  ///
+  /// The server can't return a 1:1 last-message snippet (zero-knowledge), and
+  /// the outgoing send path only writes the message row — never the
+  /// denormalized conversation snippet. So after a server-driven list reload an
+  /// outgoing-last conversation would show "No messages yet". This reads the
+  /// true source (localMessages) so callers can backfill the real last message.
+  ///
+  /// Excludes system/placeholder rows (type == 'system') and remote-deleted
+  /// rows so neither becomes the preview — consistent with the normal write
+  /// path, where system messages don't drive the snippet. Ordered by
+  /// dateReceived (the local record time stamped on every persisted row,
+  /// incoming and outgoing) to match the chat view's ordering.
+  Future<LocalMessage?> getLatestDisplayableMessage(String conversationId) {
+    return (select(localMessages)
+          ..where((m) =>
+              m.conversationId.equals(conversationId) &
+              m.type.equals('system').not() &
+              m.remoteDeleted.equals(false))
+          ..orderBy([
+            (m) => OrderingTerm(
+                  expression: m.dateReceived,
+                  mode: OrderingMode.desc,
+                ),
+          ])
+          ..limit(1))
         .getSingleOrNull();
   }
 

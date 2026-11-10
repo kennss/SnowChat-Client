@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-11
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-03 (F3: Step 9 comment refreshed — the identity cross-check is now performed by SignalProtocolService.resolveSealedMessageType() before DR decrypt for prekey messages, binding the returned certificate identity to the X3DH-header identity; closes a Step 9 gap that was documented but never implemented pre-F3. No code change here — unseal already returns senderIdentityKey). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - SealedSenderService: Sealed Sender encryption/decryption service
@@ -424,9 +424,14 @@ class SealedSenderService {
       throw StateError('Sealed message rejected');
     }
 
-    // Step 9: Identity key cross-check is done by the caller after DR decrypt,
-    // because the caller has access to the session store. We return the
-    // certificate's identity key so the caller can perform the check.
+    // Step 9: Identity key cross-check is performed by the caller via
+    // SignalProtocolService.resolveSealedMessageType() — for a prekey message
+    // it binds the certificate identity returned here to the X25519 identity
+    // embedded in the X3DH header (before DR decrypt, prekey-only). Normal
+    // messages need no cross-check: their session lookup is already keyed on
+    // this certificate-authenticated senderId, so a wrong-identity certificate
+    // cannot decrypt a victim's session. We return the certificate's identity
+    // key so the caller can perform the check.
 
     // Step 10: Return unsealed message.
     return UnsealedMessage(

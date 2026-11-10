@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings). Earlier 2026-08-03 (F6: after joining, await the conversation-list refresh and navigate to the group *chat* by resolving the conversation whose channelId matches (its id is the groupChatId), instead of /chat/{info.groupId} — info.groupId is the channelId, and /chat/{channelId} could not resolve as a group so the first message misrouted into a phantom "??" direct conversation). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - InvitePreviewScreen: invite-link preview + join button
@@ -35,18 +35,47 @@ class _InvitePreviewScreenState extends ConsumerState<InvitePreviewScreen> {
     setState(() => _isJoining = true);
     final success =
         await ref.read(channelActionsProvider).joinViaInvite(widget.code);
-    setState(() => _isJoining = false);
 
-    if (success && mounted) {
-      ref.read(conversationListProvider.notifier).refresh();
-      // Navigate to the channel
-      final info = ref.read(inviteInfoProvider(widget.code)).valueOrNull;
-      if (info != null) {
-        context.go('/chat/${info.groupId}');
+    if (!mounted) return;
+    if (success) {
+      // Await the list refresh so the joined channel's group *chat*
+      // conversation is present before navigating. InviteInfo.groupId is
+      // actually the channelId (the server returns channelId), but the group
+      // chat is keyed by a SEPARATE groupChatId. Navigating to
+      // /chat/{channelId} lands in a ChatNotifier that cannot resolve the id
+      // as a group (isGroup=false), so the first message misroutes into a
+      // phantom "??" direct conversation and never reaches the channel.
+      // Resolve the group conversation by its channelId and open THAT — its
+      // id IS the groupChatId (conversation_list_provider maps group.id ->
+      // conversation.id, group.channelId -> conversation.channelId).
+      await ref.read(conversationListProvider.notifier).refresh();
+      if (!mounted) return;
+      setState(() => _isJoining = false);
+      final channelId =
+          ref.read(inviteInfoProvider(widget.code)).valueOrNull?.groupId;
+      // Safe today: invite-join adds the user only to the channel's default
+      // room (server _addToDefaultRoom), so exactly one group conversation
+      // matches this channelId at join time. If multi-room channel membership
+      // is ever added, Conversation needs an isDefaultRoom flag to disambiguate
+      // here instead of taking the first match. Personal-channel (friend)
+      // invites have no group room, so this finds nothing and we fall through
+      // to /contacts — friend links normally go through the friend-request
+      // flow, not this screen.
+      final groupConv = channelId == null
+          ? null
+          : ref
+              .read(conversationListProvider)
+              .where((c) => c.channelId == channelId)
+              .firstOrNull;
+      if (groupConv != null) {
+        context.go('/chat/${groupConv.id}');
       } else {
-        context.go('/contacts'); // fallback to channels tab
+        // Fallback: land on the Channels tab. The joined channel is there and
+        // its "Group" entry opens the group chat with a resolved groupId.
+        context.go('/contacts');
       }
-    } else if (mounted) {
+    } else {
+      setState(() => _isJoining = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to join. Link may be expired.')),
       );
@@ -64,7 +93,7 @@ class _InvitePreviewScreenState extends ConsumerState<InvitePreviewScreen> {
           icon: const Icon(Icons.close_rounded),
           onPressed: () => context.go('/contacts'),
         ),
-        title: const Text('Channel Invite'),
+        title: const Text('Community Invite'),
       ),
       body: inviteAsync.when(
         data: (info) {
@@ -106,7 +135,7 @@ class _InvitePreviewScreenState extends ConsumerState<InvitePreviewScreen> {
             ),
             const SizedBox(height: SnowSizes.sm),
             Text(
-              info.groupName ?? 'Channel',
+              info.groupName ?? 'Community',
               style: const TextStyle(
                 color: SnowColors.textPrimary,
                 fontSize: 24,
@@ -127,7 +156,7 @@ class _InvitePreviewScreenState extends ConsumerState<InvitePreviewScreen> {
                       width: 20,
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Join Channel'),
+                  : const Text('Join Community'),
             ),
           ],
         ),

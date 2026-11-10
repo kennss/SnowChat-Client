@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-07
-/// @lastUpdated 2026-04-26 (header + inline English translation; Vuln 2 Stage B: force_prekey_upload listener → uploadPreKeys)
+/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-08-06 (_handleMessageDeleted now resolves the owning conversationId before deleting the row and calls ConversationListNotifier.refreshPreviewAfterDelete() afterward, so a group/non-sealed delete-for-everyone of the last message doesn't leave the removed text lingering in the Chats-list preview). Earlier 2026-04-26 (header + inline English translation; Vuln 2 Stage B: force_prekey_upload listener → uploadPreKeys)
 ///
 /// @functions
 ///  - GlobalMessageRouter: Bridges SocketManager streams → MessageQueue
@@ -22,6 +22,8 @@
 ///  - _handleGroupMessagesCleared(): Vuln 3 admin-triggered group clear chat receiver
 ///  - RetryHandler integration: sender-side retry response (Phase 10 P0-E)
 
+import '../crypto/identity_binding_exception.dart';
+import '../crypto/identity_key_changed_exception.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -214,6 +216,13 @@ class GlobalMessageRouter {
       });
       debugPrint('[DIAG:SKDMReq] RE-SENT SKDM to $requesterSnow for $groupId '
           '(deviceId=$deviceId)');
+    } on IdentityBindingInvalidException catch (idErr) {
+      // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+      // never retried (the store already raised the security notice).
+      debugPrint('[DIAG:SKDMReq] identity rejected (${idErr.reason.name}) — terminal');
+    } on IdentityKeyChangedException {
+      // B-2 §5.5: verified contact awaits re-verification — terminal.
+      debugPrint('[DIAG:SKDMReq] peer awaits identity re-verification — terminal');
     } catch (e) {
       debugPrint('[DIAG:SKDMReq] FAILED groupId=$groupId requester=$requesterSnow error=$e');
     }
@@ -291,11 +300,21 @@ class GlobalMessageRouter {
       if (attachments.isNotEmpty) {
         await _attachmentDao.deleteForMessage(messageId);
       }
+      // Resolve the owning conversation BEFORE deleting so we can recompute its
+      // preview afterward (the deleted row may have been its newest message).
+      final row = await _messageDao.getMessageById(messageId);
+      final convId = row?.conversationId;
       // 3. Delete the message row — drift watch fires → all open chat screens
       //    rebuild without this message.
       await _messageDao.deleteMessage(messageId);
       debugPrint('[GlobalMessageRouter] removed deleted message $messageId '
           '(${attachments.length} attachments)');
+      // Recompute the Chats-list preview so a delete-for-everyone of the last
+      // message doesn't leave the removed text lingering in the conversation row.
+      if (convId != null) {
+        _ref?.read(conversationListProvider.notifier)
+            .refreshPreviewAfterDelete(convId);
+      }
     } catch (e) {
       debugPrint('[GlobalMessageRouter] _handleMessageDeleted failed: $e');
     }

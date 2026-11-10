@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-09
-/// @lastUpdated 2026-05-06 (friend tile tap UX rework — direct tap now
+/// @lastUpdated 2026-08-05 (empty-state copy → "by their nickname" to match the nick-first add-friend flow). Earlier 2026-05-06 (friend tile tap UX rework — direct tap now
 ///              opens (or resumes) the 1:1 chat instead of routing through
 ///              NewChatScreen, matching the Telegram/Signal pattern.
 ///              Long-press still opens the options bottom sheet, now with
@@ -92,8 +92,15 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
       appBar: AppBar(
         title: const Text('Friends'),
         actions: [
+          // My QR / scan hub — in-person first contact (show mine ↔ scan theirs).
+          IconButton(
+            icon: const Icon(Icons.qr_code_rounded, color: SnowColors.primary),
+            tooltip: 'My code / scan',
+            onPressed: () => context.push('/my-qr'),
+          ),
           IconButton(
             icon: const Icon(Icons.person_add_rounded, color: SnowColors.primary),
+            tooltip: 'Add friend',
             // 기존 AlertDialog (search/preview 없음) → 풀스크린 AddFriendScreen
             // 으로 변경. NewChatScreen 과 동일 패턴 (search + live preview tile +
             // CTA) 으로 두 SnowChat ID 검색 진입점 일관성 확보 (2026-04-28).
@@ -564,7 +571,7 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
           ),
           const SizedBox(height: SnowSizes.sm),
           const Text(
-            'Add a friend by their SnowChat ID\nto start chatting securely.',
+            'Add a friend by their nickname\nto start chatting securely.',
             textAlign: TextAlign.center,
             style: TextStyle(color: SnowColors.textTertiary, fontSize: 14),
           ),

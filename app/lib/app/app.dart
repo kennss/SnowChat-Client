@@ -3,7 +3,16 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-07 (expiredHard listener now attempts silent
+/// @lastUpdated 2026-08-07 (metadata-min Batch 2: 1:1 push deep-link restored
+///              WITHOUT re-exposing sender identity. The push no longer carries a
+///              conversationId (masked), only the opaque per-row messageId, so
+///              openChatFromPush() resolves the local room on-device via
+///              MessageDao.getMessageById (fetchPending fallback on a cold tap) —
+///              no Notification Service Extension / Swift crypto duplication. Local
+///              notifications + group pushes still take the conversationId fast
+///              path. Earlier 2026-08-03 (notification tap fires convergeRoom()
+///              before /chat navigation).
+///              Earlier 2026-05-07 (expiredHard listener now attempts silent
 ///              challenge-response re-auth via local identity
 ///              (Keystore/Keychain) before falling back to SnackBar +
 ///              /welcome nav. 2026-05-07 server-side
@@ -41,6 +50,7 @@ import 'package:flutter/services.dart' show MethodChannel, SystemNavigator;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/diagnostics/diag_log.dart';
 import '../core/network/token_manager.dart';
+import '../features/chat/providers/conversation_list_provider.dart';
 import '../shared/constants/colors.dart';
 import 'package:go_router/go_router.dart';
 
@@ -115,6 +125,14 @@ bool _autoReauthInflight = false;
 /// build path subscribes; the subscription lives for the app lifetime so
 /// no `cancel` path is needed.
 bool _tokenEventListenerRegistered = false;
+
+/// 2026-08-07 — one-shot guard for the notification-tap → deep-link wiring.
+/// Same rationale as [_tokenEventListenerRegistered]: the FirebaseMessaging
+/// stream listeners + getInitialMessage were registered inside build(), so
+/// every Riverpod rebuild re-subscribed and a single tap fired the handler
+/// N times (measured 4× on emulator). The flag makes registration idempotent —
+/// only the first build path wires them; they live for the app lifetime.
+bool _pushDeepLinkListenersRegistered = false;
 
 class SnowChatApp extends ConsumerWidget {
   const SnowChatApp({super.key});
@@ -194,29 +212,99 @@ class SnowChatApp extends ConsumerWidget {
         // alive for the lifetime of the root widget.
         ref.watch(appBadgeUpdaterProvider);
 
-        // Phase 8.1-D: Wire notification tap → chat room navigation
+        // Phase 8.1-D: Wire notification tap → chat room navigation.
+        //
+        // convergeRoom(): the recipient of a peer's first message may only have a
+        // snow-id fallback room locally until loadFromServer runs; fire a refresh
+        // so any pending convergence happens. Fire-and-forget (loadFromServer
+        // swallows its own errors); the ChatScreen's reactive drift watch fills
+        // in once it lands. No-op for already-converged chats.
+        void convergeRoom() =>
+            ref.read(conversationListProvider.notifier).refresh();
+
+        // Resolve a notification tap to the chat room to open.
+        //
+        // Metadata-min Batch 2 (2026-08-07) dropped conversationId from 1:1
+        // pushes: the server holds no 1:1 pair id and masks identity to
+        // APNs/FCM, so the push carries only the opaque per-row messageId. We
+        // resolve the local room from it ON-DEVICE — the message lands in drift
+        // keyed by its row id with the resolved (peer-based) room id, so a drift
+        // lookup yields the chat to open. No sender identity ever reaches
+        // Apple/Google, and no Notification Service Extension is needed (for a
+        // Pure-Dart Signal client an NSE would mean duplicating decryption in
+        // Swift — a second crypto implementation to keep in sync). Local
+        // notifications (shown by the app AFTER it decrypted the message) still
+        // pass their resolved room id directly; group pushes still carry the
+        // groupChatId as conversationId. Both take the conversationId fast path.
+        Future<void> openChatFromPush({
+          String? conversationId,
+          String? messageId,
+        }) async {
+          debugPrint('[DeepLink] openChatFromPush conv=$conversationId '
+              'msg=$messageId');
+          convergeRoom();
+          // Read the router FRESH here, not via the build-captured `router`:
+          // these listeners register once (guarded), so a captured router would
+          // go stale if routerProvider ever rebuilds and navigation would no-op.
+          if (conversationId != null && conversationId.isNotEmpty) {
+            debugPrint('[DeepLink] → /chat/$conversationId (direct)');
+            ref.read(routerProvider).go('/chat/$conversationId');
+            return;
+          }
+          if (messageId == null || messageId.isEmpty) return;
+          final dao = ref.read(messageDaoProvider);
+          var msg = await dao.getMessageById(messageId);
+          if (msg == null) {
+            // Cold tap: the row may not be drained yet — pull the queue, retry.
+            debugPrint('[DeepLink] msg $messageId not in drift — fetchPending');
+            try {
+              await ref.read(messageQueueProvider).fetchPending();
+            } catch (_) {}
+            msg = await dao.getMessageById(messageId);
+          }
+          final room = msg?.conversationId;
+          debugPrint('[DeepLink] resolved room=$room for msg=$messageId');
+          if (room != null && room.isNotEmpty) {
+            ref.read(routerProvider).go('/chat/$room');
+          }
+          // else: leave the user on the list (masked-safe fallback).
+        }
+
         ref.read(notificationServiceProvider).onNotificationTap =
             (conversationId) {
-          router.go('/chat/$conversationId');
+          debugPrint('[DeepLink] onNotificationTap conv=$conversationId');
+          unawaited(openChatFromPush(conversationId: conversationId));
         };
 
-        // FCM: Background tap → app opened from notification
-        FirebaseMessaging.onMessageOpenedApp.listen((message) {
-          final convId = message.data['conversationId'] as String?;
-          if (convId != null && convId.isNotEmpty) {
-            router.go('/chat/$convId');
-          }
-        });
+        // FCM / APNs notification-tap handlers. Guarded so the raw-stream
+        // .listen() + getInitialMessage() register EXACTLY once — every Riverpod
+        // rebuild would otherwise re-subscribe and fire the handler N times per
+        // tap (see [_pushDeepLinkListenersRegistered]). The onNotificationTap
+        // assignment above is an idempotent overwrite, so it stays unguarded.
+        if (!_pushDeepLinkListenersRegistered) {
+          _pushDeepLinkListenersRegistered = true;
 
-        // FCM: Terminated state → app opened from notification
-        FirebaseMessaging.instance.getInitialMessage().then((message) {
-          if (message != null) {
-            final convId = message.data['conversationId'] as String?;
-            if (convId != null && convId.isNotEmpty) {
-              router.go('/chat/$convId');
+          // Background tap → app opened from notification. Masked 1:1 pushes
+          // carry only messageId; group pushes carry conversationId.
+          FirebaseMessaging.onMessageOpenedApp.listen((message) {
+            debugPrint('[DeepLink] onMessageOpenedApp data=${message.data}');
+            unawaited(openChatFromPush(
+              conversationId: message.data['conversationId'] as String?,
+              messageId: message.data['messageId'] as String?,
+            ));
+          });
+
+          // Terminated state → app opened from notification.
+          FirebaseMessaging.instance.getInitialMessage().then((message) {
+            if (message != null) {
+              debugPrint('[DeepLink] getInitialMessage data=${message.data}');
+              unawaited(openChatFromPush(
+                conversationId: message.data['conversationId'] as String?,
+                messageId: message.data['messageId'] as String?,
+              ));
             }
-          }
-        });
+          });
+        }
 
         // Phase 1 invite deeplink (snowchat://invite/<code>) — wire app_links
         // cold + warm streams. canNavigateNow gate: only push /invite when the

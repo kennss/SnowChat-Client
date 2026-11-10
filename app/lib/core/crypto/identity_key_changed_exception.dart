@@ -1,19 +1,17 @@
 /// @file        identity_key_changed_exception.dart
-/// @description Specialized SignalProtocolException raised when our TOFU
-///              pin store detects that the remote Ed25519 identity key for
-///              a peer has changed since the last successful X3DH. The
-///              exception carries the peer SnowChat ID, the device ID, and
-///              both the previously pinned key and the freshly received
-///              key so that higher-level callers (MessageQueue,
-///              EncryptedMessageHandler) can hand off to
-///              [IdentityChangeHandler] for Safety Number recomputation,
-///              banner emission, and system-message insertion — instead of
-///              silently failing as if the message bounced for any other
-///              ratchet reason.
+/// @description Raised under the B-2 legacy-peer policy (§5.5, Signal
+///              style) when a peer WITHOUT an identity binding presents new
+///              Signal keys while the user had marked them verified. The new
+///              keys are parked as "pending" in VerifiedIdentityStore and the
+///              peer stays blocked (send + new inbound sessions) until the user
+///              re-verifies on the verify screen. Unverified peers never raise
+///              this — their keys are updated with a notice. Carries the peer
+///              SnowChat ID, device ID, and the old/new key for diagnostics
+///              (never logged).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-04-18
+/// @lastUpdated 2026-11-10 (B-2: semantics narrowed to the verified-legacy-peer block; the TOFU pin store it was built for is gone)
 ///
 /// @functions
 ///  - IdentityKeyChangedException: typed exception with peer + key fields

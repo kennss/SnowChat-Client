@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-06
-/// @lastUpdated 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
+/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings; NFT "Community Fee Share" copy left as-is). Earlier 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
 ///
 /// @functions
 ///  - ChannelAdminScreen: channel settings + member management + pending approval + invite link + delete
@@ -214,7 +214,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         data: (detail) {
           if (detail == null) {
             return const Center(
-              child: Text('Failed to load channel',
+              child: Text('Failed to load community',
                   style: TextStyle(color: SnowColors.textTertiary)),
             );
           }
@@ -223,7 +223,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         },
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (_, __) => const Center(
-          child: Text('Error loading channel',
+          child: Text('Error loading community',
               style: TextStyle(color: SnowColors.textTertiary)),
         ),
       ),
@@ -305,7 +305,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
             _buildSectionHeader('Community NFT Fee Share'),
             const SizedBox(height: SnowSizes.xs),
             const Text(
-              'Register this channel\'s NFT collection to receive 50% of '
+              'Register this community\'s NFT collection to receive 50% of '
               'Tensor protocol fees on every trade. Sealed metadata '
               '(one-way) required.',
               style: TextStyle(
@@ -353,7 +353,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
                         child: CircularProgressIndicator(
                             strokeWidth: 2, color: SnowColors.error))
                     : const Icon(Icons.delete_forever_rounded),
-                label: const Text('Delete Channel'),
+                label: const Text('Delete Community'),
               ),
             ),
           ],
@@ -470,7 +470,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
                 ? 'Tap to change'
                 : _currentAvatarUrl != null
                     ? 'Tap to change icon'
-                    : 'Upload Channel Icon',
+                    : 'Upload Community Icon',
             style: const TextStyle(
                 color: SnowColors.textTertiary, fontSize: 12),
           ),
@@ -482,7 +482,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
           controller: _nameController,
           maxLength: 50,
           decoration: const InputDecoration(
-            labelText: 'Channel Name',
+            labelText: 'Community Name',
             counterText: '',
           ),
         ),
@@ -546,7 +546,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
               style: TextStyle(color: SnowColors.textPrimary)),
           subtitle: Text(
             _joinPolicy == 'INVITE_ONLY'
-                ? 'Disabled — Invite Only channels require admin approval.'
+                ? 'Disabled — Invite Only communities require admin approval.'
                 : 'Members can create invite links to bring in friends.',
             style: const TextStyle(color: SnowColors.textTertiary, fontSize: 12),
           ),
@@ -898,7 +898,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         backgroundColor: SnowColors.surface,
         title: const Text('Kick Member',
             style: TextStyle(color: SnowColors.textPrimary)),
-        content: Text('Remove $displayName from the channel?',
+        content: Text('Remove $displayName from the community?',
             style: const TextStyle(color: SnowColors.textSecondary)),
         actions: [
           TextButton(
@@ -931,7 +931,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         title: const Text('Ban Member',
             style: TextStyle(color: SnowColors.textPrimary)),
         content: Text(
-            'Ban $displayName from the channel? They will not be able to rejoin.',
+            'Ban $displayName from the community? They will not be able to rejoin.',
             style: const TextStyle(color: SnowColors.textSecondary)),
         actions: [
           TextButton(
@@ -1042,7 +1042,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         title: const Text('Transfer Ownership',
             style: TextStyle(color: SnowColors.textPrimary)),
         content: Text(
-          'Transfer channel ownership to $displayName? You will become an Admin.',
+          'Transfer community ownership to $displayName? You will become an Admin.',
           style: const TextStyle(color: SnowColors.textSecondary),
         ),
         actions: [
@@ -1089,10 +1089,10 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: SnowColors.surface,
-        title: const Text('Delete Channel',
+        title: const Text('Delete Community',
             style: TextStyle(color: SnowColors.textPrimary)),
         content: const Text(
-          'This will permanently delete the channel and all its rooms. This action cannot be undone.',
+          'This will permanently delete the community and all its rooms. This action cannot be undone.',
           style: TextStyle(color: SnowColors.textSecondary),
         ),
         actions: [

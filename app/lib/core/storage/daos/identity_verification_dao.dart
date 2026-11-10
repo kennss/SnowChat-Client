@@ -8,7 +8,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-04-18
+/// @lastUpdated 2026-11-10 (B-2 Safety Number v2: currentVersion=2 over ACCOUNT public keys; dropPreV2Rows() invalidates every cached v1 number and resets every v1 verified=true (SC-14 made them meaningless); getCurrentByPeer()/isVerified() ignore pre-v2 rows; markKeyChange() latches a key-change event without needing a Safety Number (it does not change under v2 for same-account device-key changes); markMismatch() can force critical severity)
 ///
 /// @functions
 ///  - getByPeer(snowchatId): Read the current verification row, or null.
@@ -22,6 +22,10 @@
 ///                       update pinnedEd25519 and safetyNumber.
 ///  - deleteByPeer(snowchatId): Remove a peer's verification row (P2 cleanup
 ///                              on removeContact / blockContact / deleteChat).
+///  - getCurrentByPeer(snowchatId): Row only if computed with the current algorithm
+///  - isVerified(snowchatId): verified flag of a current-algorithm row
+///  - dropPreV2Rows(): one-way Safety Number v2 migration (idempotent)
+///  - markKeyChange(...): latch a key-change banner without a new number
 library;
 
 import 'dart:convert';
@@ -37,6 +41,72 @@ part 'identity_verification_dao.g.dart';
 class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
     with _$IdentityVerificationDaoMixin {
   IdentityVerificationDao(super.db);
+
+  /// B-2 Safety Number algorithm version (account-key fingerprint).
+  static const int currentVersion = 2;
+
+  /// Row for [snowchatId] only if it was computed with [currentVersion].
+  Future<IdentityVerification?> getCurrentByPeer(String snowchatId) async {
+    final row = await getByPeer(snowchatId);
+    if (row == null || row.algorithmVersion < currentVersion) return null;
+    return row;
+  }
+
+  /// True iff the user verified [snowchatId] under the current algorithm.
+  Future<bool> isVerified(String snowchatId) async {
+    final row = await getCurrentByPeer(snowchatId);
+    return row?.verified ?? false;
+  }
+
+  /// One-way v1 → v2 migration: v1 numbers mixed the local ACCOUNT key with
+  /// the peer's SIGNAL key (SC-14), so they never matched between honest
+  /// peers — every cached number and every "verified" mark is meaningless.
+  /// Deleting the rows invalidates both at once. Idempotent; safe to run on
+  /// every start.
+  Future<int> dropPreV2Rows() {
+    return (delete(identityVerifications)
+          ..where((v) => v.algorithmVersion.isSmallerThanValue(currentVersion)))
+        .go();
+  }
+
+  /// Latch a key-change event for [snowchatId] (banner + severity) without a
+  /// new Safety Number. [critical] forces the red "previously verified"
+  /// severity (used for suspected interception). Creates a placeholder row
+  /// (empty key / number — recomputed by the verify screen) when absent.
+  Future<void> markKeyChange({
+    required String snowchatId,
+    bool critical = false,
+  }) async {
+    if (snowchatId.isEmpty) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final existing = await getCurrentByPeer(snowchatId);
+    if (existing == null) {
+      await deleteByPeer(snowchatId); // drop any stale pre-v2 row
+      await into(identityVerifications).insert(
+        IdentityVerificationsCompanion.insert(
+          peerSnowchatId: snowchatId,
+          pinnedEd25519: '',
+          safetyNumber: '',
+          verified: const Value(false),
+          lastChangedAt: Value(nowMs),
+          wasPreviouslyVerified: Value(critical),
+          algorithmVersion: const Value(currentVersion),
+          createdAt: nowMs,
+          updatedAt: nowMs,
+        ),
+      );
+      return;
+    }
+    await (update(identityVerifications)
+          ..where((v) => v.peerSnowchatId.equals(snowchatId)))
+        .write(IdentityVerificationsCompanion(
+      verified: const Value(false),
+      verifiedAt: const Value(null),
+      lastChangedAt: Value(nowMs),
+      wasPreviouslyVerified: Value(critical || existing.verified),
+      updatedAt: Value(nowMs),
+    ));
+  }
 
   // -------------------------------------------------------------------------
   // Reads
@@ -74,7 +144,7 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
     required String snowchatId,
     required Uint8List ed25519Key,
     required String safetyNumber,
-    int algorithmVersion = 1,
+    int algorithmVersion = currentVersion,
   }) async {
     if (snowchatId.isEmpty) {
       throw ArgumentError('upsertVerification: snowchatId must not be empty');
@@ -167,7 +237,7 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
     required String snowchatId,
     required Uint8List newKey,
     required String newSafetyNumber,
-    int algorithmVersion = 1,
+    int algorithmVersion = currentVersion,
   }) async {
     if (snowchatId.isEmpty) {
       throw ArgumentError('markMismatch: snowchatId must not be empty');

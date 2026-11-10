@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
+/// @lastUpdated 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
 ///
 /// @functions
 ///  - MessageRepository: message data layer (drift SSoT, server fetch, socket reception)
@@ -29,6 +29,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../../app/providers.dart';
+import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/crypto/file_encryptor.dart';
 // Phase 6: SenderKeyDistributionMessage import removed (handled by MessageQueue)
 import '../../../core/network/api_client.dart';
@@ -53,6 +54,7 @@ class MessageRepository {
   final SocketManager? _socketManager;
   final ApiClient? _apiClient;
   final FileService? _fileService;
+  final EncryptedMessageHandler? _e2eeHandler;
   final String _myId;
   final Ref? _ref;
   final ExpiringMessageManager? _expiringManager;
@@ -82,6 +84,7 @@ class MessageRepository {
     SocketManager? socketManager,
     ApiClient? apiClient,
     FileService? fileService,
+    EncryptedMessageHandler? e2eeHandler,
     required String myId,
     this.recipientId,
     this.groupId,
@@ -92,6 +95,7 @@ class MessageRepository {
         _socketManager = socketManager,
         _apiClient = apiClient,
         _fileService = fileService,
+        _e2eeHandler = e2eeHandler,
         _myId = myId,
         _ref = ref,
         _expiringManager = expiringManager;
@@ -180,11 +184,13 @@ class MessageRepository {
           final convDao = _ref!.read(conversationDaoProvider);
           final conv = await convDao.getConversation(conversationId);
           if (conv != null && conv.type == 'direct' && conv.groupId == null) {
-            // participantIds = JSON array of SnowChat IDs (self + peer for 1:1).
-            // Pick the entry that isn't us.
+            // participantIds holds the SnowChat IDs (self + peer for 1:1); pick
+            // the entry that isn't us. The column is written as CSV, so a plain
+            // jsonDecode threw FormatException here and silently skipped the
+            // Signal session wipe below (reintroducing the 2026-05-04
+            // stale-ratchet loop on delete). Use the DAO's tolerant parser.
             final mySnow = _ref!.read(currentSnowIdProvider);
-            final list = (jsonDecode(conv.participantIds) as List)
-                .cast<String>();
+            final list = convDao.participantIdsOf(conv.participantIds);
             for (final p in list) {
               if (p != mySnow) {
                 peerSnowIdToWipe = p;
@@ -314,6 +320,33 @@ class MessageRepository {
     }
   }
 
+  /// Persist an outgoing message AND refresh the conversation's last-message
+  /// snippet in one transaction — mirroring the incoming path
+  /// (MessageDao.insertIncomingMessage). The plain persistMessage() writes only
+  /// the message row, so an outgoing-last conversation would hydrate from the
+  /// drift `conversations` cache with a stale/empty preview ("No messages yet")
+  /// after restart. Used for the initial insert of a sent text/file/voice
+  /// message (status updates keep using persistMessage — they must not move the
+  /// snippet). [snippetText] is the Chats-list preview text; [sentTimestamp] is
+  /// epoch-ms.
+  Future<void> persistOutgoingMessage(
+    LocalMessagesCompanion companion, {
+    required String snippetText,
+    required int sentTimestamp,
+  }) async {
+    try {
+      await _messageDao.insertOutgoingMessage(
+        message: companion,
+        conversationId: conversationId,
+        snippetText: snippetText,
+        sentTimestamp: sentTimestamp,
+      );
+    } catch (e) {
+      debugPrint(
+          '[MessageRepo:$conversationId] Drift outgoing persist failed: $e');
+    }
+  }
+
   /// Batch-persist server-fetched messages to drift DB.
   /// Own messages → read=true. Others' messages → read=false (unread).
   /// Skip own file messages — local sendFileMessage + ACK handles these
@@ -332,9 +365,21 @@ class MessageRepository {
       if (msg.plaintext.isEmpty && msg.type == MessageType.text) continue;
       final metadataJson =
           msg.metadata != null ? jsonEncode(msg.metadata) : null;
-      // Send read receipt immediately for messages viewed in real-time
-      if (!isOwn && isViewing && msg.id.isNotEmpty) {
-        _socketManager?.sendReadReceipt([msg.id]);
+      // Sealed E2EE read receipt for a peer message viewed in real-time
+      // (direct chats only — groups don't carry 1:1 read receipts). Fire-
+      // and-forget: a lost receipt only costs a blue check on the peer.
+      if (!isOwn &&
+          isViewing &&
+          !isGroup &&
+          msg.id.isNotEmpty &&
+          msg.senderSnowchatId.isNotEmpty &&
+          _e2eeHandler != null) {
+        unawaited(_e2eeHandler!
+            .sendSealedReadReceipt(
+                recipientId: msg.senderSnowchatId, readIds: [msg.id])
+            .catchError((Object e) {
+          debugPrint('[MessageRepository] sealed read receipt failed (dropped): $e');
+        }));
       }
       persistMessage(LocalMessagesCompanion(
         id: Value(msg.id),

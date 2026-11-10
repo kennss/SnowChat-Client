@@ -31,7 +31,11 @@ Future<MessageAction?> showMessageContextMenu(
     builder: (context) => MessageContextMenu(
       message: message,
       isMine: isMine,
-      canDeleteForEveryone: isMine,
+      // Only offer "Delete for Everyone" within the unsend window. Past it the
+      // sealed unsend is never sent (chat_provider guards on the same window),
+      // so showing the option would falsely tell the sender the peer's copy was
+      // removed. "Delete for Me" stays available for any message.
+      canDeleteForEveryone: isMine && message.isWithinUnsendWindow,
     ),
   );
 }

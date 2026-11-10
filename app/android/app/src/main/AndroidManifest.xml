@@ -44,6 +44,13 @@
     <!-- Android 9+ telecom ConnectionService (Self-Managed, includesCallsInRecents=false 해당 없음) -->
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Android 10+ full-screen incoming-call UI over the lock screen. On
+         Android 14+ (API 34) this is a user-grantable special permission that is
+         DENIED by default for non-default-dialer apps; without it a locked-screen
+         call is downgraded to a heads-up notification. The app requests the grant
+         at runtime (CallPermissionHelper). Also merged from the callkit plugin,
+         declared here explicitly for clarity. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <application
         android:label="snowchat"
         android:name="${applicationName}"
@@ -93,17 +100,23 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
             <!--
-                 Phase 1 invite deeplink (snowchat://invite/<code>).
+                 Phase 1 first-contact deeplinks (custom scheme):
+                   - snowchat://invite/<code>  → community join
+                   - snowchat://user/<id>      → friend add (A shares their own id)
                  BROWSABLE 없으면 외부 메신저(카톡 등)에서 클릭한 링크가 못 들어옴.
                  DEFAULT 없으면 OS 가 자동 분기 시 후보에서 제외.
-                 host="invite" path 는 와일드카드 — code 자체는 router 에서 파싱.
-                 Phase 2 = https://snowchat.calidalab.ai/invite/* (autoVerify=true).
+                 host 뒤 path 는 와일드카드 — code/id 자체는 router 에서 파싱.
+                 Both snowchat hosts pooled here (invite, user) so the scheme
+                 resolves for either; the router (_rewriteDeeplink) + DeeplinkHandler
+                 disambiguate by host.
+                 Phase 2 = https://snowchat.calidalab.ai/{invite,u}/* (autoVerify=true).
             -->
             <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="snowchat" android:host="invite"/>
+                <data android:scheme="snowchat" android:host="user"/>
             </intent-filter>
         </activity>
 

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-03 (F1: wrap the success/error body in LayoutBuilder + ConstrainedBox(minHeight=viewport) + IntrinsicHeight + SingleChildScrollView so the trailing Spacer() still pins the buttons on tall screens but the content scrolls on a short screen / large font instead of clipping "Skip for now" — no visual change on normal devices). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - CreateIdentityScreen: identity-creation ConsumerStatefulWidget
@@ -71,11 +71,22 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
         isLoading: state.isLoading,
         message: 'Generating keys...',
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(SnowSizes.lg),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
+          // F5-class robustness: the content ends with a Spacer() that pushes
+          // the buttons to the bottom, but the fixed content (icon, welcome,
+          // ID box, description, two buttons) overflows a short screen / large
+          // font — clipping "Skip for now". LayoutBuilder + ConstrainedBox(min
+          // = viewport) + IntrinsicHeight keeps the Spacer working when there is
+          // room, and scrolls when there is not (no visual change on tall screens).
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: IntrinsicHeight(
+                  child: Padding(
+                    padding: const EdgeInsets.all(SnowSizes.lg),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
                 const SizedBox(height: SnowSizes.xxl),
 
                 // Success icon
@@ -194,6 +205,10 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
                 const SizedBox(height: SnowSizes.lg),
               ],
             ),
+          ),
+          ),
+          ),
+          ),
           ),
         ),
       ),

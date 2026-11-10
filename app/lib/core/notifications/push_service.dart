@@ -3,7 +3,13 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-05-03 (v215: iOS APNs alert path 복원. cert-era VoIP-only
+/// @lastUpdated 2026-07-15 (registerFcmToken now sends appVersion so the server's UserDevice.appVersion stays fresh on every launch — fixes stale-build mis-fire of the sealed_control / VoIP version gates). Earlier 2026-06-08 (Bug B-1: clear notification shade on foreground +
+///              on conversation open. Samsung One UI badge follows active-
+///              notification count, not app_badge_plus, so unread badge stays
+///              stuck at N until the shade is cleared. PushService now observes
+///              app lifecycle → cancelAll on resume; setActiveConversation now
+///              cancels that conversation's notification on open.). Earlier
+///              2026-05-03 (v215: iOS APNs alert path 복원. cert-era VoIP-only
 ///              집중기에 iOS 는 push_service 자체 skip 했었지만 v215
 ///              (AppDelegate) 가 didRegisterForRemoteNotificationsWithDevice-
 ///              Token + Messaging.apnsToken forward 구현 → getAPNSToken() 이
@@ -14,7 +20,9 @@
 ///
 /// @functions
 ///  - PushService: service that receives push notification events and triggers local notifications
-///  - PushService.initialize(): obtain push token (FCM Android / APNs iOS) + register socket event listeners
+///  - PushService.initialize(): obtain push token (FCM Android / APNs iOS) + register socket event listeners + lifecycle observer
+///  - PushService.setActiveConversation(): track viewed conversation + cancel its lingering notification on open
+///  - PushService.didChangeAppLifecycleState(): foreground → cancelAll message notifications (Samsung badge fix)
 ///  - PushService.registerFcmToken(): register push token with server
 ///  - PushService.unregisterPushToken(): unregister push token from server (on logout)
 ///  - PushService._waitForApnsToken(): iOS APNs token retry helper (v215, cover didRegister race)
@@ -25,11 +33,14 @@ import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart'
+    show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 
 import '../network/api_client.dart';
 import '../network/api_endpoints.dart';
 import '../network/socket_manager.dart';
 import '../storage/secure_storage.dart';
+import '../../utils/version.dart';
 import 'notification_service.dart';
 
 /// Manages push notification triggers based on FCM + Socket.IO events.
@@ -38,7 +49,7 @@ import 'notification_service.dart';
 /// - Push payload contains NO message content
 /// - Data-only: { type: "new_message", conversationId: "..." }
 /// - Client receives silent push -> fetches encrypted message -> decrypts -> shows local notification
-class PushService {
+class PushService with WidgetsBindingObserver {
   final SocketManager _socketManager;
   final NotificationService _notificationService;
   final ApiClient _apiClient;
@@ -46,6 +57,11 @@ class PushService {
 
   /// Current user's SnowChat ID — used to filter out own messages.
   String? mySnowId;
+
+  /// The conversation the user is currently viewing (null = none). Set by
+  /// chat_screen on open / leave. Used to clear that conversation's lingering
+  /// notification the moment it is opened.
+  String? _activeConversationId;
 
   // Recently notified message IDs — prevents Socket.IO + FCM duplicate alerts.
   final Set<String> _recentlyNotifiedIds = {};
@@ -67,6 +83,14 @@ class PushService {
 
   /// Initialize push service: request permission, get FCM token, register listeners.
   Future<void> initialize() async {
+    // Lifecycle observer — clear lingering notifications on foreground. Samsung
+    // One UI derives the launcher badge from the active-notification count
+    // (not app_badge_plus), so unless we cancel the shade the badge stays stuck
+    // at N even after every message is read (pajooman003 "70 unread" report,
+    // 2026-05-30 — measured launcher "notification listener: N, badge provider:
+    // 0"). Foreground = the user is in the app → clear the message shade.
+    WidgetsBinding.instance.addObserver(this);
+
     // Socket.IO listeners (group invites)
     _groupInviteSubscription =
         _socketManager.onGroupInvite.listen(_onGroupInvite);
@@ -154,11 +178,18 @@ class PushService {
         debugPrint('[PushService] No device_id — skipping token registration');
         return;
       }
+      // Piggyback the current build number so the server's UserDevice.appVersion
+      // stays fresh on every launch (this runs via pushTokenAutoSyncProvider
+      // whenever authToken becomes non-null, incl. app restart). Without this,
+      // appVersion only updated on full verify/login, so an app upgrade left it
+      // stale — which mis-fired the sealed_control / VoIP client-version gates.
+      final appVersion = await getAppVersionForServer();
       await _apiClient.dio.put(
         ApiEndpoints.devicePushToken(deviceId),
         data: {
           'pushToken': token,
           'platform': Platform.isIOS ? 'ios' : 'android',
+          if (appVersion != null) 'appVersion': appVersion,
         },
       );
       debugPrint(
@@ -247,7 +278,41 @@ class PushService {
   }
 
   /// Set the currently active conversation (for notification suppression).
-  void setActiveConversation(String? conversationId) {}
+  ///
+  /// On open we also cancel that conversation's lingering local notification
+  /// immediately — the app-built notifications use `conversationId.hashCode`
+  /// as their id (NotificationService.showMessageNotification), so a precise
+  /// per-conversation cancel clears the one the user just opened without
+  /// touching the others. The broad foreground cancelAll (didChangeApp-
+  /// LifecycleState) covers FCM-displayed notifications whose ids we don't own.
+  void setActiveConversation(String? conversationId) {
+    _activeConversationId = conversationId;
+    if (conversationId != null && conversationId.isNotEmpty) {
+      _notificationService.cancelForConversation(conversationId);
+    }
+  }
+
+  /// Foreground transition → clear the message notification shade.
+  ///
+  /// Samsung One UI's launcher badge follows the active-notification count, so
+  /// read messages whose notifications are never dismissed keep the badge
+  /// pinned at N. cancelAll() clears the whole shade — including FCM-displayed
+  /// notifications (posted by the Firebase SDK under our package) whose ids we
+  /// cannot target individually. Calls are unaffected: VoIP uses
+  /// flutter_callkit_incoming (Telecom self-managed) + data-only push, never
+  /// flutter_local_notifications, so no ringing/active call is dismissed here.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _notificationService.cancelAll();
+      // Re-assert active-conversation clear in case a notification raced in
+      // just before resume (FG receipt path still builds one).
+      final active = _activeConversationId;
+      if (active != null && active.isNotEmpty) {
+        _notificationService.cancelForConversation(active);
+      }
+    }
+  }
 
   /// Handle incoming group invite from socket.
   void _onGroupInvite(Map<String, dynamic> data) {
@@ -265,6 +330,7 @@ class PushService {
 
   /// Clean up subscriptions.
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _groupInviteSubscription?.cancel();
     _tokenRefreshSubscription?.cancel();
   }

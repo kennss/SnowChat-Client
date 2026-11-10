@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-10
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-04 (GMK secure-storage now uses AndroidOptions(encryptedSharedPreferences: true) + IOSOptions(first_unlock_this_device), matching the app-wide SecureStorageService — the bare default FlutterSecureStorage() used the legacy Android backend that lost the GMK on reload, so the E2EE group name vanished for every member including the creator). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - GroupMetadataCrypto.generateGMK(): Generate a random 32-byte GMK
@@ -29,7 +29,20 @@ import 'package:pinenacl/ed25519.dart' as ed;
 /// GMK is distributed via 1:1 E2EE (Double Ratchet) sessions.
 class GroupMetadataCrypto {
   static final _rng = Random.secure();
-  static const _storage = FlutterSecureStorage();
+  // Must match the app-wide SecureStorageService config. The bare default
+  // FlutterSecureStorage() uses the LEGACY Android backend
+  // (encryptedSharedPreferences: false), which loses values across an app
+  // restart on many OEMs (notably Galaxy) — so the GMK, the ONLY secret that was
+  // on the default here, silently vanished on reload for every member INCLUDING
+  // the creator, leaving the group name undecryptable. Everything else in the
+  // app (identity, Signal keys, wallet) already uses encryptedSharedPreferences,
+  // which is why sessions survive but the group name did not.
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
   static const _keyPrefix = 'gmk_';
 
   // ---------------------------------------------------------------------------

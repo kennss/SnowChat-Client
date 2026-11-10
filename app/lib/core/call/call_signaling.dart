@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
+/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: decrypt() receives the sealed-certificate deviceId for binding.deviceId matching and caches it only after a verified decrypt; a hard identity rejection (IdentityBindingInvalidException) or a pending re-verification (IdentityKeyChangedException) skips the archive-reset + retry_receipt recovery — re-handshaking cannot fix an identity failure and would loop). Earlier 2026-08-03 (F3: dispatch now derives the DR messageType from the unsealed ciphertext via resolveSealedMessageType() instead of the cleartext data['messageType'] (which Sealed Sender never carries → always 1 → a prekey first-contact invite was misrouted as normal → _receiveSession never ran → first call to a brand-new contact rang forever). Also enforces Sealed Sender Step 9 identity cross-check on prekey invites). Earlier 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
 ///
 /// @functions
 ///  - CallSignaling.sendSealedSignaling(): wrap signaling event in Sealed envelope and send
@@ -21,6 +21,8 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 
+import '../crypto/identity_binding_exception.dart';
+import '../crypto/identity_key_changed_exception.dart';
 import '../crypto/sealed_sender.dart';
 import '../crypto/sender_certificate_manager.dart';
 import '../crypto/signal_session_manager.dart';
@@ -361,16 +363,29 @@ class CallSignaling {
         return;
       }
 
-      _sessionManager.learnDeviceIdFromIncoming(senderId, senderDeviceId);
+      // B-2: the certificate deviceId is cached by decrypt() only after the
+      // DR decrypt + binding verification succeed.
 
-      // DR cipher type — inside sealed defaults to 1 (normal); 2 is handled by the signal layer
-      final messageType = (data['messageType'] as int?) ?? 1;
+      // DR cipher type — recover it from the unsealed ciphertext itself, never
+      // from the cleartext `data`. Sealed Sender hides the inner message type
+      // from the wire (VoIP CLAUDE.md §3.4: the outer envelope carries no
+      // messageType), so `data['messageType']` was always absent and the old
+      // `?? 1` misrouted a prekey first-contact invite as a normal message:
+      // _receiveSession never ran → the very first call to a brand-new contact
+      // failed to decrypt → caller rang forever. resolveSealedMessageType()
+      // reads prekey-ness from the ciphertext and binds the X3DH identity to the
+      // sender certificate identity (Sealed Sender Step 9) for prekey invites.
+      final messageType = _sessionManager.signal.resolveSealedMessageType(
+        unsealed.drCiphertext,
+        unsealed.senderIdentityKey,
+      );
 
       final plaintextBytes = await _sessionManager.decrypt(
         senderId,
         senderDeviceId,
         unsealed.drCiphertext,
         messageType,
+        envelopeDeviceId: senderDeviceId,
       );
       debugPrint('[DIAG:CallSignal] drDecrypt ${sw.elapsedMilliseconds}ms');
 
@@ -391,6 +406,23 @@ class CallSignaling {
     } catch (e) {
       // Don't log event type/content — Zero-Trace §23
       debugPrint('[CallSignaling] dispatch error: ${e.runtimeType} after ${sw.elapsedMilliseconds}ms');
+      // B-2 §5.7: identity failures are not ratchet desyncs. A forged /
+      // downgraded binding or a peer awaiting re-verification must NOT
+      // trigger archive-reset + retry_receipt — the fresh handshake would hit
+      // the same rejection and the peer would resend forever. The
+      // user-visible notice comes from VerifiedIdentityStore.
+      if (e is IdentityBindingInvalidException ||
+          e is IdentityKeyChangedException) {
+        debugPrint('[CallSignaling] identity rejection — recovery skipped');
+        return;
+      }
+      // Note (F3): a Sealed Sender Step 9 identity mismatch from
+      // resolveSealedMessageType() also surfaces here as a decrypt failure.
+      // That is a security rejection rather than a ratchet desync, but sharing
+      // this recovery path is safe — senderId comes from the verified
+      // certificate, so the reset below only targets the authenticated
+      // sender's own session (no cross-user amplification), and the 5-min
+      // cooldown caps any loop.
       // 2026-05-04 root cause fix: long-idle Signal ratchet desync 시 decrypt
       // 가 silent fail → 이전엔 envelope drop + 무대응 → caller 무한 ring
       // (e.g. recipient decline 의 call_end 못 받음). message_queue 의
@@ -494,13 +526,16 @@ class CallSignaling {
       // self-sender check
       final mySnow = _mySnowchatIdResolver?.call();
       if (mySnow != null && senderId == mySnow) return null;
-      _sessionManager.learnDeviceIdFromIncoming(senderId, unsealed.senderDeviceId);
       // messageType 결정 (raw envelope 안에 messageType 정보 없음 — default 1)
+      // B-2 inventory note: this fixed type-1 path can never bootstrap a
+      // session (no _receiveSession → no identity admission needed); a PreKey
+      // envelope arriving here fails decrypt and returns null.
       final plaintextBytes = await _sessionManager.decrypt(
         senderId,
         unsealed.senderDeviceId,
         unsealed.drCiphertext,
         1,
+        envelopeDeviceId: unsealed.senderDeviceId,
       );
       final inner = jsonDecode(utf8.decode(plaintextBytes)) as Map<String, dynamic>;
       return CallSignalingEvent(

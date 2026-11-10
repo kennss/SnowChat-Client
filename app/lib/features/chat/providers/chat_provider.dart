@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
+/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: deleteChat() now also sends a sealed_control 'delete_chat' to the peer so an OFFLINE peer loses the room too — ordered AFTER the server DELETE (purgePairRows would wipe a control queued before it) and BEFORE _localCleanup (which wipes the Signal session needed to encrypt it)). Earlier 2026-08-06 (deleteMessageForMe now calls ConversationListNotifier.refreshPreviewAfterDelete(conversationId) after the local delete — covers every sender delete/unsend path (deleteMessageForEveryone routes through it) so unsending the last message advances the Chats-list preview to the surviving newest message instead of lingering the deleted text). Earlier 2026-08-05 (outgoing send (text/file/voice) now persists via MessageRepository.persistOutgoingMessage, which refreshes the drift `conversations` snippet in the same transaction — previously the send path wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart; status updates still use persistMessage so they don't move the snippet). Earlier 2026-08-03 (F8: clearChat/deleteChat now resolve the shared server CUID via _serverConversationId() (idempotent find-or-create on the peer's snowchatId) before the server DELETE — a snow-id fallback room, created when the peer messages first, 404'd on the CUID-keyed endpoint so the server clear/delete silently no-op'd and Delete's "the other person also loses this conversation" promise broke; deleteChat also tombstones by the CUID so loadFromServer's filter matches). Earlier 2026-07-15 (sealed unsend: deleteMessageForEveryone routes 1:1 delete-for-everyone through EncryptedMessageHandler.sendSealedUnsend (server-opaque) with a client-side 5-min window; group stays on the plaintext server fan-out. Sealed read receipt: wire e2eeHandler + directPeerResolver into MarkReadHelper and e2eeHandler into MessageRepository so read receipts travel E2EE instead of plaintext message_read). Earlier 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
 ///              disabled 상태였지만 두 blocker 가 모두 해소됨 — (a)
 ///              production .env 의 persistent SEALED_SENDER_PRIVATE_KEY
 ///              박힘 + server "loaded from environment" startup log
@@ -31,6 +31,8 @@
 ///    sender key + SKDM to all group members BEFORE the user types anything,
 ///    so receivers are immediately ready to decrypt the first message.
 
+import '../../../core/crypto/identity_binding_exception.dart';
+import '../../../core/crypto/identity_key_changed_exception.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -100,6 +102,7 @@ final chatProvider = StateNotifierProvider.family<
     socketManager: socketManager,
     apiClient: apiClient,
     fileService: ref.read(fileServiceProvider),
+    e2eeHandler: ref.read(encryptedMessageHandlerProvider),
     myId: mySnowId ?? '',
     recipientId: recipientSnowchatId,
     groupId: groupId,
@@ -110,7 +113,11 @@ final chatProvider = StateNotifierProvider.family<
   final markReadHelper = MarkReadHelper(
     conversationId: conversationId,
     messageDao: messageDao,
-    socketManager: socketManager,
+    e2eeHandler: ref.read(encryptedMessageHandlerProvider),
+    // Direct chat → peer snowId; group → null (no per-member receipts).
+    // Evaluated at send time so the reactively-resolved recipientId is used.
+    directPeerResolver: () =>
+        repository.groupId != null ? null : repository.recipientId,
     expiringManager: ref.read(expiringMessageManagerProvider),
     myId: mySnowId ?? '',
   );
@@ -164,6 +171,9 @@ final chatProvider = StateNotifierProvider.family<
     mySnowId: mySnowId,
     secureStorage: ref.read(secureStorageProvider),
     onTranslateRequest: translateCallback,
+    onConversationPreviewStale: (convId) => ref
+        .read(conversationListProvider.notifier)
+        .refreshPreviewAfterDelete(convId),
   );
 });
 
@@ -262,6 +272,13 @@ Future<int> broadcastSenderKeyToGroup({
     for (final id in stillMissing) {
       try {
         await sessionMgr.ensureSession(id);
+      } on IdentityBindingInvalidException catch (idErr) {
+        // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+        // never retried (the store already raised the security notice).
+        debugPrint('[DIAG:SKDM] fallback ensureSession: identity rejected (${idErr.reason.name}) — terminal');
+      } on IdentityKeyChangedException {
+        // B-2 §5.5: verified contact awaits re-verification — terminal.
+        debugPrint('[DIAG:SKDM] fallback ensureSession: peer awaits identity re-verification — terminal');
       } catch (e) {
         debugPrint('[DIAG:$diagTag] $groupId fallback ensureSession FAIL '
             '$id: $e');
@@ -377,6 +394,19 @@ class ChatState {
   }
 }
 
+/// Outcome of a "Delete for Everyone" (unsend) request, so the UI can give the
+/// sender honest feedback instead of a silent (and sometimes false) success.
+enum UnsendResult {
+  /// The unsend was dispatched (1:1 sealed control sent, or group emit sent, or
+  /// the message was local-only) — safe to tell the user it was unsent.
+  unsent,
+
+  /// The unsend could NOT be dispatched (past the window, socket down, or no
+  /// sealed channel to the peer yet). The sender's copy was KEPT so they can
+  /// retry — do not claim the peer's copy was removed.
+  failed,
+}
+
 /// Chat UI state manager. Delegates data operations to MessageRepository.
 class ChatNotifier extends StateNotifier<ChatState> {
   final String conversationId;
@@ -401,6 +431,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// Auto-translation request callback — wired up to translationCacheProvider in the provider factory.
   void Function(String messageId, String plaintext)? onTranslateRequest;
 
+  /// Invoked after a local message delete/unsend so the Chats-list preview can
+  /// be recomputed. ChatNotifier has no Ref; the provider wires this to
+  /// ConversationListNotifier.refreshPreviewAfterDelete(conversationId).
+  void Function(String conversationId)? onConversationPreviewStale;
+
   ChatNotifier(
     this.conversationId, {
     required MessageRepository repository,
@@ -410,6 +445,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     String? mySnowId,
     SecureStorageService? secureStorage,
     this.onTranslateRequest,
+    this.onConversationPreviewStale,
   })  : _repo = repository,
         _markReadHelper = markReadHelper,
         _socketManager = socketManager,
@@ -742,6 +778,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
         for (final id in stillMissing) {
           try {
             await sessionMgr.ensureSession(id);
+          } on IdentityBindingInvalidException catch (idErr) {
+            // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+            // never retried (the store already raised the security notice).
+            debugPrint('[DIAG:GroupSend] individual ensureSession: identity rejected (${idErr.reason.name}) — terminal');
+          } on IdentityKeyChangedException {
+            // B-2 §5.5: verified contact awaits re-verification — terminal.
+            debugPrint('[DIAG:GroupSend] individual ensureSession: peer awaits identity re-verification — terminal');
           } catch (e) {
             debugPrint('[DIAG:GroupSend] $messageId individual ensureSession '
                 'fallback FAILED for $id: $e');
@@ -958,26 +1001,32 @@ class ChatNotifier extends StateNotifier<ChatState> {
     );
     state = state.copyWith(messages: [...state.messages, localMessage]);
 
-    // Persist to drift (including TTL for app restart recovery)
-    _repo.persistMessage(LocalMessagesCompanion(
-      id: Value(messageId),
-      conversationId: Value(conversationId),
-      senderSnowchatId: Value(_myId),
-      plaintext: Value(text),
-      dateSent: Value(now.millisecondsSinceEpoch),
-      dateReceived: Value(now.millisecondsSinceEpoch),
-      type: const Value('text'),
-      read: const Value(true),
-      outgoingStatus: const Value('sending'),
-      expiresIn: Value(ttl ?? 0),
-      expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
-      replyToId: Value(replyTo?.id),
-      // 2026-05-08 schema v10 — persist the same denormalized quote
-      // fields we already keep on the in-memory Message, so the watch
-      // stream's drift-loaded version doesn't lose the quote text.
-      replyToPreview: Value(replyTo?.plaintext),
-      replyToSenderId: Value(replyTo?.senderSnowchatId),
-    ));
+    // Persist to drift (including TTL for app restart recovery).
+    // persistOutgoingMessage also refreshes the conversation snippet so an
+    // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
+    _repo.persistOutgoingMessage(
+      LocalMessagesCompanion(
+        id: Value(messageId),
+        conversationId: Value(conversationId),
+        senderSnowchatId: Value(_myId),
+        plaintext: Value(text),
+        dateSent: Value(now.millisecondsSinceEpoch),
+        dateReceived: Value(now.millisecondsSinceEpoch),
+        type: const Value('text'),
+        read: const Value(true),
+        outgoingStatus: const Value('sending'),
+        expiresIn: Value(ttl ?? 0),
+        expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
+        replyToId: Value(replyTo?.id),
+        // 2026-05-08 schema v10 — persist the same denormalized quote
+        // fields we already keep on the in-memory Message, so the watch
+        // stream's drift-loaded version doesn't lose the quote text.
+        replyToPreview: Value(replyTo?.plaintext),
+        replyToSenderId: Value(replyTo?.senderSnowchatId),
+      ),
+      snippetText: text,
+      sentTimestamp: now.millisecondsSinceEpoch,
+    );
 
     // Schedule expiration deletion
     if (ttl != null) {
@@ -1182,20 +1231,26 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
       // Await drift writes BEFORE socket send — prevents race condition where
       // the ACK arrives before attachment row exists, causing messageId mismatch.
-      await _repo.persistMessage(LocalMessagesCompanion(
-        id: Value(messageId),
-        conversationId: Value(conversationId),
-        senderSnowchatId: Value(_myId),
-        plaintext: Value(fileName),
-        dateSent: Value(now.millisecondsSinceEpoch),
-        dateReceived: Value(now.millisecondsSinceEpoch),
-        type: const Value('file'),
-        metadata: Value(jsonEncode(metadata)),
-        read: const Value(true),
-        outgoingStatus: const Value('sending'),
-        expiresIn: Value(ttl ?? 0),
-        expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
-      ));
+      // persistOutgoingMessage also refreshes the conversation snippet so an
+      // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
+      await _repo.persistOutgoingMessage(
+        LocalMessagesCompanion(
+          id: Value(messageId),
+          conversationId: Value(conversationId),
+          senderSnowchatId: Value(_myId),
+          plaintext: Value(fileName),
+          dateSent: Value(now.millisecondsSinceEpoch),
+          dateReceived: Value(now.millisecondsSinceEpoch),
+          type: const Value('file'),
+          metadata: Value(jsonEncode(metadata)),
+          read: const Value(true),
+          outgoingStatus: const Value('sending'),
+          expiresIn: Value(ttl ?? 0),
+          expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
+        ),
+        snippetText: fileName,
+        sentTimestamp: now.millisecondsSinceEpoch,
+      );
 
       // Signal pattern: copy PLAINTEXT to permanent path for local display
       // Store RELATIVE path — immune to iOS container UUID changes
@@ -1387,20 +1442,26 @@ class ChatNotifier extends StateNotifier<ChatState> {
       // omit any of {metadata, expiresIn, expireStarted} the in-memory
       // copy gets clobbered with nulls a frame after rendering (the +281 /
       // +282 regression line).
-      await _repo.persistMessage(LocalMessagesCompanion(
-        id: Value(messageId),
-        conversationId: Value(conversationId),
-        senderSnowchatId: Value(_myId),
-        plaintext: const Value('Voice message'),
-        dateSent: Value(now.millisecondsSinceEpoch),
-        dateReceived: Value(now.millisecondsSinceEpoch),
-        type: const Value('voice'),
-        metadata: Value(jsonEncode(metadata)),
-        read: const Value(true),
-        outgoingStatus: const Value('sending'),
-        expiresIn: Value(ttl ?? 0),
-        expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
-      ));
+      // persistOutgoingMessage also refreshes the conversation snippet so an
+      // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
+      await _repo.persistOutgoingMessage(
+        LocalMessagesCompanion(
+          id: Value(messageId),
+          conversationId: Value(conversationId),
+          senderSnowchatId: Value(_myId),
+          plaintext: const Value('Voice message'),
+          dateSent: Value(now.millisecondsSinceEpoch),
+          dateReceived: Value(now.millisecondsSinceEpoch),
+          type: const Value('voice'),
+          metadata: Value(jsonEncode(metadata)),
+          read: const Value(true),
+          outgoingStatus: const Value('sending'),
+          expiresIn: Value(ttl ?? 0),
+          expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
+        ),
+        snippetText: 'Voice message',
+        sentTimestamp: now.millisecondsSinceEpoch,
+      );
 
       // 4. Copy plaintext m4a to the permanent attachment path so the
       // sender-side voice bubble (and any later watch-stream rebuild) can
@@ -1496,9 +1557,19 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   void _listenToTyping() {
     _typingSubscription = _socketManager?.onTyping.listen((data) {
+      final stopped = data['stopped'] as bool? ?? false;
+      // 1:1 (metadata-min Batch 2): the server sends the typer's snow-id —
+      // match it against THIS chat's peer (rooms are peer-keyed now, so the
+      // old conversationId match no longer works for 1:1).
+      final fromSnow = data['fromSnowchatId'] as String?;
+      if (fromSnow != null) {
+        if (fromSnow != recipientId) return;
+        setTyping(!stopped, userName: stopped ? null : fromSnow);
+        return;
+      }
+      // Group: match by the shared room id (groupId).
       final typingConvId = data['conversationId'] as String?;
       if (typingConvId != conversationId) return;
-      final stopped = data['stopped'] as bool? ?? false;
       final typingUserId = data['userId'] as String?;
       setTyping(!stopped, userName: stopped ? null : typingUserId);
     });
@@ -1511,7 +1582,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final now = DateTime.now();
     if (_lastTypingSent == null ||
         now.difference(_lastTypingSent!) >= _typingSendInterval) {
-      sm.sendTyping(conversationId);
+      if (isGroup) {
+        sm.sendTyping(conversationId: conversationId);
+      } else {
+        sm.sendTyping(recipientSnowchatId: recipientId);
+      }
       _lastTypingSent = now;
     }
 
@@ -1524,7 +1599,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
   void onUserStoppedTyping() {
     _typingDebounceTimer?.cancel();
     _lastTypingSent = null;
-    _socketManager?.stopTyping(conversationId);
+    if (isGroup) {
+      _socketManager?.stopTyping(conversationId: conversationId);
+    } else {
+      _socketManager?.stopTyping(recipientSnowchatId: recipientId);
+    }
   }
 
   void setTyping(bool typing, {String? userName}) {
@@ -1598,22 +1677,60 @@ class ChatNotifier extends StateNotifier<ChatState> {
     _repo.expiringManager?.cancel(messageId);
     // Physical delete (drift + attachments + local files)
     await _repo.deleteMessageLocally(messageId);
+    // Recompute the Chats-list preview: if this was the conversation's last
+    // message, the denormalized snippet must advance to the surviving newest
+    // message (or clear), else the deleted text lingers in the list.
+    onConversationPreviewStale?.call(conversationId);
   }
 
   /// Delete a message for everyone (sender only).
-  /// Sends delete_message to server, which relays to all recipients.
+  /// 1:1 → sealed E2EE unsend (server never sees it is a delete). Group →
+  /// server-mediated fan-out (per-recipient row ids have no shared client id).
   /// For unsent messages (local ID), only deletes locally.
-  Future<void> deleteMessageForEveryone(String messageId) async {
+  Future<UnsendResult> deleteMessageForEveryone(String messageId) async {
     final message = state.messages.where((m) => m.id == messageId).firstOrNull;
-    if (message == null) return;
-    if (!message.isMine(_myId)) return;
+    if (message == null || !message.isMine(_myId)) return UnsendResult.failed;
 
-    // Only send to server if message has a server ID (not local msg_ prefix)
-    if (!messageId.startsWith('msg_')) {
-      _socketManager?.emit('delete_message', {'messageId': messageId});
+    // Local-only (never left the device) → just remove our copy; nothing to
+    // propagate, so this is a clean success.
+    if (messageId.startsWith('msg_')) {
+      await deleteMessageForMe(messageId);
+      return UnsendResult.unsent;
     }
-    // Physical delete locally
-    await deleteMessageForMe(messageId);
+
+    final peer = _repo.recipientId;
+    if (_repo.groupId == null && peer != null && _e2eeHandler != null) {
+      // 1:1 → sealed unsend. The server no longer mediates 1:1 deletes, so the
+      // window is enforced here (same as the context-menu gate). Only remove our
+      // OWN copy once the unsend was actually dispatched — otherwise the peer
+      // keeps their copy and deleting ours would falsely imply success (socket
+      // down, or no sealed channel to the peer yet). Keep the message so the
+      // sender can retry.
+      if (!message.isWithinUnsendWindow) return UnsendResult.failed;
+      bool dispatched;
+      try {
+        dispatched = await _e2eeHandler!
+            .sendSealedUnsend(recipientId: peer, deleteIds: [messageId]);
+      } catch (e) {
+        debugPrint('[Chat] sealed unsend failed: $e');
+        dispatched = false;
+      }
+      if (!dispatched) return UnsendResult.failed;
+      await deleteMessageForMe(messageId);
+      return UnsendResult.unsent;
+    }
+
+    // Genuine group → server-mediated fan-out (fire-and-forget; within-window is
+    // enforced by the menu gate + the server's own 5-min check).
+    if (_repo.groupId != null) {
+      _socketManager?.emit('delete_message', {'messageId': messageId});
+      await deleteMessageForMe(messageId);
+      return UnsendResult.unsent;
+    }
+    // 1:1 whose peer / e2ee handler couldn't be resolved → we cannot propagate
+    // the unsend, so keep the message and report failure rather than silently
+    // deleting our copy (which would falsely imply it was removed everywhere).
+    return UnsendResult.failed;
   }
 
   /// Vuln 3 (Stage 3): Local-only Clear Chat.
@@ -1646,6 +1763,20 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// Caller (chat_screen `_confirmClearChat`) must wrap this in try/catch.
   /// If the user explicitly wants a local-only clear, they should call
   /// [clearChatLocally] instead — it never touches the server.
+  /// Resolve the server conversation id (shared CUID) for this 1:1.
+  ///
+  /// The peer-keyed room id for the server's 1:1 DELETE / Clear endpoints.
+  ///
+  /// Metadata-min Batch 2 (2026-08-07): the server dropped the Conversation
+  /// table, so those endpoints are now keyed by the PEER's snowchatId — the
+  /// same value every 1:1 room is keyed by locally (sealed/non-sealed receive
+  /// route by sender snow-id; find-or-create echoes the peer snow-id). No
+  /// server round-trip is needed: recipientId holds the peer snow-id, and a
+  /// snow-id room's own id IS the peer.
+  Future<String> _serverConversationId() async {
+    return recipientId ?? conversationId;
+  }
+
   Future<void> clearChat() async {
     // 1. Cancel pending TTL timers
     for (final m in state.messages) {
@@ -1667,7 +1798,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       if (isGroup) {
         await apiClient.delete('/groups/$groupId/messages');
       } else {
-        await apiClient.delete('/conversations/$conversationId/messages');
+        await apiClient.delete(
+            '/conversations/${await _serverConversationId()}/messages');
       }
       debugPrint('[Chat] clearChat: server clear success');
     } catch (e) {
@@ -1702,17 +1834,48 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
     final apiClient = _repo.apiClient;
     if (apiClient != null) {
+      // Resolve the shared server CUID first: a snow-id fallback room (peer
+      // messaged us first) would 404 and leave the server + peer copies alive,
+      // breaking the "the other person will also lose this conversation" promise.
+      final serverId = await _serverConversationId();
       try {
-        await apiClient.delete('/conversations/$conversationId');
+        await apiClient.delete('/conversations/$serverId');
         debugPrint('[Chat] deleteChat: server DELETE success');
         if (_secureStorage != null) {
-          await removeDeletedConvId(_secureStorage!, conversationId);
+          await removeDeletedConvId(_secureStorage!, serverId);
         }
       } catch (e) {
         debugPrint('[Chat] deleteChat: 1:1 server DELETE failed ($e), tombstoning');
+        // Tombstone by the server CUID — loadFromServer returns and filters
+        // against CUIDs, so a snow-id tombstone would never match and the
+        // deleted conversation would reappear on the next sync.
         if (_secureStorage != null) {
-          await addDeletedConvId(_secureStorage!, conversationId);
+          await addDeletedConvId(_secureStorage!, serverId);
         }
+      }
+    }
+
+    // Tell the peer over the sealed_control channel so an OFFLINE peer also
+    // loses the room. The REST delete above emits `chat_deleted` only to
+    // sockets connected at that instant and never queues it, so deleting while
+    // the peer was offline wiped our side only and left theirs intact
+    // (field-confirmed on real devices, 2026-09-04). The control is queued like
+    // any other message and applied on their next connect.
+    //
+    // Ordering is load-bearing:
+    //  - AFTER the server DELETE, because purgePairRows() wipes every sealed
+    //    row for this pair — a control queued before it would delete itself.
+    //  - BEFORE _localCleanup(), which wipes the peer's Signal session and
+    //    would leave nothing to encrypt the envelope with.
+    final peer = _repo.recipientId;
+    if (_repo.groupId == null && peer != null && _e2eeHandler != null) {
+      try {
+        final dispatched =
+            await _e2eeHandler!.sendSealedDeleteChat(recipientId: peer);
+        debugPrint('[Chat] deleteChat: sealed delete_chat dispatched=$dispatched');
+      } catch (e) {
+        // Best-effort, exactly like unsend: our own delete still proceeds.
+        debugPrint('[Chat] deleteChat: sealed delete_chat failed: $e');
       }
     }
 

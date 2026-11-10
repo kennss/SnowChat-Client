@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-14 (loadFromServer drift sync now runs ConversationDao.dedupeDirectByPeer afterward to heal Sealed Sender phantom direct rows whose unread counts were stuck in watchTotalUnreadCount's SUM but invisible in the UI)
+/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: extracted the chat_deleted socket handler body into applyPeerChatDeletion(), now shared with MessageQueue.onPeerDeletedChat so the queued sealed control wipes the room + Signal session for a device that was offline when the peer deleted; idempotent for the online peer that gets both paths). Earlier 2026-08-12 (bug #34 residue: _ensureConversationInDrift now retypeToGroup()s on the proof that the id is a group (findOrCreate leaves an existing mis-typed 'direct' row untouched), and loadFromServer sets MessageQueue.groupsSynced=true right after the group retype+mirror pass so the 1:1 receive path stops treating unproven server-CUID rows as canonical during the cold-start window). Earlier 2026-08-06 (conversation-preview sync fixes: (BUG-A group live preview) wired MessageQueue.onGroupMessageDecoded to push the real decrypted group plaintext into the in-memory row (the wire listener only had a "[New message]" placeholder → "No messages yet" until restart), and loadFromServer's group branch now runs _backfillEmptyPreviews so reloads don't clobber it with the server's null snippet. (BUG-B unsend stale preview) added refreshPreviewAfterDelete() — recomputes the preview from localMessages and re-syncs drift + in-memory UNCONDITIONALLY (updatePreview's forward-only guard can't move the preview back to the older surviving message); wired to MessageQueue.onConversationPreviewStale (sealed unsend receiver) and called from the sender + group/non-sealed delete paths). Earlier 2026-08-05 (_backfillEmptyPreviews(): both _hydrateFromCache and loadFromServer now heal a null/empty last-message preview from localMessages via MessageDao.getLatestDisplayableMessage. The server never returns a 1:1 snippet (zero-knowledge) and outgoing messages persisted before the write-path fix left the denormalized drift `conversations` snippet empty, so an outgoing-last conversation showed "No messages yet"; hydrate-side heal also fixes pre-fix rows on upgrade). Earlier 2026-08-04 (GMK re-request is no longer gated by a once-per-session guard — a group whose name can't be decrypted re-requests the GMK on every loadFromServer (event-driven, self-limiting) so a receive-first member heals once a GMK holder is online, instead of staying nameless until app restart). Earlier 2026-08-03 (bug #34: _ensureConversationInDrift (the group-message listener's drift row creator) now creates a real type='group' row (groupId set, empty participants, group title) instead of a 1:1-shaped 'direct' row titled with the sender — that mis-typed row was indistinguishable from a 1:1 with the sender, so findDirectByParticipant routed 1:1 messages into it and dedupeDirectByPeer merged the receive-first 1:1 room onto it, fusing 1:1 + group transcripts on the receiver. loadFromServer now mirrors each server group to drift as type='group' AND heals pre-existing mis-typed rows via retypeToGroup, both BEFORE dedupeDirectByPeer (ordering is load-groups → retype → dedupe, else dedupe merges the still-'direct' group row into the 1:1 room), and collapses any duplicate group state entry by id). Earlier 2026-08-03 (F4(a): addConversation() now write-throughs a direct conversation into drift via ConversationDao.findOrCreate (new _mirrorDirectToDrift helper), not only into in-memory state. The optimistic open-chat insert previously left no drift row, so the Sealed Sender receive path's findDirectByParticipant found nothing and routed the first reply to a separate snow-id room = conversation split (prod "pullman"). Closes the same gap loadFromServer's findOrCreate already closes for server-loaded rows; _schedulePhantomHeal stays as the fallback). Earlier 2026-06-23 (sealed phantom heal: _schedulePhantomHeal() debounce-triggers refresh()+dedupeDirectByPeer when the live sealed-receive path creates a snow-id fallback direct row, so a new peer's first inbound message stops leaving a lingering phantom "CC"-style room + misrouted replies until app restart — field report 2026-06-23). Earlier 2026-06-19 (offline-first: _hydrateFromCache() loads the Drift cache into in-memory state on init so the Chats tab never shows "No conversations yet" while a network loadFromServer() is slow/failing; _listenForReconnect() retries loadFromServer on socket reconnect while !_serverLoaded; _loading in-flight guard. Fixes empty-chat-list-on-unstable-network field report 2026-06-17.). Earlier 2026-05-14 (loadFromServer drift sync now runs ConversationDao.dedupeDirectByPeer afterward to heal Sealed Sender phantom direct rows whose unread counts were stuck in watchTotalUnreadCount's SUM but invisible in the UI)
 ///  - [DIAG] added enter/skip logging for _listenForIncomingMessages / _listenForGroupEvents
 ///  - Fix: listen for group_invite to auto-load group on creation
 ///  - Fix: _drainConversation() now stores metadata for file/image messages
@@ -19,6 +19,9 @@
 /// @functions
 ///  - conversationListProvider: StateNotifierProvider supplying the conversation list
 ///  - ConversationListNotifier: StateNotifier managing conversation-list state
+///  - _hydrateFromCache(): offline-first — load Drift-cached conversations into state on init
+///  - _listenForReconnect(): retry loadFromServer on socket reconnect while !_serverLoaded
+///  - _schedulePhantomHeal(): debounced refresh()+dedupe to merge live snow-id phantom direct rows in-session
 ///  - loadFromServer(): load the conversation list from the server
 ///  - addConversation(): add a new conversation
 ///  - removeConversation(): remove a conversation
@@ -39,6 +42,8 @@
 ///  - _invalidateSenderKeyForGroup(): invalidate the Sender Key on member leave/kick,
 ///    plus lazy rotation (regenerate key + redistribute SKDM on next send)
 
+import '../../../core/crypto/identity_binding_exception.dart';
+import '../../../core/crypto/identity_key_changed_exception.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -46,6 +51,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
+import '../../channels/providers/channel_provider.dart' show myChannelsProvider;
 // Phase 6: drift import is needed only for the drift-generated Conversation
 // row type, aliased as `db` to avoid colliding with the in-memory model
 // `Conversation` from models/conversation.dart.
@@ -132,11 +138,14 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   List<Map<String, dynamic>> get pendingInvites => _pendingInvites;
   StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   StreamSubscription<Map<String, dynamic>>? _groupMemberRemovedSubscription;
+  StreamSubscription<Map<String, dynamic>>? _channelMemberLeftSubscription;
   StreamSubscription<Map<String, dynamic>>? _groupUpdatedSubscription;
   StreamSubscription<Map<String, dynamic>>? _friendRequestSubscription;
 
   StreamSubscription<Map<String, dynamic>>? _gmkRequestSubscription;
-  final Set<String> _gmkRequested = {}; // Debounce: request GMK only once per group
+  StreamSubscription<bool>? _connectionSub; // socket reconnect → reload guard
+  bool _loading = false; // in-flight guard for loadFromServer (anti-hammer)
+  Timer? _phantomHealTimer; // debounced heal for snow-id phantom direct rows
 
   ConversationListNotifier(this._ref) : super([]) {
     _listenForIncomingMessages();
@@ -144,6 +153,13 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
     _listenForFriendRequests();
     _listenForGmkRequests();
     _listenForChatDeleted();
+    _listenForReconnect();
+    // Offline-first: show locally-cached conversations immediately, before and
+    // independent of the network loadFromServer(). Without this the list starts
+    // empty and a slow/failed server fetch on an unstable network leaves the
+    // Chats tab on "No conversations yet" until app restart (field report
+    // 2026-06-17) — the UI watches this in-memory state, never the Drift stream.
+    _hydrateFromCache();
     // Wire onNewConversation callback — when MessageQueue creates a new
     // conversation in drift, mirror it into in-memory state immediately.
     // Resolves the socket-listener timing issue.
@@ -200,6 +216,16 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
         );
         state = [newConv, ...state];
         _resolveSenderDisplayName(convId, senderSnowId);
+        // If this row was created under the snow-id fallback (no canonical
+        // server-CUID existed yet — see message_queue _processSealedMessage),
+        // it's a phantom: the UI shows it as a separate room (field report
+        // 2026-06-23 "CC" room) and its divergent convId can misroute the
+        // user's replies. +294's dedupe runs only inside loadFromServer
+        // (restart / reconnect), so without this the phantom lingers the whole
+        // session. Heal in-session: pull the canonical CUID + dedupeDirectByPeer.
+        if (convId.length == 36 && convId.startsWith('snow')) {
+          _schedulePhantomHeal();
+        }
         return;
       }
       final existing = state[idx];
@@ -219,7 +245,57 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           'unread=${updated.unreadCount} viewing=$isViewing');
     };
 
+    // Push the real decrypted GROUP plaintext into the in-memory preview.
+    // The live onGroupMessage socket listener only sees a null wire text (E2EE)
+    // and writes a "[New message]" placeholder; drift is correct but the
+    // in-memory Chats row stayed a placeholder / "No messages yet" until an app
+    // restart re-hydrated from drift. This is the receiver-side live sync
+    // (mirrors onSealedMessageDecoded for 1:1). Preview only — unread is already
+    // maintained by the onGroupMessage listener + drift, so re-incrementing here
+    // would double-count.
+    _ref.read(messageQueueProvider).onGroupMessageDecoded =
+        (groupId, senderSnowId, preview, msgTime) {
+      final idx = state.indexWhere(
+          (c) => c.id == groupId || c.groupId == groupId);
+      if (idx < 0) return; // not in state yet; loadFromServer backfills it
+      // Unconditional overwrite — MessageQueue processes group messages
+      // serially in arrival order, so the latest decoded call reflects the
+      // newest message, and this callback fires AFTER the onGroupMessage socket
+      // listener's "[New message]" placeholder (the queue decode is async). A
+      // forward-only time guard would be wrong here: the placeholder listener
+      // stamps the server timestamp while we stamp the local receive time, and
+      // any clock skew between them would spuriously block the real plaintext.
+      final newList = [...state];
+      newList[idx] = state[idx].copyWith(
+        lastMessageText: preview,
+        lastMessageTime: msgTime,
+        lastMessageSenderId: senderSnowId,
+      );
+      newList.sort((a, b) => (b.lastMessageTime ?? b.createdAt)
+          .compareTo(a.lastMessageTime ?? a.createdAt));
+      state = newList;
+    };
+
+    // After a sealed 1:1 unsend physically removes rows, recompute the affected
+    // conversation's preview from the durable store (the queue has no
+    // conversationList ref, so it signals via this callback).
+    _ref.read(messageQueueProvider).onConversationPreviewStale = (convId) {
+      refreshPreviewAfterDelete(convId);
+    };
+
     // Phase 8.8: Wire GMK received callback to update specific group name
+    // Queued sealed delete-chat control — the offline-durable half of the
+    // peer-deleted-this-chat path (the live socket event only reaches a peer
+    // who is connected at that moment).
+    _ref.read(messageQueueProvider).onPeerDeletedChat =
+        (peerSnowId, roomId) async {
+      // Drift + Signal session were already wiped by MessageQueue (it must not
+      // depend on this callback being wired yet). Only in-memory state left.
+      debugPrint('[ConversationList] sealed delete_chat from $peerSnowId '
+          '(room=$roomId)');
+      removeConversation(roomId);
+    };
+
     _ref.read(messageQueueProvider).onGmkReceived = (groupId) async {
       final (gmk, _) = await GroupMetadataCrypto.loadGMK(groupId);
       if (gmk == null) return;
@@ -240,87 +316,376 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   void dispose() {
     _messageSubscription?.cancel();
     _groupMemberRemovedSubscription?.cancel();
+    _channelMemberLeftSubscription?.cancel();
     _groupUpdatedSubscription?.cancel();
     _friendRequestSubscription?.cancel();
     _gmkRequestSubscription?.cancel();
+    _connectionSub?.cancel();
+    _phantomHealTimer?.cancel();
     super.dispose();
+  }
+
+  /// Offline-first hydrate: populate the in-memory list from the local Drift
+  /// cache so the Chats tab shows existing conversations immediately, before
+  /// (and independent of) the network loadFromServer(). Merge-by-id so it never
+  /// clobbers anything a racing loadFromServer() may already have set. Fixes the
+  /// "No conversations yet" empty screen on unstable networks (field report
+  /// 2026-06-17): the UI renders this in-memory state, never the Drift stream,
+  /// so a slow/failed server fetch otherwise showed empty until app restart.
+  /// Backfill a null/empty last-message preview from the true message source
+  /// (localMessages via MessageDao.getLatestDisplayableMessage). A conversation
+  /// snippet can be empty because (a) the server never returns a 1:1 snippet
+  /// (zero-knowledge) and (b) outgoing messages persisted before the write path
+  /// started refreshing the drift snippet (MessageRepository.persistOutgoingMessage)
+  /// left the denormalized `conversations` cache empty. Without this such a
+  /// conversation renders as "No messages yet" even though it has messages.
+  /// Mutates [conversations] in place (index-replace via copyWith); a no-op for
+  /// entries that already have a preview. Safe to call from any load path.
+  Future<void> _backfillEmptyPreviews(List<Conversation> conversations) async {
+    final messageDao = _ref.read(messageDaoProvider);
+    for (var i = 0; i < conversations.length; i++) {
+      final conv = conversations[i];
+      if (conv.lastMessageText != null && conv.lastMessageText!.isNotEmpty) {
+        continue;
+      }
+      final latest = await messageDao.getLatestDisplayableMessage(conv.id);
+      if (latest == null || latest.plaintext.isEmpty) continue;
+      conversations[i] = conv.copyWith(
+        lastMessageText: latest.plaintext,
+        lastMessageTime:
+            DateTime.fromMillisecondsSinceEpoch(latest.dateReceived),
+        lastMessageSenderId: latest.senderSnowchatId,
+      );
+    }
+  }
+
+  /// Recompute a conversation's last-message preview from the durable message
+  /// store after a message was deleted / unsent (delete-for-everyone), and
+  /// re-sync BOTH the drift `conversations` snippet and the in-memory state.
+  ///
+  /// Unlike [updatePreview] this moves the preview BACKWARD — the surviving
+  /// newest message is older than the just-deleted one — so it writes
+  /// UNCONDITIONALLY (updatePreview's forward-only timestamp guard would reject
+  /// it and leave the deleted message's text lingering). Clears the text when
+  /// nothing displayable remains. Called from every delete site (sender
+  /// delete-for-me/everyone, sealed 1:1 unsend receiver, group/non-sealed
+  /// delete receiver) so an unsent last message never stays in the Chats list.
+  Future<void> refreshPreviewAfterDelete(String conversationId) async {
+    try {
+      final messageDao = _ref.read(messageDaoProvider);
+      final convDao = _ref.read(conversationDaoProvider);
+      final latest =
+          await messageDao.getLatestDisplayableMessage(conversationId);
+
+      final idx = state.indexWhere(
+          (c) => c.id == conversationId || c.groupId == conversationId);
+
+      // 1. Durable drift snippet. On clear, keep the row's existing time so the
+      //    conversation doesn't jump position; set empty text.
+      final existingTime = (idx >= 0)
+          ? state[idx].lastMessageTime?.millisecondsSinceEpoch
+          : null;
+      await convDao.updateLastMessage(
+        conversationId: conversationId,
+        text: latest?.plaintext ?? '',
+        senderId: latest?.senderSnowchatId ?? '',
+        timestamp: latest?.dateReceived ??
+            existingTime ??
+            DateTime.now().millisecondsSinceEpoch,
+        messageId: latest?.id,
+      );
+
+      // 2. In-memory state — unconditional (see doc comment).
+      if (idx < 0) return;
+      final newList = [...state];
+      if (latest != null) {
+        newList[idx] = state[idx].copyWith(
+          lastMessageText: latest.plaintext,
+          lastMessageTime:
+              DateTime.fromMillisecondsSinceEpoch(latest.dateReceived),
+          lastMessageSenderId: latest.senderSnowchatId,
+        );
+      } else {
+        // Nothing left to preview — clear the text, keep position/time.
+        newList[idx] = state[idx].copyWith(lastMessageText: '');
+      }
+      state = newList;
+    } catch (e) {
+      debugPrint('[ConversationList] refreshPreviewAfterDelete failed: $e');
+    }
+  }
+
+  Future<void> _hydrateFromCache() async {
+    try {
+      final conversationDao = _ref.read(conversationDaoProvider);
+      final messageDao = _ref.read(messageDaoProvider);
+      final driftRows = await conversationDao.getAllConversations();
+      final knownIds = state.map((c) => c.id).toSet();
+      final cached = <Conversation>[];
+      for (final row in driftRows) {
+        if (!row.isActive) continue;
+        if (knownIds.contains(row.id)) continue;
+        final unread = await messageDao.getUnreadCount(row.id);
+        cached.add(Conversation(
+          id: row.id,
+          type: row.type == 'group'
+              ? ConversationType.group
+              : ConversationType.direct,
+          title: row.title,
+          groupId: row.groupId,
+          participantIds: _decodeParticipants(row.participantIds),
+          lastMessageText: row.lastMessageText,
+          lastMessageTime: row.lastMessageTime != null
+              ? DateTime.fromMillisecondsSinceEpoch(row.lastMessageTime!)
+              : null,
+          lastMessageSenderId: row.lastMessageSenderId,
+          unreadCount: unread,
+          autoTranslateEnabled: row.autoTranslateEnabled,
+          autoTranslateTargetLang: row.autoTranslateTargetLang,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(row.createdAt),
+        ));
+      }
+      if (cached.isEmpty) return;
+      // Heal empty previews (outgoing-last rows whose snippet was never
+      // persisted before the write-path fix) from the true message source so
+      // the Chats list doesn't show "No messages yet" for a chat that has
+      // messages. Runs before the mounted re-check below (which guards the
+      // post-await `state =`).
+      await _backfillEmptyPreviews(cached);
+      // Re-check against the CURRENT state at merge time: a racing
+      // loadFromServer() may have populated state during our getUnreadCount
+      // awaits. Only add cache rows still absent so the race can't dupe.
+      final currentIds = state.map((c) => c.id).toSet();
+      final fresh = cached.where((c) => !currentIds.contains(c.id)).toList();
+      // !mounted: the notifier may have been disposed during the awaits above
+      // (getAllConversations / getUnreadCount); `state =` after dispose throws.
+      // No await between here and the assignment, so one check suffices.
+      if (fresh.isEmpty || !mounted) return;
+      final merged = [...fresh, ...state]..sort((a, b) =>
+          (b.lastMessageTime ?? b.createdAt)
+              .compareTo(a.lastMessageTime ?? a.createdAt));
+      state = merged;
+      debugPrint('[ConversationList] hydrated ${fresh.length} '
+          'conversation(s) from drift cache (offline-first)');
+    } catch (e) {
+      debugPrint('[ConversationList] cache hydrate failed (non-fatal): $e');
+    }
+  }
+
+  /// Re-trigger the conversation-list load when the socket reconnects, but ONLY
+  /// if a successful server load never happened (`!_serverLoaded`). Recovers the
+  /// case where the cold-start load failed on an unstable network: instead of
+  /// staying empty until app restart, the list reloads automatically once the
+  /// network returns. Guarded so a flapping connection can't hammer the server
+  /// or replace a live, already-loaded list (new conversations after a good load
+  /// arrive via fetchPending → onSealedMessageDecoded). loadFromServer()'s
+  /// _loading guard additionally prevents overlapping reloads.
+  void _listenForReconnect() {
+    _connectionSub = _ref
+        .read(socketManagerProvider)
+        .onConnectionChange
+        .listen((connected) {
+      // Opportunistic retry only: a successful load never happened, none is
+      // in-flight, we're still logged in (no post-logout 401 loop), and the
+      // notifier is still alive (no state-after-dispose). Once _serverLoaded
+      // is true this never fires again — new data then arrives via the live
+      // message/group listeners, not a full reload (anti-hammer on flapping).
+      if (connected &&
+          mounted &&
+          !_serverLoaded &&
+          !_loading &&
+          _ref.read(authTokenProvider) != null) {
+        debugPrint('[ConversationList] socket reconnected & not yet loaded — '
+            'retrying loadFromServer()');
+        loadFromServer();
+      }
+    });
   }
 
   /// Load conversations from the server API.
   /// Falls back to mock data on failure.
   Future<void> loadFromServer() async {
     if (_serverLoaded) return;
+    // NOTE: _loading is tracked (so the reconnect listener can anti-hammer)
+    // but is intentionally NOT part of this guard. Explicit reloads — group
+    // member added / invite / GMK / pull-to-refresh, which all do
+    // `_serverLoaded = false; loadFromServer()` — must run even while an
+    // opportunistic (startup/reconnect) load is in-flight, otherwise a freshly
+    // created group could be dropped until the next trigger.
+    _loading = true;
 
     try {
       final apiClient = _ref.read(apiClientProvider);
-      final response = await apiClient.get(ApiEndpoints.conversations);
-      final data = Map<String, dynamic>.from(response.data as Map);
-      final serverConversations =
-          (data['conversations'] as List).map((conv) {
-        final c = Map<String, dynamic>.from(conv as Map);
-        final mySnowId = _ref.read(currentSnowIdProvider);
+      final convDao = _ref.read(conversationDaoProvider);
 
-        // Parse lastMessageText from server response.
-        // Server returns lastMessageText directly (not nested in lastMessage).
-        String? parsedLastMsgText;
-        if (c['lastMessageText'] != null) {
-          parsedLastMsgText = c['lastMessageText'].toString();
-        } else if (c['lastMessage'] is Map) {
-          parsedLastMsgText = (c['lastMessage'] as Map)['text']?.toString();
-        }
-        return Conversation(
-          id: c['id'] as String,
+      // Metadata-min Batch 2 (2026-08-07): the server no longer stores 1:1 pairs
+      // (Conversation table dropped), so GET /conversations is retired. The 1:1
+      // list is rebuilt from the local drift cache — the same source
+      // _hydrateFromCache uses, kept current by the receive path (findOrCreate)
+      // + outgoing sends. New 1:1 rooms still arrive live via the message
+      // listeners and the _drainPendingMessages() drain below (which
+      // findOrCreates a room for every message that landed while offline). This
+      // is the offline-first list the design (+298) already moved toward — the
+      // server can no longer enumerate who-chats-with-whom.
+      final driftRows = await convDao.getAllConversations();
+      final serverConversations = <Conversation>[]; // direct rows only
+      for (final row in driftRows) {
+        if (!row.isActive) continue;
+        if (row.type == 'group' || row.groupId != null) continue; // groups load below
+        serverConversations.add(Conversation(
+          id: row.id,
           type: ConversationType.direct,
-          participantIds: [
-            mySnowId ?? '',
-            c['recipientSnowchatId'] as String,
-          ],
-          title: c['recipientDisplayName'] as String?,
-          lastMessageText: parsedLastMsgText,
-          lastMessageTime: c['lastMessageAt'] != null
-              ? DateTime.parse(c['lastMessageAt'] as String)
+          participantIds: _decodeParticipants(row.participantIds),
+          title: row.title,
+          lastMessageText: row.lastMessageText,
+          lastMessageTime: row.lastMessageTime != null
+              ? DateTime.fromMillisecondsSinceEpoch(row.lastMessageTime!)
               : null,
+          lastMessageSenderId: row.lastMessageSenderId,
           // unreadCount populated by _drainPendingMessages from local DB
-          createdAt: c['lastMessageAt'] != null
-              ? DateTime.parse(c['lastMessageAt'] as String)
-              : DateTime.now(),
-        );
-      }).toList();
+          createdAt: DateTime.fromMillisecondsSinceEpoch(row.createdAt),
+        ));
+      }
 
-      // Filter out locally-deleted (tombstoned) conversations that the server
-      // still returns because the DELETE failed on a previous attempt.
+      // Filter out locally-deleted (tombstoned) conversations (belt-and-
+      // suspenders — deleteChat already removes the drift row; this catches a
+      // failed local cleanup or a race).
       final deletedIds = await _loadDeletedConvIds();
       if (deletedIds.isNotEmpty) {
         serverConversations.removeWhere((c) => deletedIds.contains(c.id));
-        debugPrint('[ConversationList] Filtered ${deletedIds.length} '
-            'tombstoned conversations from server list');
       }
+
+      // Heal empty previews (outgoing-last rows whose snippet predates the
+      // write-path fix) from the true message source.
+      await _backfillEmptyPreviews(serverConversations);
 
       state = serverConversations;
       _serverLoaded = true;
       debugPrint(
           '[ConversationList] Loaded ${serverConversations.length} '
-          'conversations from server');
+          'direct conversation(s) from drift (server pair-list retired)');
 
-      // Mirror server-loaded direct conversations into drift so the canonical
-      // server-CUID rows exist before any Sealed Sender envelope arrives.
-      // Without this, ConversationDao.findDirectByParticipant has no row to
-      // return (server-loaded convs live in in-memory state only) and
-      // _processSealedMessage falls back to senderId — sealed messages land
-      // in a phantom snow-id direct row separate from the canonical one.
-      final convDao = _ref.read(conversationDaoProvider);
-      for (final conv in serverConversations) {
-        try {
-          await convDao.findOrCreate(
-            id: conv.id,
-            type: 'direct',
-            participantIds: conv.participantIds,
-            title: conv.title,
+      // Load group conversations. This runs BEFORE dedupeDirectByPeer below so
+      // that any group whose local row was mis-created as type='direct' (bug
+      // #34: the group-message listener's findOrCreate hardcoded 'direct') is
+      // retyped to a real group here first. If dedupe ran first, that still-
+      // 'direct' group row would be bucketed with the receive-first 1:1 room
+      // for the same peer and MERGED — migrating the group's messages into the
+      // 1:1 room and deleting the group row. Order is load-groups → retype →
+      // dedupe.
+      try {
+        final groupRes = await apiClient.get(ApiEndpoints.groups);
+        final groupData = Map<String, dynamic>.from(groupRes.data as Map);
+        final serverGroups = await Future.wait(
+          (groupData['groups'] as List).map((g) async {
+          final group = Map<String, dynamic>.from(g as Map);
+          // Phase 8.8: Decrypt group name with locally stored GMK
+          String? groupTitle;
+          final groupId = group['id'] as String;
+          final encName = group['encryptedName'] as String?;
+          if (encName != null) {
+            final (gmk, _) = await GroupMetadataCrypto.loadGMK(groupId);
+            if (gmk != null) {
+              groupTitle = GroupMetadataCrypto.decryptGroupName(gmk, encName);
+            } else {
+              // GMK missing — re-request on EVERY load, not once per session. A
+              // receive-first member's first GMK can fail to decrypt and be
+              // dropped, and a GMK holder may have been offline at the previous
+              // request; re-requesting each loadFromServer (an event-driven,
+              // non-looping refresh: launch / reconnect / manual) heals it once a
+              // holder is online + the session exists. Stops as soon as the GMK
+              // arrives (gmk != null above) — self-limiting, no request storm
+              // (the loop requests each group at most once per load).
+              debugPrint('[ConversationList] GMK missing for $groupId — requesting');
+              _ref.read(socketManagerProvider).requestGmk(groupId);
+            }
+          }
+          // Fallback: use server 'name' field for pre-Phase 8.8 groups
+          groupTitle ??= group['name'] as String?;
+          // The server can't return E2EE group plaintext, so its lastMessage
+          // text is null. Fall back to the drift conversation row's
+          // denormalized snippet (kept current by insertIncoming/insertOutgoing
+          // + refreshPreviewAfterDelete) so a reload doesn't blank the preview
+          // back to "No messages yet".
+          String? previewText =
+              (group['lastMessage'] as Map?)?['text'] as String?;
+          DateTime? previewTime =
+              (group['lastMessage'] as Map?)?['timestamp'] != null
+                  ? DateTime.parse(
+                      (group['lastMessage'] as Map)['timestamp'] as String)
+                  : null;
+          if (previewText == null || previewText.isEmpty) {
+            // getConversation returns the drift row (last_message_time is an
+            // epoch-ms int here, not a DateTime).
+            final driftConv = await convDao.getConversation(groupId);
+            final driftText = driftConv?.lastMessageText;
+            if (driftText != null && driftText.isNotEmpty) {
+              previewText = driftText;
+              final driftMs = driftConv?.lastMessageTime;
+              if (driftMs != null) {
+                previewTime = DateTime.fromMillisecondsSinceEpoch(driftMs);
+              }
+            }
+          }
+          return Conversation(
+            id: group['id'] as String,
+            type: ConversationType.group,
+            groupId: group['id'] as String,
+            channelId: group['channelId'] as String?,
+            title: groupTitle,
+            participantIds: [],
+            lastMessageText: previewText,
+            lastMessageTime: previewTime,
+            createdAt: DateTime.parse(group['createdAt'] as String),
           );
-        } catch (e) {
-          debugPrint('[ConversationList] drift sync failed for '
-              '${conv.id}: $e');
+        }));
+
+        // Persist each server group to drift as a real group row so it exists
+        // as type='group' before any message arrives, and heal any pre-existing
+        // row mis-created under this group id as type='direct' (bug #34).
+        // retype BEFORE the dedupe pass below; matching is by exact group id.
+        for (final g in serverGroups) {
+          try {
+            await convDao.retypeToGroup(id: g.id, title: g.title);
+            await convDao.findOrCreate(
+              id: g.id,
+              type: 'group',
+              groupId: g.id,
+              participantIds: const [],
+              title: g.title,
+            );
+          } catch (e) {
+            debugPrint('[ConversationList] group drift sync failed for '
+                '${g.id}: $e');
+          }
         }
+
+        // The authoritative group-id set is now known and every mis-typed row
+        // under it has been retyped, so a server-CUID direct row can no longer
+        // be a disguised group room. Open the receive path's cold-start guard
+        // (ConversationDao.findDirectByParticipant / MessageQueue.groupsSynced).
+        // Set unconditionally once the group fetch succeeds — a member of zero
+        // groups still has a fully-known (empty) group set.
+        _ref.read(messageQueueProvider).groupsSynced = true;
+
+        // Backfill each group's last-message preview from localMessages — the
+        // server can't return E2EE group plaintext (null snippet), so without
+        // this a reload would clobber the live/decoded preview back to
+        // "No messages yet". Mirrors the 1:1 serverConversations backfill.
+        await _backfillEmptyPreviews(serverGroups);
+
+        // Replace any pre-existing state entry sharing a group id (e.g. a
+        // cache-hydrated phantom of the mis-typed direct row) with the
+        // authoritative group entry — collapses the duplicate group row.
+        final groupIds = serverGroups.map((g) => g.id).toSet();
+        state = [
+          ...state.where((c) => !groupIds.contains(c.id)),
+          ...serverGroups,
+        ];
+        debugPrint(
+            '[ConversationList] Loaded ${serverGroups.length} groups from server');
+      } catch (e) {
+        debugPrint('[ConversationList] Failed to load groups: $e');
       }
 
       // Dedupe phantom direct rows accumulated from Sealed Sender's foreign-
@@ -331,6 +696,9 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       // surface (loadFromServer replaces in-memory state with the server
       // list, hiding the phantom — but its unread still counted toward
       // watchTotalUnreadCount's SUM).
+      //
+      // MUST run after the group retype above: a mis-typed 'direct' group row
+      // would otherwise be merged into the peer's 1:1 room (bug #34).
       try {
         final canonicalIds =
             serverConversations.map((c) => c.id).toSet();
@@ -347,54 +715,6 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
         }
       } catch (e) {
         debugPrint('[ConversationList] dedupe failed (non-fatal): $e');
-      }
-
-      // Load group conversations
-      try {
-        final groupRes = await apiClient.get(ApiEndpoints.groups);
-        final groupData = Map<String, dynamic>.from(groupRes.data as Map);
-        final serverGroups = await Future.wait(
-          (groupData['groups'] as List).map((g) async {
-          final group = Map<String, dynamic>.from(g as Map);
-          // Phase 8.8: Decrypt group name with locally stored GMK
-          String? groupTitle;
-          final groupId = group['id'] as String;
-          final encName = group['encryptedName'] as String?;
-          if (encName != null) {
-            final (gmk, _) = await GroupMetadataCrypto.loadGMK(groupId);
-            if (gmk != null) {
-              groupTitle = GroupMetadataCrypto.decryptGroupName(gmk, encName);
-            } else if (!_gmkRequested.contains(groupId)) {
-              // GMK missing — auto-request once per group
-              _gmkRequested.add(groupId);
-              debugPrint('[ConversationList] GMK missing for $groupId — requesting');
-              _ref.read(socketManagerProvider).requestGmk(groupId);
-            }
-          }
-          // Fallback: use server 'name' field for pre-Phase 8.8 groups
-          groupTitle ??= group['name'] as String?;
-          return Conversation(
-            id: group['id'] as String,
-            type: ConversationType.group,
-            groupId: group['id'] as String,
-            channelId: group['channelId'] as String?,
-            title: groupTitle,
-            participantIds: [],
-            lastMessageText:
-                (group['lastMessage'] as Map?)?['text'] as String?,
-            lastMessageTime:
-                (group['lastMessage'] as Map?)?['timestamp'] != null
-                    ? DateTime.parse(
-                        (group['lastMessage'] as Map)['timestamp'] as String)
-                    : null,
-            createdAt: DateTime.parse(group['createdAt'] as String),
-          );
-        }));
-        state = [...state, ...serverGroups];
-        debugPrint(
-            '[ConversationList] Loaded ${serverGroups.length} groups from server');
-      } catch (e) {
-        debugPrint('[ConversationList] Failed to load groups: $e');
       }
 
       // Sort all conversations by last message time
@@ -455,7 +775,11 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       unawaited(_retryPendingDeletions());
     } catch (e) {
       debugPrint('[ConversationList] Failed to load from server: $e');
-      // Keep current state as fallback (empty until server responds)
+      // Keep current state as fallback — the Drift cache hydrated at startup
+      // (and re-attempted on each reconnect while !_serverLoaded) stays visible;
+      // we never clear it here, so a transient failure no longer shows empty.
+    } finally {
+      _loading = false;
     }
   }
 
@@ -599,6 +923,24 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
     await loadFromServer();
   }
 
+  /// Debounced reconciliation for snow-id phantom direct rows created on the
+  /// live sealed-receive path (a brand-new peer's first inbound sealed message,
+  /// before any canonical server-CUID row exists). refresh() re-pulls the
+  /// canonical CUID and dedupeDirectByPeer() merges the phantom into it
+  /// (migrating its messages + unread), so the phantom "CC"-style room heals in
+  /// seconds instead of lingering until app restart, and replies stop being
+  /// stranded under the divergent convId. Debounced so a burst of sealed
+  /// messages triggers a single heal.
+  void _schedulePhantomHeal() {
+    _phantomHealTimer?.cancel();
+    _phantomHealTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      debugPrint('[ConversationList] healing snow-id phantom row(s) — '
+          'refresh() → canonical server-CUID + dedupeDirectByPeer');
+      refresh();
+    });
+  }
+
   /// Clear pending invites after they have been shown to the user.
   void clearPendingInvites() {
     _pendingInvites = [];
@@ -606,6 +948,39 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
 
   void addConversation(Conversation conversation) {
     state = [conversation, ...state];
+    // F4(a) (2026-08-03): mirror a direct conversation into drift the moment it
+    // is optimistically opened — not only when loadFromServer later syncs it.
+    // ConversationDao.findDirectByParticipant is the row the Sealed Sender
+    // receive path (message_queue._processSealedMessage) resolves against to
+    // route an inbound reply. An in-memory-only optimistic insert leaves no
+    // drift row, so the first reply to a brand-new 1:1 falls back to a separate
+    // snow-id room (the conversation split reproduced in production as
+    // "pullman"). This closes the same gap loadFromServer's own findOrCreate
+    // already closes for server-loaded rows. Fire-and-forget: the write is local
+    // SQLite and completes long before any network reply arrives; on failure
+    // loadFromServer mirrors it on the next sync. Group rooms route by groupId,
+    // not this table.
+    if (conversation.type == ConversationType.direct) {
+      unawaited(_mirrorDirectToDrift(conversation));
+    }
+  }
+
+  /// Write-through a direct conversation into the drift `conversations` table so
+  /// ConversationDao.findDirectByParticipant can discover it immediately. See
+  /// addConversation() for why this must not wait for loadFromServer.
+  Future<void> _mirrorDirectToDrift(Conversation conversation) async {
+    try {
+      final convDao = _ref.read(conversationDaoProvider);
+      await convDao.findOrCreate(
+        id: conversation.id,
+        type: 'direct',
+        participantIds: conversation.participantIds,
+        title: conversation.title,
+      );
+    } catch (e) {
+      debugPrint('[ConversationList] addConversation drift mirror failed for '
+          '${conversation.id}: $e');
+    }
   }
 
   void removeConversation(String id) {
@@ -655,53 +1030,76 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   void _listenForChatDeleted() {
     final sm = _ref.read(socketManagerProvider);
     sm.onChatDeleted.listen((data) async {
-      // Works for both 1:1 (conversationId) and group (groupChatId)
-      final id = (data['conversationId'] ?? data['groupChatId']) as String?;
-      if (id == null) return;
-      debugPrint('[ConversationList] chat/group deleted received: $id');
-
-      // 삭제 *전에* peer SnowChat ID 추출 (1:1 만). drift row 가 사라지면
-      // participantIds 못 읽음.
-      String? peerSnowIdToWipe;
-      try {
-        final convDao = _ref.read(conversationDaoProvider);
-        final conv = await convDao.getConversation(id);
-        if (conv != null && conv.type == 'direct' && conv.groupId == null) {
-          final mySnow = _ref.read(currentSnowIdProvider);
-          final list = (jsonDecode(conv.participantIds) as List).cast<String>();
-          for (final p in list) {
-            if (p != mySnow) {
-              peerSnowIdToWipe = p;
-              break;
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('[ConversationList] chat_deleted peer lookup failed: $e');
-      }
-
-      // Remove from drift DB (messages + conversation row)
-      try {
-        final convDao = _ref.read(conversationDaoProvider);
-        await convDao.deleteConversation(id);
-      } catch (e) {
-        debugPrint('[ConversationList] chat_deleted drift cleanup failed: $e');
-      }
-
-      // 1:1 인 경우 Signal session 도 wipe — fresh X3DH bootstrap 보장.
-      if (peerSnowIdToWipe != null) {
-        try {
-          final sessionMgr = _ref.read(signalSessionManagerProvider);
-          await sessionMgr.deleteSessionForPeer(peerSnowIdToWipe);
-        } catch (e) {
-          debugPrint('[ConversationList] chat_deleted signal session wipe '
-              'for $peerSnowIdToWipe failed: $e');
-        }
-      }
-
-      // Remove from in-memory state
-      removeConversation(id);
+      // 1:1: data['conversationId'] is the DELETER's snowchatId (metadata-min
+      // Batch 2 — 1:1 rooms are peer-keyed, so from this side the deleter's
+      // snow-id IS the peer). Group: data['groupChatId'].
+      final rawId = (data['conversationId'] ?? data['groupChatId']) as String?;
+      if (rawId == null) return;
+      debugPrint('[ConversationList] chat/group deleted received: $rawId');
+      await applyPeerChatDeletion(rawId, isGroup: data['groupChatId'] != null);
     });
+  }
+
+  /// Wipe this device's copy of a room the OTHER side deleted.
+  ///
+  /// One body, two callers:
+  ///  - the live `chat_deleted` socket event (peer connected at delete time);
+  ///  - MessageQueue.onPeerDeletedChat, fed by the QUEUED sealed delete-chat
+  ///    control. That second path is what reaches a device that was offline
+  ///    when the peer deleted: the socket event is emitted only to currently
+  ///    connected sockets and is never queued, so the delete used to be lost
+  ///    outright and the room survived (field-confirmed on real devices,
+  ///    2026-09-04).
+  ///
+  /// Idempotent — an online peer gets both paths and the second is a no-op.
+  ///
+  /// 2026-05-04: for 1:1 the Signal SessionStore is wiped too. The peer
+  /// deleting the chat means both sides want a fresh start; keeping the session
+  /// makes the next exchange ratchet against stale state and spin the
+  /// session_reset loop (mirrors deleteConversationLocally's fix).
+  Future<void> applyPeerChatDeletion(String rawId, {bool isGroup = false}) async {
+    final convDao = _ref.read(conversationDaoProvider);
+
+    // Resolve the LOCAL room id. A snow-id-keyed 1:1 room (or a group keyed by
+    // groupChatId) matches rawId directly. A LEGACY CUID-keyed 1:1 room does
+    // NOT — resolve it by the peer (rawId = deleter's snowchatId) via
+    // findDirectByParticipant, else the peer's local copy survives the delete
+    // and the "the other person also loses this conversation" promise breaks.
+    String roomId = rawId;
+    if (!isGroup) {
+      try {
+        if (await convDao.getConversation(rawId) == null) {
+          final direct = await convDao.findDirectByParticipant(rawId);
+          if (direct != null) roomId = direct.id;
+        }
+      } catch (e) {
+        debugPrint('[ConversationList] chat_deleted room resolve failed: $e');
+      }
+    }
+
+    // 1:1: the deleter's snow-id (rawId) IS the peer — wipe that Signal session
+    // so the next contact bootstraps a fresh X3DH instead of a stale ratchet.
+    final peerSnowIdToWipe = isGroup ? null : rawId;
+
+    // Remove from drift DB (messages + conversation row)
+    try {
+      await convDao.deleteConversation(roomId);
+    } catch (e) {
+      debugPrint('[ConversationList] chat_deleted drift cleanup failed: $e');
+    }
+
+    if (peerSnowIdToWipe != null) {
+      try {
+        final sessionMgr = _ref.read(signalSessionManagerProvider);
+        await sessionMgr.deleteSessionForPeer(peerSnowIdToWipe);
+      } catch (e) {
+        debugPrint('[ConversationList] chat_deleted signal session wipe '
+            'for $peerSnowIdToWipe failed: $e');
+      }
+    }
+
+    // Remove from in-memory state
+    removeConversation(roomId);
   }
 
   void updateLastMessage(
@@ -897,6 +1295,13 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           'type': 'group_metadata_key',
         });
         debugPrint('[GMK] Sent GMK response to $requesterSnowId');
+      } on IdentityBindingInvalidException catch (idErr) {
+        // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+        // never retried (the store already raised the security notice).
+        debugPrint('[GMK] request_gmk response: identity rejected (${idErr.reason.name}) — terminal');
+      } on IdentityKeyChangedException {
+        // B-2 §5.5: verified contact awaits re-verification — terminal.
+        debugPrint('[GMK] request_gmk response: peer awaits identity re-verification — terminal');
       } catch (e) {
         debugPrint('[GMK] Failed to respond to request_gmk: $e');
       }
@@ -946,28 +1351,28 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
         return;
       }
 
-      final senderName =
-          (data['senderDisplayName'] ?? senderSnowchatId) as String;
       final msgTime = data['serverTimestamp'] != null
           ? DateTime.parse(data['serverTimestamp'] as String)
           : (data['createdAt'] != null
               ? DateTime.parse(data['createdAt'] as String)
               : DateTime.now());
 
-      // Ensure group conversation exists in drift DB so it shows in list.
+      // Ensure the GROUP conversation exists in drift DB so it shows in list.
+      // state[idx] is the known group (matched above) — carry its title so the
+      // drift row is a real group, never a 1:1-shaped 'direct' row (bug #34).
       _ensureConversationInDrift(
         conversationId: msgGroupId,
-        senderSnowchatId: senderSnowchatId,
+        groupTitle: state[idx].title,
       );
 
-      // Preview text: server text is null for E2EE messages → placeholder.
-      // Real plaintext will be available once user enters the chat
-      // (via _handleGroupMessage or _fetchGroupMessages → _handleGroupMessage).
-      final preview = (data['text'] ?? '[New message]') as String;
-
-      // Update conversation list UI
+      // Do NOT write a preview here. The server can't supply E2EE group
+      // plaintext (data['text'] is null), and a "[New message]" placeholder
+      // would clobber the real text — worse, on a re-delivered message the
+      // MessageQueue dedupes the duplicate so onGroupMessageDecoded never fires
+      // to replace it, leaving the placeholder permanently. The real preview
+      // comes from onGroupMessageDecoded (live, post-decrypt) or the drift
+      // snippet (hydrate/reload). Here we only bump time + unread.
       final updated = state[idx].copyWith(
-        lastMessageText: '$senderName: $preview',
         lastMessageTime: msgTime,
         lastMessageSenderId: senderSnowchatId,
         unreadCount: isViewing
@@ -1026,6 +1431,24 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           data['removedSnowchatId'] as String?,
         );
       }
+    });
+
+    // Community kick (real-time). The server directly notifies the KICKED user
+    // with youWereRemoved:true (its member-broadcast can't reach a just-deleted
+    // member). Drop the community from our lists at once — BOTH the Community tab
+    // and the Chats-tab community rows render from myChannelsProvider, a
+    // non-autoDispose FutureProvider that will not refetch on its own, so it must
+    // be invalidated. (Remaining members instead get the per-room
+    // group_member_removed above, which evicts the kicked user from their local
+    // Sender-Key membership.) Pop-out-of-room + the notice happen in chat_screen,
+    // which has a BuildContext this notifier lacks.
+    _channelMemberLeftSubscription = sm.onChannelMemberLeft.listen((data) {
+      final youWereRemoved = data['youWereRemoved'] as bool? ?? false;
+      final channelId = data['channelId'] as String?;
+      if (!youWereRemoved || channelId == null) return;
+      debugPrint('[ConversationList] Kicked from community $channelId '
+          '— invalidating myChannelsProvider');
+      _ref.invalidate(myChannelsProvider);
     });
 
     // When a member rejects a group invite that was auto-accepted
@@ -1140,8 +1563,21 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           c.id == serverConvId || c.participantIds.contains(senderSnowchatId));
 
       if (existingIndex >= 0) {
-        debugPrint('[DIAG:ConvList] $id UPDATE existing conv $serverConvId');
         final existing = state[existingIndex];
+        // Never let this 1:1 (private_message) listener clobber a GROUP row's
+        // preview with a "[New message]" placeholder — groups own their preview
+        // via onGroupMessage (unread/time) + onGroupMessageDecoded (real
+        // plaintext) + the drift snippet. A group message's pairwise fallback
+        // can arrive here and match the group entry; without this guard it
+        // overwrites the real decoded text with the placeholder (and on a
+        // re-delivered duplicate the decode is deduped, so it never recovers).
+        if (existing.type == ConversationType.group ||
+            existing.groupId != null) {
+          debugPrint('[DIAG:ConvList] $id SKIP group preview clobber '
+              '$serverConvId');
+          return;
+        }
+        debugPrint('[DIAG:ConvList] $id UPDATE existing conv $serverConvId');
         final isViewing = MarkReadHelper.isConversationActive(existing.id);
         final updated = existing.copyWith(
           lastMessageText: preview,
@@ -1300,24 +1736,39 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   //   - _processInlineSKDM() / _doProcessSKDM()
   //   - _handleGlobalSenderKeyDistribution()
 
-  /// Ensure conversation exists in drift DB for incoming messages.
+  /// Ensure a GROUP conversation exists in drift DB for incoming group messages.
   /// Message INSERT + unreadCount is handled by MessageRepository (single source).
   /// This only ensures the conversation record exists.
+  ///
+  /// This is called ONLY from the group-message listener ([conversationId] is
+  /// always a group id). It MUST create a `type='group'` row (groupId set,
+  /// participants empty) — matching the group-row shape at
+  /// message_queue.dart _insertDecryptionFailedPlaceholder. Creating it as
+  /// 'direct' with the sender as peer made it indistinguishable from a 1:1 with
+  /// the sender, so findDirectByParticipant routed 1:1 messages into it and
+  /// dedupeDirectByPeer merged the receive-first 1:1 room onto it — fusing the
+  /// two transcripts (bug #34).
   Future<void> _ensureConversationInDrift({
     required String conversationId,
-    required String senderSnowchatId,
+    String? groupTitle,
   }) async {
     try {
       final conversationDao = _ref.read(conversationDaoProvider);
-      final mySnowId = _ref.read(currentSnowIdProvider);
+      // Receiving a group message is proof that conversationId is a group.
+      // findOrCreate returns an existing row untouched, so a pre-302 mis-typed
+      // 'direct' row would survive here and keep routing the sender's 1:1
+      // messages into this room until loadFromServer's heal runs. Retype on
+      // the proof instead of waiting for the network pass (bug #34 residue).
+      await conversationDao.retypeToGroup(id: conversationId, title: groupTitle);
       await conversationDao.findOrCreate(
         id: conversationId,
-        type: 'direct',
-        participantIds: [mySnowId ?? '', senderSnowchatId],
-        title: senderSnowchatId,
+        type: 'group',
+        groupId: conversationId,
+        participantIds: const [],
+        title: groupTitle,
       );
     } catch (e) {
-      debugPrint('[ConversationList] Drift findOrCreate failed: $e');
+      debugPrint('[ConversationList] Drift group findOrCreate failed: $e');
     }
   }
 

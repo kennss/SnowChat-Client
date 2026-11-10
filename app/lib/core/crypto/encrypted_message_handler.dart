@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
+/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: the send path no longer drops on an identity change — the Signal-style policy lives in IdentityAdmission (unverified legacy change → continue with notice; verified → IdentityKeyChangedException until re-verify; forged binding → IdentityBindingInvalidException) and both typed failures are rethrown untouched so callers mark the message failed without retry; user-visible notices come from VerifiedIdentityStore events. Receive paths pass the envelope / sealed-certificate deviceId to decrypt() for binding.deviceId matching and no longer cache an unverified incoming deviceId). Earlier 2026-09-04 (sealed delete-chat: sendSealedDeleteChat() sends inner type 'delete_chat' over the shared _sendSealedControl helper, and _doDecryptSealed surfaces it via metadata._isDeleteChat before the generic Message build so it never renders. Gives Delete-chat an offline-durable propagation path — the REST delete's chat_deleted socket event only reaches a peer connected at that instant). Earlier 2026-08-03 (F3: _doDecryptSealed now derives the Signal messageType from the unsealed DR ciphertext itself via resolveSealedMessageType() instead of the transport field socketEvent['messageType'] (which Sealed Sender never carries → always 1/0 → prekey first-contact messages misrouted as normal → X3DH responder session never built → first message to a brand-new contact lost). Also enforces Sealed Sender Step 9 identity cross-check on prekey messages). Earlier 2026-07-15 (sealed unsend: sendSealedUnsend() + inner type 'delete' over the shared _sendSealedControl helper (read-receipt path refactored onto it); _doDecryptSealed surfaces it via metadata._isUnsend. Sealed read receipt: sendSealedReadReceipt() sends a silent sealed_control envelope with inner type 'read_receipt'; surfaced via metadata._isReadReceipt before the generic Message build so it never renders). Earlier 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
 ///
 /// @functions
 ///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class
@@ -41,12 +41,36 @@ import '../network/file_service.dart';
 import '../network/socket_manager.dart';
 import 'file_encryptor.dart';
 import 'group_session_manager.dart';
+import 'identity_binding_exception.dart';
 import 'identity_change_handler.dart';
 import 'identity_key_changed_exception.dart';
 import 'sealed_sender.dart';
 import 'sender_certificate.dart';
 import 'sender_certificate_manager.dart';
 import 'signal_session_manager.dart';
+
+/// Thrown when a Sealed Sender message unsealed successfully (so the sender is
+/// certificate-authenticated) but the inner Signal (X3DH/Double Ratchet)
+/// decryption then failed. Carries the authenticated sender so the message
+/// queue can issue a TARGETED retry request + a real (non-phantom) placeholder
+/// and, when the cause is our own missing signed prekey, trigger SPK self-heal —
+/// instead of the blind sender=null retry the server rejects (which left
+/// first-contact sealed messages silently lost).
+///
+/// [cause] preserves the original decryption error (e.g. "Signed prekey N not
+/// found") so the queue's existing corruption/recoverable classification still
+/// applies via toString().
+class SealedDecryptException implements Exception {
+  final String senderSnowchatId;
+  final String senderDeviceId;
+  final Object cause;
+  const SealedDecryptException(
+      this.senderSnowchatId, this.senderDeviceId, this.cause);
+
+  @override
+  String toString() =>
+      'SealedDecryptException(from $senderSnowchatId): $cause';
+}
 
 /// Integrates E2EE with the chat flow.
 ///
@@ -93,9 +117,9 @@ class EncryptedMessageHandler {
   /// environments). In production providers.dart always injects this.
   final TransferEventBus? _transferEventBus;
 
-  /// Optional Safety Number mismatch handler. When wired, send-path TOFU
-  /// failures (IdentityKeyChangedException raised by createSession) are
-  /// routed through here instead of bubbling as a generic ratchet error.
+  /// Identity-change handler (wired by providers). B-2: user-visible notices
+  /// are driven by VerifiedIdentityStore events the handler subscribes to,
+  /// so this reference is kept only for wiring symmetry with MessageQueue.
   IdentityChangeHandler? identityChangeHandler;
 
   /// In-flight decrypt futures: prevents double-decryption when multiple
@@ -160,34 +184,24 @@ class EncryptedMessageHandler {
     debugPrint('[E2EE:Send] Step 1: ensureSession($recipientId)');
     // Step 1: Ensure we have a session with the recipient.
     //
-    // P0-2 Stage B: catch IdentityKeyChangedException explicitly here so a
-    // TOFU mismatch routes into IdentityChangeHandler (Safety Number recompute,
-    // DAO mismatch latch, in-conversation system message). Without this catch
-    // the message would loop forever in the outbox — every retry hits the
-    // same pin store check and re-throws — leaving the user wondering why
-    // their messages stopped sending without any visible warning.
+    // B-2 (§5.5/§5.7): identity policy runs inside createSession. An
+    // unverified legacy peer whose keys changed is updated and the send
+    // CONTINUES (the store emits a "safety number changed" notice). Only two
+    // typed failures stop the send, and both are terminal for this message —
+    // the caller marks it failed and must NOT retry:
+    //   - IdentityKeyChangedException: legacy peer the user had verified;
+    //     blocked until re-verified on the verify screen.
+    //   - IdentityBindingInvalidException: forged / downgraded / replayed
+    //     binding (security warning already emitted).
     try {
       await _sessionManager.ensureSession(recipientId);
-    } on IdentityKeyChangedException catch (idChange) {
-      debugPrint('[E2EE:Send] Identity key changed for '
-          '${idChange.peerSnowchatId} — routing to IdentityChangeHandler');
-      final handler = identityChangeHandler;
-      if (handler != null) {
-        try {
-          await handler.handleMismatch(
-            peerSnowchatId: idChange.peerSnowchatId,
-            conversationId: conversationId,
-            oldKey: idChange.expectedKey,
-            newKey: idChange.actualKey,
-          );
-        } catch (handlerErr) {
-          debugPrint('[E2EE:Send] identityChangeHandler FAILED: '
-              '$handlerErr');
-        }
-      }
-      // Rethrow so the outbox treats the message as undeliverable. Caller
-      // (chat provider / outbox) MUST drop the message rather than retry —
-      // the verify-identity flow is the recovery path.
+    } on IdentityKeyChangedException {
+      debugPrint('[E2EE:Send] peer awaits identity re-verification — '
+          'message not sent');
+      rethrow;
+    } on IdentityBindingInvalidException catch (e) {
+      debugPrint('[E2EE:Send] peer identity binding rejected '
+          '(${e.reason.name}) — message not sent');
       rethrow;
     }
     debugPrint('[E2EE:Send] Step 1 OK');
@@ -327,7 +341,7 @@ class EncryptedMessageHandler {
     // what the peer used. Subsequent lookups continue to hit the cache.
     final incomingDeviceId =
         (socketEvent['senderDeviceId'] ?? socketEvent['deviceId']) as String?;
-    final deviceId = _sessionManager.learnDeviceIdFromIncoming(
+    final deviceId = _sessionManager.peekDeviceIdForIncoming(
       senderId,
       incomingDeviceId,
     );
@@ -367,6 +381,7 @@ class EncryptedMessageHandler {
         deviceId,
         ciphertext,
         messageType,
+        envelopeDeviceId: incomingDeviceId,
       );
 
       // Parse the decrypted JSON payload
@@ -541,6 +556,155 @@ class EncryptedMessageHandler {
     );
   }
 
+  /// Send a sealed E2EE read receipt to [recipientId] (1:1 only).
+  ///
+  /// Travels as a silent sealed_control envelope: the server cannot see that
+  /// it is a read receipt (only an opaque control), never pushes or
+  /// badge-counts it, and prunes it with the 7-day control cleanup. The
+  /// peer's MessageQueue consumes it silently and flips outgoingStatus to
+  /// 'read' on the referenced rows (blue double-check) — no chat bubble, no
+  /// unread bump, no notification.
+  ///
+  /// [readIds] are server row ids — the drift PK both peers share for the
+  /// same logical sealed message. Best-effort by design: a lost receipt only
+  /// costs a blue check, so there is no MessageSendLog record (receipts are
+  /// not retry-eligible; the peer drops undecryptable controls without
+  /// firing retry/session-reset storms), and we bail before advancing the
+  /// Double Ratchet when the socket is down instead of burning a counter on
+  /// an envelope that can never leave the device.
+  Future<void> sendSealedReadReceipt({
+    required String recipientId,
+    required List<String> readIds,
+  }) async {
+    if (readIds.isEmpty) return;
+    await _sendSealedControl(
+      recipientId: recipientId,
+      payload: {
+        'type': 'read_receipt',
+        'readIds': readIds,
+        'readAt': DateTime.now().millisecondsSinceEpoch,
+      },
+      clientMessageIdPrefix: 'receipt',
+    );
+  }
+
+  /// Send a sealed E2EE unsend ("delete for everyone") to [recipientId] (1:1
+  /// only). Travels as the same silent sealed_control envelope as read
+  /// receipts — the server cannot see it is a delete. The peer's MessageQueue
+  /// physically removes the referenced drift rows (no tombstone).
+  ///
+  /// [deleteIds] are server row ids — the drift PK both peers share for the
+  /// same logical sealed message (so the recipient self-locates its copy). The
+  /// 5-minute unsend window is enforced client-side by the caller before this
+  /// runs; there is no server row left to enforce it against. Best-effort like
+  /// read receipts: if the recipient is on a pre-support build the server drops
+  /// the control and the delete does not propagate until they upgrade. Group
+  /// unsend stays on the server path — there is no shared row id per member.
+  /// Returns `true` iff the sealed unsend control was actually dispatched to the
+  /// socket. `false` means it could not be sent (socket down, or no sealed
+  /// channel to this peer yet) — the caller must NOT then claim the peer's copy
+  /// was removed.
+  Future<bool> sendSealedUnsend({
+    required String recipientId,
+    required List<String> deleteIds,
+  }) async {
+    if (deleteIds.isEmpty) return false;
+    return _sendSealedControl(
+      recipientId: recipientId,
+      payload: {
+        'type': 'delete',
+        'deleteIds': deleteIds,
+        'deletedAt': DateTime.now().millisecondsSinceEpoch,
+      },
+      clientMessageIdPrefix: 'unsend',
+    );
+  }
+
+  /// Tell the peer that this 1:1 conversation was deleted so their client
+  /// removes its own copy — the "the other person will also lose this
+  /// conversation" promise in the Delete-chat dialog.
+  ///
+  /// Travels over the same silent sealed_control channel as unsend / read
+  /// receipts, which means it is QUEUED like any other message: an offline peer
+  /// applies it on their next connect. The live `chat_deleted` socket event the
+  /// REST delete emits only reaches a peer who is connected at that instant,
+  /// which is why deleting while the peer was offline left their room intact
+  /// (field-confirmed on real devices, 2026-09-04).
+  ///
+  /// Server-opaque: this is an ordinary sealed_control row (senderId=NULL +
+  /// senderHash), so it adds no new metadata class — in particular it does NOT
+  /// reintroduce the (user1,user2) pair row that metadata-min Batch 2 dropped.
+  ///
+  /// Best-effort like the other controls: false when the socket is down or no
+  /// sealed channel to this peer exists yet, and the server drops it for a
+  /// recipient on a build older than SEALED_CONTROL_MIN_BUILD.
+  Future<bool> sendSealedDeleteChat({required String recipientId}) {
+    return _sendSealedControl(
+      recipientId: recipientId,
+      payload: {
+        'type': 'delete_chat',
+        'deletedAt': DateTime.now().millisecondsSinceEpoch,
+      },
+      clientMessageIdPrefix: 'delchat',
+    );
+  }
+
+  /// Seal an inner control payload to [recipientId] over the sealed_control
+  /// channel (server-opaque, no push, no badge, 7d cleanup). Shared by read
+  /// receipts and unsend. Best-effort: bails before advancing the Double
+  /// Ratchet when the socket is down or no session identity key is cached, so
+  /// no counter is burned on an envelope that can never leave the device.
+  /// Returns `true` iff the control envelope was dispatched to the socket;
+  /// `false` on a best-effort bail (socket down / no cached identity key).
+  Future<bool> _sendSealedControl({
+    required String recipientId,
+    required Map<String, dynamic> payload,
+    required String clientMessageIdPrefix,
+  }) async {
+    if (_sealedSenderService == null || _senderCertificateManager == null) {
+      throw StateError(
+          'SealedSenderService or SenderCertificateManager not configured');
+    }
+    if (!_socketManager.isConnected) return false;
+
+    await _sessionManager.ensureSession(recipientId);
+
+    final certificate = await _senderCertificateManager!.getCertificate();
+    final recipientIdentityPubKey =
+        _sessionManager.signal.getRemoteIdentityKey(recipientId);
+    if (recipientIdentityPubKey == null) {
+      // No cached IK means no sealed channel to this peer yet — controls are
+      // an optimization on top of an existing conversation, so drop.
+      return false;
+    }
+    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+
+    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+
+    final encrypted = await _sessionManager.encrypt(
+      recipientId,
+      deviceId,
+      plaintextBytes,
+    );
+    final drCiphertext = encrypted['ciphertext'] as Uint8List;
+
+    final sealedEnvelope = _sealedSenderService!.seal(
+      recipientIdentityPubKey: recipientIdentityPubKey,
+      drCiphertext: drCiphertext,
+      certificate: certificate,
+      messageContext: sealedType1to1,
+    );
+
+    _socketManager.sendSealedMessage(
+      recipientId: recipientId,
+      sealedContent: base64Encode(sealedEnvelope),
+      clientMessageId:
+          '${clientMessageIdPrefix}_${DateTime.now().millisecondsSinceEpoch}',
+      control: true,
+    );
+    return true;
+  }
+
   /// Decrypt an incoming Sealed Sender message.
   ///
   /// Flow:
@@ -635,23 +799,35 @@ class EncryptedMessageHandler {
     debugPrint('[E2EE:Sealed] Unsealed: sender=$senderId device=$senderDeviceId '
         'context=${unsealed.messageContext}');
 
-    // Cache the sender's device ID (same as learnDeviceIdFromIncoming)
-    _sessionManager.learnDeviceIdFromIncoming(senderId, senderDeviceId);
-
-    // Step 4: Determine Signal message type from DR ciphertext header.
-    // The DR ciphertext is a JSON-encoded string. We need the messageType
-    // to route correctly through the Signal decrypt pipeline.
-    // For sealed messages, default to normal cipher (1) — prekey messages
-    // (2) will be handled by the Signal layer automatically.
-    final messageType = socketEvent['messageType'] as int? ?? 1;
+    // B-2: the certificate's deviceId is cached by decrypt() only after the
+    // DR decrypt (and binding verification) succeeded.
 
     try {
+      // Step 4: Recover the Signal message type from the unsealed DR ciphertext
+      // itself — NEVER from socketEvent. Sealed Sender hides the inner message
+      // type from the wire (the server relays no messageType and stores 0 for
+      // sealed rows), so the old `socketEvent['messageType'] ?? 1` always
+      // resolved to 1/0 and a prekey first-contact message was misrouted as a
+      // normal message: the X3DH `if (messageType == 2)` branch never ran, the
+      // responder session was never built, and the message dead-lettered (lost).
+      // resolveSealedMessageType() reads prekey-ness from the ciphertext's own
+      // self-describing header and also runs Sealed Sender Step 9 (binds the
+      // X3DH identity to the certificate identity, rejecting a mismatch). Kept
+      // INSIDE the try so a Step-9 rejection (or a malformed prekey header) is
+      // logged + rethrown on the same handled path as any decrypt failure; a
+      // non-JSON ciphertext instead degrades to messageType 1 inside the helper.
+      final messageType = _sessionManager.signal.resolveSealedMessageType(
+        unsealed.drCiphertext,
+        unsealed.senderIdentityKey,
+      );
+
       // Step 5: Decrypt with Double Ratchet
       final plaintextBytes = await _sessionManager.decrypt(
         senderId,
         senderDeviceId,
         unsealed.drCiphertext,
         messageType,
+        envelopeDeviceId: senderDeviceId,
       );
 
       // Step 6: Parse the decrypted JSON payload
@@ -674,6 +850,69 @@ class EncryptedMessageHandler {
         timestamp: timestamp,
       );
       if (transferMsg != null) return transferMsg;
+
+      // Sealed read receipt (2026-07-15): silent E2EE control — the peer
+      // read our messages. Surfaced via metadata so MessageQueue's control
+      // branch can flip outgoingStatus='read' and ACK. Detected BEFORE the
+      // generic Message build so it can never render as a phantom bubble.
+      if (payload['type'] == 'read_receipt') {
+        final rawIds = payload['readIds'];
+        final readIds =
+            rawIds is List ? rawIds.whereType<String>().toList() : <String>[];
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: {
+            '_isReadReceipt': true,
+            'readIds': readIds,
+          },
+        );
+      }
+
+      // Sealed unsend (2026-07-15): the sender is deleting-for-everyone. Silent
+      // E2EE control — surfaced via metadata so MessageQueue's control branch
+      // physically removes the referenced rows. Detected BEFORE the generic
+      // Message build so it can never render as a phantom bubble.
+      if (payload['type'] == 'delete') {
+        final rawIds = payload['deleteIds'];
+        final deleteIds =
+            rawIds is List ? rawIds.whereType<String>().toList() : <String>[];
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: {
+            '_isUnsend': true,
+            'deleteIds': deleteIds,
+          },
+        );
+      }
+
+      // Sealed delete-chat (2026-09-04): the peer deleted the whole 1:1 room.
+      // Silent E2EE control — surfaced via metadata so MessageQueue's control
+      // branch wipes the room + Signal session. Detected BEFORE the generic
+      // Message build so it can never render as a phantom bubble.
+      if (payload['type'] == 'delete_chat') {
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: const {'_isDeleteChat': true},
+        );
+      }
 
       final text = payload['text'] as String? ?? '';
       final msgType = _parseMessageType(payload['type'] as String?);
@@ -700,10 +939,21 @@ class EncryptedMessageHandler {
         replyToPreview: replyToPreview,
         replyToSenderId: replyToSenderId,
       );
+    } on IdentityKeyChangedException {
+      // Real identity-change alarm — must propagate unchanged to the upstream
+      // handler that raises the Safety Number warning. Never wrap/suppress it.
+      rethrow;
+    } on IdentityBindingInvalidException {
+      // B-2 hard failure — must reach the queue unwrapped so it is ACKed as a
+      // terminal rejection (no retry request, no session reset).
+      rethrow;
     } catch (e, st) {
       debugPrint('[EncryptedMessageHandler:Sealed] Decryption failed for '
           'message $messageId from $senderId: $e\n$st');
-      rethrow;
+      // Preserve the certificate-authenticated sender (bound at unseal, before
+      // this try) so the queue can target the retry + placeholder + SPK
+      // self-heal, instead of a blind sender=null retry the server rejects.
+      throw SealedDecryptException(senderId, senderDeviceId, e);
     }
   }
 

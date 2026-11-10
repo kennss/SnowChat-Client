@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-11 (Privacy section: added read-only status tile
+/// @lastUpdated 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
+///              chevron) and pushes /settings/profile → ProfileEditScreen to
+///              edit the nickname. Previously 2026-05-11: Privacy section: added read-only status tile
 ///              "Screenshot blocked — always on" at top. App-wide capture
 ///              protection is wired one-shot in main.dart and cannot be
 ///              toggled — this tile exists so users see the policy and don't
@@ -14,14 +16,19 @@
 ///  - SettingsScreen: settings ConsumerWidget
 ///  - _showLanguagePicker(): translation target-language picker bottom sheet
 
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../../core/call/call_permission_helper.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/snow_id_display.dart';
 import '../../../app/providers.dart';
+import '../../../app/app_config.dart';
+import '../../../app/restart_widget.dart';
 import '../../../utils/version.dart';
 import '../../ai/service/supported_languages.dart';
 import '../settings_provider.dart';
@@ -34,6 +41,9 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final myId = ref.watch(currentSnowIdProvider) ?? '';
     final settings = ref.watch(settingsProvider);
+    // Reactive display name so editing the nickname (ProfileEditScreen) updates
+    // the header immediately, not only on the next rebuild.
+    final displayName = ref.watch(currentDisplayNameProvider);
 
     return Scaffold(
       backgroundColor: SnowColors.background,
@@ -42,40 +52,30 @@ class SettingsScreen extends ConsumerWidget {
       ),
       body: ListView(
         children: [
-          // Profile section
-          Padding(
-            padding: const EdgeInsets.all(SnowSizes.lg),
-            child: Row(
-              children: [
-                FutureBuilder<String?>(
-                  future: ref.read(secureStorageProvider).getDisplayName(),
-                  builder: (context, snap) {
-                    final name = snap.data ?? 'Me';
-                    return SnowAvatar(
-                      snowId: myId,
-                      size: 60,
-                      displayName: name,
-                    );
-                  },
+          // Profile section — tap to edit the nickname (SnowChat ID is immutable)
+          InkWell(
+            onTap: () => context.push('/settings/profile'),
+            child: Padding(
+              padding: const EdgeInsets.all(SnowSizes.lg),
+              child: Row(
+                children: [
+                SnowAvatar(
+                  snowId: myId,
+                  size: 60,
+                  displayName: displayName ?? 'Me',
                 ),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      FutureBuilder<String?>(
-                        future: ref.read(secureStorageProvider).getDisplayName(),
-                        builder: (context, snap) {
-                          final name = snap.data ?? 'My Identity';
-                          return Text(
-                            name,
-                            style: const TextStyle(
-                              color: SnowColors.textPrimary,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          );
-                        },
+                      Text(
+                        displayName ?? 'My Identity',
+                        style: const TextStyle(
+                          color: SnowColors.textPrimary,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       SnowIdDisplay(
@@ -86,8 +86,11 @@ class SettingsScreen extends ConsumerWidget {
                     ],
                   ),
                 ),
+                const Icon(Icons.chevron_right_rounded,
+                    color: SnowColors.textTertiary),
               ],
             ),
+          ),
           ),
 
           const Divider(),
@@ -156,6 +159,17 @@ class SettingsScreen extends ConsumerWidget {
             onChanged: (v) =>
                 ref.read(settingsProvider.notifier).setNotifications(v),
           ),
+          // Android 14+ only: the full-screen-intent permission that lets an
+          // incoming call show full-screen over the lock screen (otherwise it's
+          // just a heads-up notification). Opens the system settings toggle.
+          if (Platform.isAndroid)
+            _buildNavTile(
+              icon: Icons.phone_in_talk_rounded,
+              title: 'Lock-screen calls',
+              subtitle:
+                  'Show incoming calls full-screen when your phone is locked',
+              onTap: () => CallPermissionHelper.promptFromSettings(context),
+            ),
 
           const Divider(),
 
@@ -202,17 +216,20 @@ class SettingsScreen extends ConsumerWidget {
 
           const Divider(),
 
-          // Wallet / Network
-          _buildSectionHeader('Wallet'),
-          _buildNetworkTile(context, ref),
-          _buildNavTile(
-            icon: Icons.visibility_off_rounded,
-            title: 'Hidden Accounts',
-            subtitle: 'Restore derived sub-wallets you have hidden',
-            onTap: () => context.push('/settings/hidden-wallets'),
-          ),
+          // Wallet / Network — omitted entirely in an ENABLE_WALLET=false build
+          // (its routes do not exist there).
+          if (AppConfig.enableWallet) ...[
+            _buildSectionHeader('Wallet'),
+            _buildNetworkTile(context, ref),
+            _buildNavTile(
+              icon: Icons.visibility_off_rounded,
+              title: 'Hidden Accounts',
+              subtitle: 'Restore derived sub-wallets you have hidden',
+              onTap: () => context.push('/settings/hidden-wallets'),
+            ),
 
-          const Divider(),
+            const Divider(),
+          ],
 
           // About
           _buildSectionHeader('About'),
@@ -657,17 +674,25 @@ class SettingsScreen extends ConsumerWidget {
     //    wiped in step 3, but deleteAll covers everything else).
     await ref.read(secureStorageProvider).deleteAll();
 
-    // 5. Delete drift database
+    // 5. Delete the drift database file. Close the connection first to release
+    //    the handle, then remove snowchat.db (+ WAL/SHM) so the on-disk store is
+    //    empty. Previously this only close()d the connection, leaving the file
+    //    on disk → a new identity reopened it and inherited the prior account's
+    //    conversations and messages (data-isolation leak).
     await ref.read(snowDatabaseProvider).close();
+    await deleteDriftDatabaseFile();
 
-    // 6. Reset remaining app state
-    ref.read(currentSnowIdProvider.notifier).state = null;
-    ref.read(isOnboardedProvider.notifier).state = false;
-    ref.read(isLockedProvider.notifier).state = false;
-
-    // 7. Navigate to welcome
+    // 6. Full in-app restart. Wiping secure storage + the drift file is not
+    //    enough on its own: identity-scoped providers (conversation list,
+    //    contacts, channels, display name) keep the previous account's data in
+    //    memory until the next cold start, so an identity created in the same
+    //    session would still see the old chats. Rebuilding the root
+    //    ProviderScope disposes all of that and re-runs startup against the
+    //    now-empty storage → the router lands on /welcome with a clean slate.
+    //    (Supersedes the manual currentSnowId/displayName/onboarded resets and
+    //    a GoRouter navigation — the restart clears every provider at once.)
     if (context.mounted) {
-      context.go('/welcome');
+      RestartWidget.restartApp(context);
     }
   }
 }

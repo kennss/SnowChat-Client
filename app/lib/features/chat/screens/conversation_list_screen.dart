@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-08 independent group section)
+/// @lastUpdated 2026-08-07 (one-shot launch prompt for the Android 14+ USE_FULL_SCREEN_INTENT permission via CallPermissionHelper.maybePromptOnLaunch — without the grant a locked-screen incoming call is downgraded from the full-screen call UI to a heads-up notification the user must tap; guarded by a static once-flag so tab re-mounts don't re-run it). Earlier 2026-08-05 (single-room communities flatten: a community whose only visible room is the default room now taps straight into that room's chat — no expand arrow, no room sublist — hiding the alien community→rooms nesting; admins with a System room / future multi-room keep the accordion. "Channel"→"Community" strings). Earlier 2026-04-26 (header + inline English translation; 2026-04-08 independent group section)
 ///
 /// @functions
 ///  - ConversationListScreen: channel group-room accordion + Direct Messages independent section
@@ -17,6 +17,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/deeplink_handler.dart';
 import '../../../app/providers.dart';
+import '../../../core/call/call_permission_helper.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
@@ -86,10 +87,26 @@ class _ConversationListScreenState
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _showPendingInvites();
       _drainPendingDeeplink();
+      _maybePromptCallPermission();
     });
 
     // Auto background-download AI model (on WiFi) + auto-init when model is installed
     _initAI();
+  }
+
+  // One-shot per app process — prompt for the Android 14+ full-screen-intent
+  // permission so locked-screen incoming calls show full-screen instead of a
+  // heads-up notification. Guarded so tab switches (which re-mount this screen)
+  // don't re-run it; the helper no-ops when already granted or dismissed.
+  static bool _callPermissionChecked = false;
+  Future<void> _maybePromptCallPermission() async {
+    if (_callPermissionChecked) return;
+    _callPermissionChecked = true;
+    if (!mounted) return;
+    await CallPermissionHelper.maybePromptOnLaunch(
+      context,
+      ref.read(secureStorageProvider),
+    );
   }
 
   @override
@@ -110,13 +127,14 @@ class _ConversationListScreenState
     return;
   }
 
-  /// Phase 1 deeplink: if app launched FROM snowchat://invite/<code> while not
-  /// yet onboarded (or pre-router race), DeeplinkHandler queued the code.
+  /// Phase 1 deeplink: if app launched FROM a SnowChat deeplink
+  /// (snowchat://invite/<code> or snowchat://user/<id>) while not yet onboarded
+  /// (or pre-router race), DeeplinkHandler queued the resolved internal path.
   /// Drain on /chat mount — this is the first stable post-onboarding screen.
   void _drainPendingDeeplink() {
-    final code = DeeplinkHandler.instance.consumePending();
-    if (code != null && mounted) {
-      context.push('/invite/$code');
+    final path = DeeplinkHandler.instance.consumePending();
+    if (path != null && mounted) {
+      context.push(path);
     }
   }
 
@@ -296,11 +314,25 @@ class _ConversationListScreenState
     final isExpanded = _expandedChannels.contains(channel.id);
     final unread = ref.watch(channelUnreadCountProvider(channel.id));
 
+    // Flatten single-room communities: when the only room this user can see is
+    // the default room, the community presents as a single chat — tapping the
+    // row opens that room directly, with no expand arrow and no room sublist.
+    // This hides the alien "community → rooms" nesting for the common case.
+    // Admins with a System room (or a future multi-room community) keep the
+    // expandable accordion so they don't lose access to the extra rooms.
+    final hasExtraRooms = channel.userRooms.isNotEmpty ||
+        (channel.systemRoom != null && channel.isAdmin);
+    final flatRoomId = channel.defaultRoom?.id;
+
     return Column(
       children: [
-        // Channel header — tap to expand/collapse
+        // Community header. Flat → straight to the default room; else expand.
         InkWell(
           onTap: () {
+            if (!hasExtraRooms) {
+              if (flatRoomId != null) context.push('/chat/$flatRoomId');
+              return;
+            }
             setState(() {
               if (isExpanded) {
                 _expandedChannels.remove(channel.id);
@@ -314,14 +346,16 @@ class _ConversationListScreenState
                 horizontal: SnowSizes.md, vertical: 10),
             child: Row(
               children: [
-                Icon(
-                  isExpanded
-                      ? Icons.keyboard_arrow_down_rounded
-                      : Icons.keyboard_arrow_right_rounded,
-                  color: SnowColors.textTertiary,
-                  size: 20,
-                ),
-                const SizedBox(width: 6),
+                if (hasExtraRooms) ...[
+                  Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_down_rounded
+                        : Icons.keyboard_arrow_right_rounded,
+                    color: SnowColors.textTertiary,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 SnowAvatar(
                   snowId: channel.id,
                   size: SnowSizes.avatarMd,
@@ -332,7 +366,7 @@ class _ConversationListScreenState
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    '${channel.name ?? "Channel"} (${channel.memberCount})',
+                    '${channel.name ?? "Community"} (${channel.memberCount})',
                     style: const TextStyle(
                       color: SnowColors.textPrimary,
                       fontWeight: FontWeight.w600,
@@ -340,8 +374,8 @@ class _ConversationListScreenState
                     ),
                   ),
                 ),
-                // Unread badge (when collapsed)
-                if (!isExpanded && unread > 0)
+                // Unread badge (when collapsed or flat)
+                if ((!isExpanded || !hasExtraRooms) && unread > 0)
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 8, vertical: 2),
@@ -363,14 +397,14 @@ class _ConversationListScreenState
           ),
         ),
 
-        // Expanded: list rooms
-        if (isExpanded) ...[
-          // Default room (Channel Group)
+        // Expanded room list (only for multi-room / admin-with-System).
+        if (hasExtraRooms && isExpanded) ...[
+          // Default room (Community Group)
           if (channel.defaultRoom != null)
             _buildRoomTile(
               icon: Icons.groups_rounded,
               iconColor: SnowColors.primary,
-              title: '${channel.name ?? "Channel"} Group',
+              title: '${channel.name ?? "Community"} Group',
               roomId: channel.defaultRoom!.id,
             ),
           // System room (admin only)

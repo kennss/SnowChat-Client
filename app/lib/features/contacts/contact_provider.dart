@@ -1,9 +1,9 @@
 /// @file        contact_provider.dart
-/// @description Contact state-management Provider — fetch full user list from server, block/unblock functions.
+/// @description Contact state-management Provider — fetches the reachable contact set from the server (GET /users, scoped to friends ∪ COMMUNITY co-members ∪ past 1:1 partners), block/unblock functions.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; P2: IdentityPinStore unpin + IdentityVerificationDao deleteByPeer on removeContact/blockContact)
+/// @lastUpdated 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-08-03 (privacy: removed the user_registered blind-add listener and the profile_updated add-unknown branch — both turned the contact list into the full server directory. Contacts now come only from the scoped GET /users; profile_updated only renames an existing contact). Earlier 2026-04-26 (header + inline English translation; P2: IdentityPinStore unpin + IdentityVerificationDao deleteByPeer on removeContact/blockContact)
 ///
 /// @functions
 ///  - Contact: contact data-model class
@@ -55,39 +55,18 @@ final contactProvider =
 class ContactNotifier extends StateNotifier<List<Contact>> {
   final Ref _ref;
   bool _loaded = false;
-  StreamSubscription<Map<String, dynamic>>? _userRegisteredSubscription;
   StreamSubscription<Map<String, dynamic>>? _profileUpdatedSubscription;
 
   ContactNotifier(this._ref) : super([]) {
     Future.microtask(() => _loadFromServer());
-    _listenForNewUsers();
     _listenForProfileUpdates();
   }
 
-  /// Subscribe to user_registered socket events for real-time contact updates.
-  void _listenForNewUsers() {
-    final sm = _ref.read(socketManagerProvider);
-    _userRegisteredSubscription = sm.onUserRegistered.listen((data) {
-      final snowId = data['snowchatId'] as String?;
-      final name = data['displayName'] as String?;
-      final mySnowId = _ref.read(currentSnowIdProvider);
-      if (snowId == null || snowId == mySnowId) return;
-
-      // Deduplicate before adding
-      if (!state.any((c) => c.snowChatId == snowId)) {
-        state = [
-          ...state,
-          Contact(
-            snowChatId: snowId,
-            displayName: name,
-            isTrusted: true,
-            addedAt: DateTime.now(),
-          ),
-        ];
-        debugPrint('[Contacts] New user registered: $snowId ($name)');
-      }
-    });
-  }
+  // NOTE: there is deliberately no user_registered listener. Blind-adding every
+  // registering user turned the contact list into the full server directory
+  // (privacy leak) and the server no longer broadcasts user_registered globally.
+  // A new user shows up here only when they become reachable (friend accepted /
+  // shared channel), via the next _loadFromServer() refresh.
 
   /// Listen for profile_updated socket events — real-time displayName refresh.
   void _listenForProfileUpdates() {
@@ -100,31 +79,27 @@ class ContactNotifier extends StateNotifier<List<Contact>> {
       final mySnowId = _ref.read(currentSnowIdProvider);
       if (snowId == mySnowId) return; // ignore self
 
+      // Only RENAME an existing contact. Never add an unknown user here — the
+      // server now scopes profile_updated to the updater's reachable set, but we
+      // also refuse to let a rename event materialize a brand-new contact (that
+      // was a second directory-leak path). Unknown reachable users arrive only
+      // through the scoped GET /users in _loadFromServer.
       if (state.any((c) => c.snowChatId == snowId)) {
-        // Existing contact — update displayName
         updateContact(snowId, displayName: name);
         debugPrint('[Contacts] Profile updated: $snowId → $name');
-      } else if (name != null && name.isNotEmpty) {
-        // New user with displayName — add to contacts
-        addContact(Contact(
-          snowChatId: snowId,
-          displayName: name,
-          isTrusted: true,
-          addedAt: DateTime.now(),
-        ));
-        debugPrint('[Contacts] New contact from profile_updated: $snowId ($name)');
       }
     });
   }
 
   @override
   void dispose() {
-    _userRegisteredSubscription?.cancel();
     _profileUpdatedSubscription?.cancel();
     super.dispose();
   }
 
-  /// Load all registered users from server (excluding self + blocked)
+  /// Load the reachable contact set from the server (GET /users) — friends ∪
+  /// COMMUNITY channel co-members ∪ past 1:1 partners, minus blocked/self. This
+  /// is NOT the full user directory; the server scopes it per-user.
   Future<void> _loadFromServer() async {
     try {
       final token = _ref.read(authTokenProvider);
@@ -213,7 +188,8 @@ class ContactNotifier extends StateNotifier<List<Contact>> {
     if (snowChatId.isEmpty) return;
     Future.microtask(() async {
       try {
-        await _ref.read(identityPinStoreProvider).unpin(snowChatId);
+        // B-2: drop the identity record (the bound latch is kept).
+        await _ref.read(verifiedIdentityStoreProvider).remove(snowChatId);
         await _ref.read(identityVerificationDaoProvider).deleteByPeer(snowChatId);
       } catch (e) {
         debugPrint('[ContactNotifier] _purgeIdentityState failed: $e');

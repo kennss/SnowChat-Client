@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header English translation; remove discover dependency -> independent fetch, pop after apply)
+/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings). Earlier 2026-04-26 (header English translation; remove discover dependency -> independent fetch, pop after apply)
 ///
 /// @functions
 ///  - _channelInfoProvider: independently fetch channel detail
@@ -115,7 +115,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
         data: (channel) {
           if (channel == null) {
             return const Center(
-              child: Text('Channel not found',
+              child: Text('Community not found',
                   style: TextStyle(color: SnowColors.textTertiary)),
             );
           }
@@ -145,7 +145,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
           const SizedBox(height: SnowSizes.md),
           // Name
           Text(
-            channel.name ?? 'Channel',
+            channel.name ?? 'Community',
             style: const TextStyle(
               color: SnowColors.textPrimary,
               fontSize: 22,
@@ -240,7 +240,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
           color: SnowColors.primaryBg,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: const Text('You are already a member of this channel.',
+        child: const Text('You are already a member of this community.',
             style: TextStyle(color: SnowColors.primary, fontSize: 14),
             textAlign: TextAlign.center),
       );
@@ -255,7 +255,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Join Channel'),
+              : const Text('Join Community'),
         );
       case JoinPolicy.approval:
         return ElevatedButton(
@@ -269,7 +269,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
         );
       case JoinPolicy.inviteOnly:
         return const Text(
-          'This channel requires an invite link to join.',
+          'This community requires an invite link to join.',
           style: TextStyle(color: SnowColors.textTertiary, fontSize: 13),
           textAlign: TextAlign.center,
         );

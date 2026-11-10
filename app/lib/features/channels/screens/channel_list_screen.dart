@@ -1,9 +1,9 @@
 /// @file        channel_list_screen.dart
-/// @description Channels tab screen — per-channel member accordion view (Phase 7, COMMUNITY only — Phase 9.1).
+/// @description Communities tab screen — leads with discovery (search + trending feed via CommunityExplore); the user's own communities render as a header above it, so a new account never hits the old two-button dead-end. Per-community member accordion + Manage/Mute/Leave options (Phase 7, COMMUNITY only — Phase 9.1).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-05 (onboarding: tab is now explore-first — empty state replaced by embedded CommunityExplore (search + trending discover); "My Communities" header above the feed; "+" menu drops redundant Browse (tab is the browse) keeping Create/Join-with-code; "Channel"→"Community" rename throughout). Earlier 2026-06-25 (member-count refresh on resume; member tap → openDirectChatWith). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - channelUnreadCountProvider: sum unread count per channelId (derived from conversationList)
@@ -24,8 +24,10 @@ import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/toast.dart';
 import '../../../core/network/api_endpoints.dart';
 import '../../chat/providers/conversation_list_provider.dart';
+import '../../chat/services/start_direct_chat.dart';
 import '../models/channel.dart';
 import '../providers/channel_provider.dart';
+import '../widgets/community_explore.dart';
 
 /// Aggregated unread count per channel, derived from conversation list state.
 final channelUnreadCountProvider =
@@ -47,7 +49,8 @@ class ChannelListScreen extends ConsumerStatefulWidget {
   ConsumerState<ChannelListScreen> createState() => _ChannelListScreenState();
 }
 
-class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
+class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
+    with WidgetsBindingObserver {
   final Set<String> _expandedChannels = {};
   StreamSubscription<Map<String, dynamic>>? _memberJoinedSub;
   StreamSubscription<Map<String, dynamic>>? _memberLeftSub;
@@ -57,10 +60,28 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     Future.microtask(() {
       ref.invalidate(myChannelsProvider);
       _listenForMemberChanges();
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // On foreground, re-pull the channel list so the per-channel "(N)" member
+    // counts catch up on any channel_member_joined/_left events missed while
+    // backgrounded — those socket events are fire-and-forget to currently-
+    // online sockets and are NOT replayed on reconnect. Without this, initState
+    // invalidates only once (the Channels tab is kept alive), so each member's
+    // count freezes at their first-load (≈ join-time) value — field report
+    // 2026-06-25 (WAAO: every member saw their own join-time count). The server
+    // returns a live count (channels.ts /my → _count.members), so a fresh fetch
+    // is always correct.
+    if (state == AppLifecycleState.resumed) {
+      ref.invalidate(myChannelsProvider);
+      ref.invalidate(pendingChannelsProvider);
+    }
   }
 
   void _listenForMemberChanges() {
@@ -83,7 +104,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
       final joinedSnowId = data['snowchatId'] as String?;
       final mySnowId = ref.read(currentSnowIdProvider);
       if (mounted && joinedSnowId == mySnowId) {
-        final channelName = data['channelName'] as String? ?? 'a channel';
+        final channelName = data['channelName'] as String? ?? 'a community';
         SnowToast.show(
           context,
           message: 'You were approved to join $channelName',
@@ -112,7 +133,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
         final name = data['displayName'] as String? ?? 'Someone';
         SnowToast.show(
           context,
-          message: '$name applied to join your channel',
+          message: '$name applied to join your community',
           type: ToastType.info,
         );
       }
@@ -121,6 +142,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _memberJoinedSub?.cancel();
     _memberLeftSub?.cancel();
     _roleChangedSub?.cancel();
@@ -136,7 +158,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
     return Scaffold(
       backgroundColor: SnowColors.background,
       appBar: AppBar(
-        title: const Text('Channels'),
+        title: const Text('Communities'),
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.add_rounded, color: SnowColors.primary),
@@ -144,11 +166,9 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            tooltip: 'Add channel',
+            tooltip: 'Add community',
             onSelected: (value) {
               switch (value) {
-                case 'browse':
-                  context.push('/add-channel');
                 case 'create':
                   context.push('/create-channel');
                 case 'join_code':
@@ -157,22 +177,12 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
             },
             itemBuilder: (_) => const [
               PopupMenuItem(
-                value: 'browse',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading:
-                      Icon(Icons.explore_rounded, color: SnowColors.primary),
-                  title: Text('Browse Channels',
-                      style: TextStyle(color: SnowColors.textPrimary)),
-                ),
-              ),
-              PopupMenuItem(
                 value: 'create',
                 child: ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading:
                       Icon(Icons.add_circle_rounded, color: SnowColors.primary),
-                  title: Text('Create Channel',
+                  title: Text('Create Community',
                       style: TextStyle(color: SnowColors.textPrimary)),
                 ),
               ),
@@ -190,37 +200,46 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
           ),
         ],
       ),
+      // The tab always leads with discovery (search + trending feed). A user's
+      // own communities render as the header ABOVE the discover feed, so a
+      // brand-new account never hits a dead-end — it lands on a live list of
+      // communities to join. (onboarding fix, design 2026-08-05.)
       body: channelsAsync.when(
         data: (channels) {
           final pending = pendingAsync.valueOrNull ?? [];
-          if (channels.isEmpty && pending.isEmpty) {
-            return _buildEmptyState(context);
-          }
-          return RefreshIndicator(
-            onRefresh: () async {
-              ref.invalidate(myChannelsProvider);
-              ref.invalidate(pendingChannelsProvider);
-            },
-            color: SnowColors.primary,
-            backgroundColor: SnowColors.surface,
-            child: ListView(
-              children: [
-                for (final channel in channels)
-                  _buildChannelSection(channel),
-                // Pending section
-                if (pending.isNotEmpty) ...[
-                  _buildPendingSection(pending),
-                ],
-              ],
-            ),
+          return CommunityExplore(
+            header: _buildMyCommunitiesHeader(channels, pending),
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (_, __) => const Center(
-          child: Text('Failed to load channels',
-              style: TextStyle(color: SnowColors.textTertiary)),
-        ),
+        loading: () => const CommunityExplore(),
+        error: (_, __) => const CommunityExplore(),
       ),
+    );
+  }
+
+  /// "My Communities" + pending, rendered above the discover feed. Null when the
+  /// user belongs to nothing yet (→ discover feed shows on its own).
+  Widget? _buildMyCommunitiesHeader(
+      List<ChannelInfo> channels, List<PendingChannel> pending) {
+    if (channels.isEmpty && pending.isEmpty) return null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(SnowSizes.md, 12, SnowSizes.md, 4),
+          child: Text(
+            'My Communities',
+            style: TextStyle(
+              color: SnowColors.textTertiary,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+        for (final channel in channels) _buildChannelSection(channel),
+        if (pending.isNotEmpty) _buildPendingSection(pending),
+      ],
     );
   }
 
@@ -270,7 +289,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    '${channel.name ?? "Channel"} (${channel.memberCount})',
+                    '${channel.name ?? "Community"} (${channel.memberCount})',
                     style: const TextStyle(
                       color: SnowColors.textPrimary,
                       fontWeight: FontWeight.w600,
@@ -311,7 +330,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
         if (isExpanded)
           _ChannelMemberList(
             channelId: channel.id,
-            channelName: channel.name ?? 'Channel',
+            channelName: channel.name ?? 'Community',
           ),
 
         const Divider(color: SnowColors.divider, height: 1),
@@ -345,12 +364,12 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
               ListTile(
                 leading: const Icon(Icons.admin_panel_settings_rounded,
                     color: SnowColors.primary),
-                title: const Text('Manage Channel',
+                title: const Text('Manage Community',
                     style: TextStyle(color: SnowColors.textPrimary)),
                 onTap: () {
                   Navigator.pop(context);
                   context.push(
-                    '/channel-admin/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Channel')}',
+                    '/channel-admin/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Community')}',
                   );
                 },
               ),
@@ -360,12 +379,12 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
               ListTile(
                 leading:
                     const Icon(Icons.link_rounded, color: SnowColors.primary),
-                title: const Text('Invite to Channel',
+                title: const Text('Invite to Community',
                     style: TextStyle(color: SnowColors.textPrimary)),
                 onTap: () {
                   Navigator.pop(context);
                   context.push(
-                    '/invite-link/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Channel')}',
+                    '/invite-link/${channel.id}?name=${Uri.encodeComponent(channel.name ?? 'Community')}',
                   );
                 },
               ),
@@ -391,7 +410,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
             ListTile(
               leading:
                   const Icon(Icons.exit_to_app_rounded, color: SnowColors.error),
-              title: const Text('Leave Channel',
+              title: const Text('Leave Community',
                   style: TextStyle(color: SnowColors.error)),
               onTap: () {
                 Navigator.pop(context);
@@ -410,10 +429,10 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: SnowColors.surface,
-        title: const Text('Leave Channel',
+        title: const Text('Leave Community',
             style: TextStyle(color: SnowColors.textPrimary)),
         content: Text(
-          'Leave "${channel.name}"? You will lose access to all rooms in this channel.',
+          'Leave "${channel.name}"? You will lose access to this community.',
           style: const TextStyle(color: SnowColors.textSecondary),
         ),
         actions: [
@@ -483,7 +502,7 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    ch.name ?? 'Channel',
+                    ch.name ?? 'Community',
                     style: const TextStyle(
                       color: SnowColors.textSecondary,
                       fontWeight: FontWeight.w500,
@@ -514,44 +533,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen> {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.search_rounded,
-              size: 64, color: SnowColors.textTertiary),
-          const SizedBox(height: SnowSizes.md),
-          const Text(
-            'No channels yet',
-            style: TextStyle(
-              color: SnowColors.textPrimary,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: SnowSizes.sm),
-          const Text(
-            'Join a channel to start\nchatting securely.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: SnowColors.textTertiary, fontSize: 14),
-          ),
-          const SizedBox(height: SnowSizes.lg),
-          ElevatedButton.icon(
-            onPressed: () => context.push('/add-channel'),
-            icon: const Icon(Icons.explore_rounded),
-            label: const Text('Browse Channels'),
-          ),
-          const SizedBox(height: SnowSizes.md),
-          OutlinedButton.icon(
-            onPressed: () => context.push('/create-channel'),
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('Create Channel'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 /// Channel detail provider (fetches from /channels/:channelId).
@@ -617,8 +598,21 @@ class _ChannelMemberList extends ConsumerWidget {
             return InkWell(
               onTap: () {
                 final myId = ref.read(currentSnowIdProvider);
-                if (snowchatId != myId) {
-                  context.push('/new-chat?recipientId=$snowchatId');
+                if (snowchatId.isNotEmpty && snowchatId != myId) {
+                  // Tap a channel member → open the 1:1 directly: find an
+                  // existing direct conversation, else find-or-create on the
+                  // server → /chat/{id}. Same path the Friends list uses. The
+                  // old '/new-chat?recipientId=…' push was silently ignored by
+                  // NewChatScreen, dumping the user on a generic picker (a
+                  // group-create button + an unscoped all-contacts list) where
+                  // they had to hunt for the member again — field report
+                  // 2026-06-25.
+                  openDirectChatWith(
+                    context: context,
+                    ref: ref,
+                    recipientSnowchatId: snowchatId,
+                    recipientDisplayName: displayName,
+                  );
                 }
               },
               child: Padding(

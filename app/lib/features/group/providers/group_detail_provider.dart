@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - GroupMember: group-member data model
@@ -16,6 +16,8 @@
 ///  - GroupDetailNotifier.updateName(): change group name
 ///  - groupDetailProvider: family StateNotifierProvider keyed by group ID
 
+import '../../../core/crypto/identity_binding_exception.dart';
+import '../../../core/crypto/identity_key_changed_exception.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -305,6 +307,13 @@ class GroupDetailNotifier extends StateNotifier<GroupDetail> {
             'messageType': encrypted['messageType'],
             'type': 'group_metadata_key',
           });
+        } on IdentityBindingInvalidException catch (idErr) {
+          // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+          // never retried (the store already raised the security notice).
+          debugPrint('[GroupDetail] GMK distribute: identity rejected (${idErr.reason.name}) — terminal');
+        } on IdentityKeyChangedException {
+          // B-2 §5.5: verified contact awaits re-verification — terminal.
+          debugPrint('[GroupDetail] GMK distribute: peer awaits identity re-verification — terminal');
         } catch (e) {
           debugPrint('[GroupDetail] GMK distribute to ${member.snowchatId} failed: $e');
         }

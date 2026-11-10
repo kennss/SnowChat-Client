@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-08-03 (F2: wrap the Spacer-based PIN layout in LayoutBuilder + ConstrainedBox(minHeight=viewport) + IntrinsicHeight + SingleChildScrollView so a short screen / large font scrolls instead of overflowing the keypad — no visual change on normal devices). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - PinLoginScreen: PIN-unlock ConsumerStatefulWidget
@@ -161,9 +161,18 @@ class _PinLoginScreenState extends ConsumerState<PinLoginScreen> {
     return Scaffold(
       backgroundColor: SnowColors.background,
       body: SafeArea(
-        child: Column(
-          children: [
-            const Spacer(flex: 2),
+        // F1-class robustness: the Spacer(flex)-based layout overflows a short
+        // screen / large font (lock + name + title + dots + keypad). Scroll +
+        // ConstrainedBox(min=viewport) + IntrinsicHeight keeps the Spacers
+        // working when there is room and scrolls when there is not.
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: IntrinsicHeight(
+                child: Column(
+                  children: [
+                    const Spacer(flex: 2),
 
             // Lock icon
             Container(
@@ -269,6 +278,10 @@ class _PinLoginScreenState extends ConsumerState<PinLoginScreen> {
 
             const SizedBox(height: 32),
           ],
+        ),
+        ),
+        ),
+        ),
         ),
       ),
     );

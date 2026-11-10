@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-01)
+/// @lastUpdated 2026-07-15 (read receipts now sealed E2EE: _markRead sends via EncryptedMessageHandler.sendSealedReadReceipt using directPeerResolver (null → group → suppressed); dropped plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-01)
 ///
 /// @functions
 ///  - MarkReadHelper: Signal-pattern read processing (drift DB + debounce + Sticky Thread)
@@ -17,7 +17,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import '../../../core/network/socket_manager.dart';
+import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/storage/daos/message_dao.dart';
 import '../../../core/storage/database.dart';
 import 'expiring_message_manager.dart';
@@ -28,7 +28,13 @@ import 'expiring_message_manager.dart';
 class MarkReadHelper {
   final String conversationId;
   final MessageDao _messageDao;
-  final SocketManager? _socketManager;
+  final EncryptedMessageHandler? _e2eeHandler;
+
+  /// Resolves the peer's SnowChat ID for a DIRECT chat, or null for a group /
+  /// unresolved conversation. Read receipts are 1:1 only, so a null return
+  /// suppresses them — never spray per-member receipts across a group.
+  final String? Function()? _directPeerResolver;
+
   final ExpiringMessageManager? _expiringManager;
   final String _myId;
 
@@ -56,12 +62,14 @@ class MarkReadHelper {
   MarkReadHelper({
     required this.conversationId,
     required MessageDao messageDao,
-    SocketManager? socketManager,
+    EncryptedMessageHandler? e2eeHandler,
+    String? Function()? directPeerResolver,
     ExpiringMessageManager? expiringManager,
     required String myId,
     this.onMarkedRead,
   })  : _messageDao = messageDao,
-        _socketManager = socketManager,
+        _e2eeHandler = e2eeHandler,
+        _directPeerResolver = directPeerResolver,
         _expiringManager = expiringManager,
         _myId = myId;
 
@@ -108,11 +116,28 @@ class MarkReadHelper {
       );
 
       if (marked.isNotEmpty && !_disposed) {
-        // Send read receipts to server via socket
-        final receiptIds = marked.map((m) => m.id).toList();
-        _socketManager?.sendReadReceipt(receiptIds);
-        debugPrint(
-            '[MarkReadHelper] Marked ${marked.length} messages as read, sent receipts');
+        // Sealed E2EE read receipt (2026-07-15): direct chats only. The
+        // marked rows are all incoming from the peer, and their ids are the
+        // server row ids the peer keyed its own outgoing rows on — so the
+        // peer flips exactly those to 'read' (blue double-check). Group
+        // conversations resolve to null and send nothing. Fire-and-forget:
+        // a lost receipt only costs a blue check.
+        final peer = _directPeerResolver?.call();
+        if (peer != null && peer.isNotEmpty && _e2eeHandler != null) {
+          // Exclude decryption-failed placeholders: their PKs are real server
+          // row ids, so receipting them would flip the sender's bubble blue
+          // for content the reader never actually saw.
+          final receiptIds = marked
+              .where((m) => m.outgoingStatus != 'decryption_failed')
+              .map((m) => m.id)
+              .toList();
+          unawaited(_e2eeHandler
+              .sendSealedReadReceipt(recipientId: peer, readIds: receiptIds)
+              .catchError((Object e) {
+            debugPrint('[MarkReadHelper] sealed read receipt failed (dropped): $e');
+          }));
+        }
+        debugPrint('[MarkReadHelper] Marked ${marked.length} messages as read');
 
         // Signal pattern: start expiry timer the moment a message is read
         if (_expiringManager != null) {

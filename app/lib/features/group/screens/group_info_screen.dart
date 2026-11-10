@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-08-05 (channel room default-name fallback "Channel"→"Community"). Earlier 2026-04-26 (header + inline English translation)
 ///  - Add Members button navigation implemented (Bug 1)
 ///  - After leaving group, also pop chat screen + remove from conversation list (Bug 3)
 ///  - Visual distinction for Pending members (Bug 4)
@@ -410,7 +410,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen> {
         for (final room in ch.rooms) {
           if (room.id == widget.groupId) {
             channelRoomName = room.isDefaultRoom
-                ? (ch.name ?? 'Channel')
+                ? (ch.name ?? 'Community')
                 : room.isSystemRoom
                     ? 'System'
                     : room.name;

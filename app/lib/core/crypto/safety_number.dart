@@ -57,7 +57,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-04-18 (P0-2 Stage 4-2: clarified SnowChat ↔ Signal interop boundary — raw 32B vs 33B serialized)
+/// @lastUpdated 2026-11-10 (B-2 Safety Number v2: callers now pass both
+///              users' ACCOUNT public keys with version=2 — the v1 inputs mixed
+///              the local account key with the peer's Signal key (SC-14) and
+///              never matched between honest peers. The algorithm is unchanged;
+///              the version is mixed into round 0 so v1/v2 numbers never
+///              collide). Earlier 2026-04-18 (P0-2 Stage 4-2: clarified SnowChat ↔ Signal interop boundary — raw 32B vs 33B serialized)
 ///
 /// @functions
 ///  - SafetyNumber.compute(...): Compute the 60-digit number from two

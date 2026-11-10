@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-11 (App-wide screen capture protection — moved
+/// @lastUpdated 2026-08-04 (wrap root ProviderScope in RestartWidget so "Reset App" / "Delete Account" can rebuild the whole app + provider tree in-session — clears identity-scoped in-memory state that survived storage/drift wipes). Earlier 2026-08-02 (QA_DISABLE_SCREEN_PROTECT dart-define guard around ScreenProtector — lets a headless-emulator QA build screencap the UI; prod/release keep FLAG_SECURE, default off). Earlier 2026-05-11 (App-wide screen capture protection — moved
 ///              ScreenProtector.protectDataLeakageOn() + preventScreenshotOn()
 ///              from per-screen wiring (5 screens) to single one-shot init in
 ///              main() before runApp. Never toggled off — every SnowChat
@@ -40,6 +40,7 @@ import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:screen_protector/screen_protector.dart';
 import 'app/app.dart';
+import 'app/restart_widget.dart';
 import 'core/call/voip_push_handler.dart';
 import 'core/network/api_endpoints.dart';
 import 'core/network/token_manager.dart';
@@ -187,8 +188,16 @@ void main() async {
   // mirroring. Undocumented Apple behavior used by Signal, Bitwarden, 1Password.
   // Texture-backed GPU surfaces (WebRTC video, raw bitmap renders) may bypass —
   // those code paths need explicit verification post-install. CLAUDE.md §6.
-  await ScreenProtector.protectDataLeakageOn();
-  await ScreenProtector.preventScreenshotOn();
+  // QA/automation escape hatch: a headless emulator can only screencap the UI
+  // when FLAG_SECURE is off. Guarded by a dart-define that defaults false, so
+  // shipped/release builds always keep full screen protection — only an
+  // explicit `--dart-define=QA_DISABLE_SCREEN_PROTECT=true` QA build disables it.
+  const disableScreenProtect =
+      bool.fromEnvironment('QA_DISABLE_SCREEN_PROTECT', defaultValue: false);
+  if (!disableScreenProtect) {
+    await ScreenProtector.protectDataLeakageOn();
+    await ScreenProtector.preventScreenshotOn();
+  }
 
   // Force dark status bar
   SystemChrome.setSystemUIOverlayStyle(
@@ -206,8 +215,10 @@ void main() async {
   ]);
 
   runApp(
-    const ProviderScope(
-      child: SnowChatApp(),
+    const RestartWidget(
+      child: ProviderScope(
+        child: SnowChatApp(),
+      ),
     ),
   );
 }

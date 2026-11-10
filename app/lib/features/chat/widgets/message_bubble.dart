@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-08 (Phase 2 reply-quote display name — bubble now
+/// @lastUpdated 2026-08-03 (F7: wrap the text bubble Container in Flexible so a
+///              fixed 280px bubble + the time/status column + 4px spacing no
+///              longer overflows a narrow (320dp) row by ~22px; the loose fit
+///              keeps the bubble hugging its content up to bubbleMaxWidth on
+///              wide screens. Only the text bubble carries the timestamp OUTSIDE
+///              the bubble in the Row — file/voice keep it inside and image is
+///              already screen-relative, so they don't hit this.) Earlier
+///              2026-05-08 (Phase 2 reply-quote display name — bubble now
 ///              accepts an optional replyToSenderDisplayName so the quote
 ///              header reads "Benjamin" / "pajooman003" instead of the
 ///              cryptic shortened snow ID. Resolution happens in
@@ -139,11 +146,16 @@ class MessageBubble extends StatelessWidget {
               timeStatus,
               const SizedBox(width: 4),
             ],
-            // Bubble
-            Container(
-              constraints: const BoxConstraints(
-                maxWidth: SnowSizes.bubbleMaxWidth,
-              ),
+            // Bubble — Flexible so the Row can shrink it below bubbleMaxWidth
+            // when the time/status column and spacing would otherwise push the
+            // total past the row width (a fixed 280 bubble + timestamp + 4px
+            // overflowed a 320dp row by ~22px). On a wide screen the loose fit
+            // still lets the bubble hug its content up to bubbleMaxWidth.
+            Flexible(
+              child: Container(
+                constraints: const BoxConstraints(
+                  maxWidth: SnowSizes.bubbleMaxWidth,
+                ),
               padding: const EdgeInsets.symmetric(
                 horizontal: SnowSizes.bubblePaddingH,
                 vertical: SnowSizes.bubblePaddingV,
@@ -236,6 +248,7 @@ class MessageBubble extends StatelessWidget {
                     ),
                 ],
               ),
+            ),
             ),
             // Received: time RIGHT of bubble
             if (!isMine) ...[

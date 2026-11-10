@@ -3,8 +3,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-05-11 (Galaxy S23 One UI gesture bar clipped "Don't delete" — enable
-///              modal useSafeArea + bump trailing breathing space. Previously: 2026-04-26.)
+/// @lastUpdated 2026-08-03 (F5: isScrollControlled:true + inner SingleChildScrollView — the
+///              default sheet was capped at ~50% height with a non-scrollable Column, so on a
+///              short screen / large font the last options ("1 hour" / "Don't delete") were
+///              clipped AND unreachable. Now the sheet sizes to content and scrolls if it still
+///              overflows.) Previously 2026-05-11 (Galaxy S23 One UI gesture bar clipped "Don't
+///              delete" — enable modal useSafeArea + bump trailing breathing space. 2026-04-26.)
 ///
 /// @functions
 ///  - DisappearingTimerSelector: bottom-sheet widget showing the 4 TTL options as radio buttons
@@ -44,6 +48,14 @@ Future<int?> showDisappearingTimerSelector(
     // app content technically clears the inset — without useSafeArea the last
     // option ("Don't delete") sat under that overlay and was untappable.
     useSafeArea: true,
+    // Without this the sheet is capped at ~50% of the screen; on a short screen
+    // (or with a large accessibility font) the five options + header exceed that
+    // cap and the last options ("1 hour" / "Don't delete") get clipped AND are
+    // unreachable (the content Column is not scrollable). isScrollControlled
+    // lets the sheet size to its content (MainAxisSize.min), and the inner
+    // SingleChildScrollView keeps the options reachable even when they still
+    // exceed the viewport.
+    isScrollControlled: true,
     builder: (context) => DisappearingTimerSelector(currentTtl: currentTtl),
   );
 }
@@ -62,9 +74,10 @@ class DisappearingTimerSelector extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             const SizedBox(height: 12),
             // Handle bar
             Container(
@@ -117,6 +130,7 @@ class DisappearingTimerSelector extends StatelessWidget {
             }),
             const SizedBox(height: 24),
           ],
+          ),
         ),
       ),
     );

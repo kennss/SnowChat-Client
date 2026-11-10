@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation; Phase 6.9: stateless myId — caller passes per-call)
+/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-04-26 (header English translation; Phase 6.9: stateless myId — caller passes per-call)
 ///
 /// @functions
 ///  - GroupSessionManager: Group E2EE session management class
@@ -16,6 +16,8 @@
 ///  - GroupSessionManager.toJson(): Serialize state
 ///  - GroupSessionManager.fromJson(): Deserialize state
 
+import 'identity_binding_exception.dart';
+import 'identity_key_changed_exception.dart';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -369,6 +371,13 @@ class GroupSessionManager {
         '[GroupSessionManager] Distributed sender key to $memberId '
         '(type: ${encrypted['messageType']})',
       );
+    } on IdentityBindingInvalidException catch (idErr) {
+      // B-2 §5.7: forged / downgraded / replayed identity — terminal,
+      // never retried (the store already raised the security notice).
+      debugPrint('[GroupSessionManager] SKDM distribution: identity rejected (${idErr.reason.name}) — terminal');
+    } on IdentityKeyChangedException {
+      // B-2 §5.5: verified contact awaits re-verification — terminal.
+      debugPrint('[GroupSessionManager] SKDM distribution: peer awaits identity re-verification — terminal');
     } catch (e) {
       debugPrint(
         '[GroupSessionManager] Failed to distribute sender key '

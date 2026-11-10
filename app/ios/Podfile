@@ -37,7 +37,56 @@ target 'Runner' do
 end
 
 post_install do |installer|
+  # Align every pod's deployment target with the app's platform (above).
+  #
+  # Many pods still declare iOS 9–13 in their podspecs. Xcode 27's SDK rejects
+  # any target below iOS 15 ("deployment target ... is set to 13.0, but the
+  # range of supported deployment target versions is 15.0 to 27.0"), which
+  # fails the whole build. The app itself never runs below the Podfile
+  # platform, so raising a pod's floor to that platform changes nothing at
+  # runtime; it only stops each pod from compiling for OS versions we do not
+  # ship to. Targets that already ask for a newer version are left alone.
+  app_deployment_target = installer.aggregate_targets.first.platform.deployment_target.to_s
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if current.nil? || Gem::Version.new(current) < Gem::Version.new(app_deployment_target)
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = app_deployment_target
+      end
+    end
+  end
+
+  # iOS Simulator architecture alignment (root-cause fix for a simulator-only link failure).
+  #
+  # GoogleMLKit ships fat .frameworks that contain NO arm64 iOS-Simulator slice
+  # (arm64 == device / Mach-O platform 2, x86_64 == simulator / platform 7). Its podspec
+  # therefore sets `EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64` on every pod and on the
+  # Pods-Runner aggregate, so all pods (incl. the umbrella Pods_Runner.framework) build
+  # x86_64-only for the simulator.
+  #
+  # Flutter's generated `Flutter/Generated.xcconfig` is #included AFTER
+  # Pods-Runner.debug.xcconfig in the app's Debug.xcconfig and resets that same key to
+  # `i386`, which re-enables arm64 for the Runner APP target only. On Apple Silicon the
+  # Runner app then tries to build the simulator slice as arm64 while every pod is
+  # x86_64-only. Because the app's implicit dependency on the Pods-Runner target cannot be
+  # satisfied for arm64, Xcode never builds Pods_Runner.framework at all, and BOTH Runner
+  # slices fail to link with `ld: framework 'Pods_Runner' not found`. (Device builds are
+  # unaffected: there the app and pods both build arm64, so the archs match and it links.)
+  #
+  # Fix: force the Runner app target to also drop arm64 for the simulator so the whole graph
+  # is x86_64-only for the simulator — exactly matching the working device case (matched
+  # archs). This is applied to the user project here so it survives every `pod install` and
+  # every Flutter regeneration of Generated.xcconfig. The `[sdk=iphonesimulator*]` condition
+  # keeps device (iphoneos) builds on arm64, untouched.
+  installer.aggregate_targets.each do |aggregate_target|
+    user_project = aggregate_target.user_project
+    next if user_project.nil?
+    user_project.native_targets.each do |native_target|
+      native_target.build_configurations.each do |config|
+        config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = '$(inherited) arm64'
+      end
+    end
+    user_project.save
   end
 end

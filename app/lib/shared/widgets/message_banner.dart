@@ -9,16 +9,20 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-26
-/// @lastUpdated 2026-04-26
+/// @lastUpdated 2026-08-03 (resolve the sender name from roster/contacts/friends
+///              instead of rendering the raw snow-id a receive-first/sealed
+///              sender carries — MessageBanner is now a ConsumerWidget)
 ///
 /// @functions
-///  - MessageBanner: animated top banner widget
+///  - MessageBanner: animated top banner widget (resolves sender displayName)
 ///  - BannerMessageData: minimal payload (sender / preview / avatar id)
 
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../features/chat/utils/sender_name_resolver.dart';
 import '../constants/colors.dart';
 import 'snow_avatar.dart';
 
@@ -38,7 +42,7 @@ class BannerMessageData {
   final String snowId;
 }
 
-class MessageBanner extends StatefulWidget {
+class MessageBanner extends ConsumerStatefulWidget {
   const MessageBanner({
     super.key,
     required this.data,
@@ -51,10 +55,10 @@ class MessageBanner extends StatefulWidget {
   final VoidCallback onDismiss;
 
   @override
-  State<MessageBanner> createState() => _MessageBannerState();
+  ConsumerState<MessageBanner> createState() => _MessageBannerState();
 }
 
-class _MessageBannerState extends State<MessageBanner>
+class _MessageBannerState extends ConsumerState<MessageBanner>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<Offset> _slide;
@@ -87,6 +91,20 @@ class _MessageBannerState extends State<MessageBanner>
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
+    // Resolve the sender's name from contacts/friends. The banner builder
+    // (message_queue) passes the raw snow-id as senderName when it has no name
+    // (the MVP placeholder == snowId); treat that as "no hint" so the resolver
+    // fills in a real name instead of showing the snow-id. roomId is omitted so
+    // 1:1 banners don't trigger a group-roster fetch; group senders who aren't
+    // contacts fall back to the short snow-id (the persistent group bubble
+    // resolves those via the roster).
+    final senderName = resolveSenderName(
+      ref,
+      widget.data.snowId,
+      envelopeName: widget.data.senderName == widget.data.snowId
+          ? null
+          : widget.data.senderName,
+    );
     return Positioned(
       top: mq.padding.top + 8,
       left: 12,
@@ -130,7 +148,7 @@ class _MessageBannerState extends State<MessageBanner>
                   SnowAvatar(
                     snowId: widget.data.snowId,
                     size: 36,
-                    displayName: widget.data.senderName,
+                    displayName: senderName,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -139,7 +157,7 @@ class _MessageBannerState extends State<MessageBanner>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          widget.data.senderName,
+                          senderName,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(

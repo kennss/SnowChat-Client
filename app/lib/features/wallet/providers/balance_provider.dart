@@ -9,7 +9,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-03
-/// @lastUpdated 2026-04-26 (header + inline English translation; Multi-Wallet Phase 2.5 H-3 single-source fix)
+/// @lastUpdated 2026-11-12 (comment: dropped the removed tensor_providers caller). Earlier 2026-04-26 (header + inline English translation; Multi-Wallet Phase 2.5 H-3 single-source fix)
 ///
 /// @functions
 ///  - solBalanceProvider: SOL balance (BigInt lamports)
@@ -27,7 +27,7 @@ import '../rpc/rpc_client_provider.dart';
 import 'wallet_list_provider.dart';
 
 // Re-export the canonical providers (single source — wallet_provider.dart).
-// External callers (transfer_provider, tensor_providers, etc.) keep their
+// External callers (transfer_provider, etc.) keep their
 // existing import path (`providers/balance_provider.dart`) yet still receive
 // the single instance — preventing separate-instance bugs from duplicate
 // definitions.

@@ -10,7 +10,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-28
-/// @lastUpdated 2026-11-10 (B-2: invite links carry the inviter's account public key (?k=); verified against the id and pinned into VerifiedIdentityStore on send). Earlier 2026-08-05 (initialId: open straight to the SnowChat-ID confirm
+/// @lastUpdated 2026-11-21 (a request by nickname passes the nickname, so it is vouched for once
+///              accepted). Earlier 2026-11-10 (B-2: invite links carry the inviter's account public key (?k=); verified against the id and pinned into VerifiedIdentityStore on send). Earlier 2026-08-05 (initialId: open straight to the SnowChat-ID confirm
 ///              when arriving from a snowchat://user/<id> QR/link first-contact;
 ///              nick-based primary path via opaque-token lookup/add unchanged)
 ///
@@ -167,7 +168,9 @@ class _AddFriendScreenState extends ConsumerState<AddFriendScreen> {
     final token = _inviteToken;
     if (token == null) return;
     setState(() => _isSending = true);
-    final status = await ref.read(friendActionsProvider).addFriendByToken(token);
+    final status = await ref
+        .read(friendActionsProvider)
+        .addFriendByToken(token, nick: _controller.text.trim());
     if (!mounted) return;
     setState(() => _isSending = false);
     if (status == 'expired') {

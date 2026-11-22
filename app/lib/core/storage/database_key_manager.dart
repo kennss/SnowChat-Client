@@ -24,7 +24,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-11
-/// @lastUpdated 2026-11-11
+/// @lastUpdated 2026-11-21 (readability probe reads IdentityManager.snowIdStorageKey — the identity store's legacy migration that owned the constant is gone). Earlier 2026-11-11
 ///
 /// @functions
 ///  - DatabaseKeyUnavailableException: storage unreadable / caller may not create
@@ -44,7 +44,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
-import '../crypto/verified_identity_store.dart';
+import '../crypto/identity_manager.dart';
 import 'secure_storage.dart';
 
 /// Thrown when the database key cannot be resolved safely right now: secure
@@ -192,14 +192,13 @@ class DatabaseKeyManager {
     return v;
   }
 
-  /// Positive-evidence readability check (same idea as
-  /// VerifiedIdentityStore's BFU guard): a key that exists on every onboarded
+  /// Positive-evidence readability check: a key that exists on every onboarded
   /// install reads back, or — on a fresh install where nothing exists yet — a
   /// random probe value written now reads back identically. Any exception or
   /// mismatch ⇒ not readable.
   Future<bool> _storageReadable() async {
     try {
-      final known = await _storage.read(VerifiedIdentityStore.unlockProbeKey);
+      final known = await _storage.read(IdentityManager.snowIdStorageKey);
       if (known != null && known.isNotEmpty) return true;
     } catch (_) {
       return false;

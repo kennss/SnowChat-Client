@@ -1,9 +1,9 @@
 /// @file        nft_card.dart
-/// @description NFT grid card widget (IPFS image fallback, name, price display).
+/// @description NFT grid card widget (IPFS image fallback, name, collection name).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-12 (removed the marketplace listing-price line and its showPrice flag). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - NFTCard: card widget that shows the NFT image and name in a 2-column grid
@@ -30,12 +30,10 @@ class NFTCard extends StatelessWidget {
     super.key,
     required this.nft,
     this.onTap,
-    this.showPrice = false,
   });
 
   final NFTAsset nft;
   final VoidCallback? onTap;
-  final bool showPrice;
 
   @override
   Widget build(BuildContext context) {
@@ -73,7 +71,7 @@ class NFTCard extends StatelessWidget {
               ),
             ),
 
-            // Name + optional price.
+            // Name + optional collection name.
             Padding(
               padding: const EdgeInsets.all(10),
               child: Column(
@@ -89,17 +87,7 @@ class NFTCard extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  if (showPrice && nft.formattedListingPrice != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      nft.formattedListingPrice!,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: _C.primary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ] else if (nft.collectionName != null) ...[
+                  if (nft.collectionName != null) ...[
                     const SizedBox(height: 2),
                     Text(
                       nft.collectionName!,

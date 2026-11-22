@@ -1,0 +1,46 @@
+# SnowChat client-side zkgroup: a first-party crate that exposes ONLY the
+# libsignal `zkgroup` calls group protocol v2 needs, as byte-in / byte-out
+# functions behind a narrow C ABI that Dart binds with dart:ffi
+# (packages/snowchat_zkgroup). Since 2026-11-22 it also carries the app
+# passcode's key derivation (Argon2id) — the only other native crypto.
+#
+# libsignal is consumed by pinned git revision: its crates are not on
+# crates.io and the project promises no API stability to outside users.
+# The server uses the same release through @signalapp/libsignal-client —
+# bump both together and regenerate tests/vectors/zk_vectors.json.
+[package]
+name = "snowchat_zkgroup"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93.1"
+license = "AGPL-3.0-only"
+publish = false
+description = "Narrow C ABI over libsignal zkgroup for the SnowChat Flutter client"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# libsignal 0.107.0 @ 2026-11-10
+zkgroup = { git = "https://github.com/signalapp/libsignal", rev = "0abcfd4044a5827d73b657c1170ab3638d660330" }
+libsignal-core = { git = "https://github.com/signalapp/libsignal", rev = "0abcfd4044a5827d73b657c1170ab3638d660330" }
+rand = "0.9"
+zeroize = "1"
+# The app passcode's key derivation (Argon2id, RFC 9106) — RustCrypto,
+# MIT/Apache-2.0. Pinned to the release libsignal already locks, so no new
+# crate enters the build; `zeroize` wipes its working memory blocks.
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+
+[dev-dependencies]
+base64 = "0.22"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+# Unwinding stays enabled: the FFI layer converts a panic inside libsignal
+# (it asserts on some caller mistakes) into an error status instead of
+# aborting the app.
+panic = "unwind"

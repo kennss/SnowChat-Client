@@ -3,7 +3,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-08-07 (metadata-min Batch 2: 1:1 push deep-link restored
+/// @lastUpdated 2026-11-21 (starts the 1:1 outbox with the global router). Earlier 2026-11-21 (/call is pushed for an incoming call when CallState.inAppIncoming is set —
+///              iOS with no CallKit window, the in-app screen is the only incoming UI). Earlier
+///              2026-11-20 (comment: no v1 group pushes). Earlier 2026-11-20 (a tapped push whose message id is a row of the group queue opens that group's chat — Gv2Runtime.conversationOfPush). Earlier 2026-11-13 (watches gv2RuntimeProvider — group protocol v2, behind a flag).
+///              Earlier 2026-08-07 (metadata-min Batch 2: 1:1 push deep-link restored
 ///              WITHOUT re-exposing sender identity. The push no longer carries a
 ///              conversationId (masked), only the opaque per-row messageId, so
 ///              openChatFromPush() resolves the local room on-device via
@@ -49,6 +52,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel, SystemNavigator;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/diagnostics/diag_log.dart';
+import 'app_lock_gate.dart';
+import 'keyboard_behavior.dart';
 import '../core/network/token_manager.dart';
 import '../features/chat/providers/conversation_list_provider.dart';
 import '../shared/constants/colors.dart';
@@ -196,6 +201,10 @@ class SnowChatApp extends ConsumerWidget {
         // the server verify key + updates sealedSenderServiceProvider state →
         // chain rebuild reaches callProvider.
         ref.watch(sealedSenderAutoInitProvider);
+        // Group protocol v2: kept alive here so that it is built — and
+        // rebuilt — as soon as an account is signed in and the sealed sender
+        // service is up. Null where this build pins no server keys.
+        ref.watch(gv2RuntimeProvider);
 
         // FCM push token auto-sync — watches authToken changes. The fresh-signup
         // path (onboarding → register → authenticate) sets authToken without
@@ -234,8 +243,8 @@ class SnowChatApp extends ConsumerWidget {
         // Pure-Dart Signal client an NSE would mean duplicating decryption in
         // Swift — a second crypto implementation to keep in sync). Local
         // notifications (shown by the app AFTER it decrypted the message) still
-        // pass their resolved room id directly; group pushes still carry the
-        // groupChatId as conversationId. Both take the conversationId fast path.
+        // pass their resolved room id directly and take the conversationId
+        // fast path.
         Future<void> openChatFromPush({
           String? conversationId,
           String? messageId,
@@ -262,8 +271,13 @@ class SnowChatApp extends ConsumerWidget {
             } catch (_) {}
             msg = await dao.getMessageById(messageId);
           }
-          final room = msg?.conversationId;
-          debugPrint('[DeepLink] resolved room=$room for msg=$messageId');
+          // A push of the group queue (group protocol v2) carries the
+          // server row id: its group is known to the local inbox.
+          final room = msg?.conversationId ??
+              await ref
+                  .read(gv2RuntimeProvider)
+                  ?.conversationOfPush(messageId);
+          debugPrint('[DeepLink] resolved room=${room != null} for a push');
           if (room != null && room.isNotEmpty) {
             ref.read(routerProvider).go('/chat/$room');
           }
@@ -323,6 +337,10 @@ class SnowChatApp extends ConsumerWidget {
         // socket events for messages — it only watches drift.
         ref.read(globalMessageRouterProvider).start();
 
+        // The 1:1 outbox: sends what was written while offline (also in an
+        // earlier run of the app) and keeps sending on every reconnect.
+        ref.read(directOutboxProvider).start();
+
         // Phase 8.2 VoIP — eager init of CallNotifier so its CallSignaling
         // subscriber to onSealedCallSignaling is registered before any
         // incoming call arrives. Without this, the SocketManager's
@@ -356,7 +374,12 @@ class SnowChatApp extends ConsumerWidget {
               next.status == CallStatus.connecting ||
               next.status == CallStatus.active;
           if (!isInCall) return;
-          if (prev?.status == next.status) return;
+          // V3: the in-app incoming screen (iOS, no CallKit window) is
+          // entered by a flag change within `incoming`, not a status change.
+          final enteringInAppIncoming = next.status == CallStatus.incoming &&
+              next.inAppIncoming &&
+              !(prev?.inAppIncoming ?? false);
+          if (prev?.status == next.status && !enteringInAppIncoming) return;
           // 2026-05-05 — v211 revert, WhatsApp/Signal 정책 채택. incoming UI
           // 는 OS-level CallKit (iOS) / ConnectionService (Android) 가 단독
           // 소유. Dart auto-push 차단해서 in-app IncomingCallScreen 미표시.
@@ -376,7 +399,12 @@ class SnowChatApp extends ConsumerWidget {
           // 기존 IncomingCallScreen widget 은 라우트로 도달 불가 (router 의
           // `case CallStatus.incoming` branch 는 dead code 지만 router 단순성
           // 위해 남김 — 향후 정리 가능).
-          if (next.status == CallStatus.incoming) {
+          //
+          // V3 (2026-11-21): except when no CallKit window came up for the
+          // call (iOS, VoIP push not delivered) — then CallNotifier sets
+          // inAppIncoming and the in-app IncomingCallScreen is the only
+          // incoming UI. Design: TO-DO/2026-11-21-voip-ring-end-design.md.
+          if (next.status == CallStatus.incoming && !next.inAppIncoming) {
             diagLog(
               'routePush',
               'skip /call — status=incoming (CallKit/ConnectionService owns UI)',
@@ -607,6 +635,12 @@ class SnowChatApp extends ConsumerWidget {
           theme: snowTheme(),
           routerConfig: router,
           scaffoldMessengerKey: rootScaffoldMessengerKey,
+          // A tap outside the focused text field closes the keyboard, on
+          // iOS too (keyboard_behavior.dart); the app locks again after the
+          // auto-lock delay in the background (app_lock_gate.dart).
+          builder: (context, child) => DismissKeyboardOnTapOutside(
+            child: AppLockGate(child: child ?? const SizedBox()),
+          ),
         );
       },
       loading: () => MaterialApp(
@@ -628,6 +662,12 @@ class SnowChatApp extends ConsumerWidget {
           theme: snowTheme(),
           routerConfig: router,
           scaffoldMessengerKey: rootScaffoldMessengerKey,
+          // A tap outside the focused text field closes the keyboard, on
+          // iOS too (keyboard_behavior.dart); the app locks again after the
+          // auto-lock delay in the background (app_lock_gate.dart).
+          builder: (context, child) => DismissKeyboardOnTapOutside(
+            child: AppLockGate(child: child ?? const SizedBox()),
+          ),
         );
       },
     );

@@ -7,7 +7,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-10
+/// @lastUpdated 2026-11-13
 ///
 /// @functions
 ///  - InMemorySecureStorage: SecureStorageService fake with failure injection
@@ -87,14 +87,17 @@ class TestParty {
     required this.preKeyBundle,
   });
 
-  /// [seedByte] makes the account deterministic per party.
+  /// [seedByte] makes the account deterministic per party; [accountSeed],
+  /// when given, is the account seed instead (to be the same account as a
+  /// test member of a group).
   static Future<TestParty> create({
-    required int seedByte,
+    int seedByte = 0,
+    Uint8List? accountSeed,
     required String deviceId,
     int opkCount = 3,
   }) async {
-    final accountKey =
-        ed.SigningKey(seed: Uint8List.fromList(List.filled(32, seedByte)));
+    final accountKey = ed.SigningKey(
+        seed: accountSeed ?? Uint8List.fromList(List.filled(32, seedByte)));
     final accountPub = Uint8List.fromList(accountKey.verifyKey.toList());
     final snowId = KeyDerivation.deriveSnowChatId(accountPub);
     final storage = InMemorySecureStorage();

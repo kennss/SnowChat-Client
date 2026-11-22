@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: decrypt() receives the sealed-certificate deviceId for binding.deviceId matching and caches it only after a verified decrypt; a hard identity rejection (IdentityBindingInvalidException) or a pending re-verification (IdentityKeyChangedException) skips the archive-reset + retry_receipt recovery — re-handshaking cannot fix an identity failure and would loop). Earlier 2026-08-03 (F3: dispatch now derives the DR messageType from the unsealed ciphertext via resolveSealedMessageType() instead of the cleartext data['messageType'] (which Sealed Sender never carries → always 1 → a prekey first-contact invite was misrouted as normal → _receiveSession never ran → first call to a brand-new contact rang forever). Also enforces Sealed Sender Step 9 identity cross-check on prekey invites). Earlier 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
+/// @lastUpdated 2026-11-21 (X1: the call signals of an account this user blocked are decrypted and go no further — not dispatched, not parsed for accept / decline, no recovery sent back; isBlocked). Earlier 2026-11-21 (no IdentityKeyChangedException (the legacy identity policy is gone)). Earlier 2026-11-10 (B-2 Identity Binding v1: decrypt() receives the sealed-certificate deviceId for binding.deviceId matching and caches it only after a verified decrypt; a hard identity rejection (IdentityBindingInvalidException) or a pending re-verification (IdentityKeyChangedException) skips the archive-reset + retry_receipt recovery — re-handshaking cannot fix an identity failure and would loop). Earlier 2026-08-03 (F3: dispatch now derives the DR messageType from the unsealed ciphertext via resolveSealedMessageType() instead of the cleartext data['messageType'] (which Sealed Sender never carries → always 1 → a prekey first-contact invite was misrouted as normal → _receiveSession never ran → first call to a brand-new contact rang forever). Also enforces Sealed Sender Step 9 identity cross-check on prekey invites). Earlier 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
 ///
 /// @functions
 ///  - CallSignaling.sendSealedSignaling(): wrap signaling event in Sealed envelope and send
@@ -22,7 +22,6 @@ import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 
 import '../crypto/identity_binding_exception.dart';
-import '../crypto/identity_key_changed_exception.dart';
 import '../crypto/sealed_sender.dart';
 import '../crypto/sender_certificate_manager.dart';
 import '../crypto/signal_session_manager.dart';
@@ -66,15 +65,22 @@ class CallSignaling {
     required SenderCertificateManager senderCertificateManager,
     required SocketManager socketManager,
     String? Function()? mySnowchatIdResolver,
+    required Future<bool> Function(String snowId) isBlocked,
   })  : _sessionManager = sessionManager,
         _sealedSenderService = sealedSenderService,
         _senderCertificateManager = senderCertificateManager,
         _socketManager = socketManager,
-        _mySnowchatIdResolver = mySnowchatIdResolver {
+        _mySnowchatIdResolver = mySnowchatIdResolver,
+        _isBlocked = isBlocked {
     _subscription = _socketManager.onSealedCallSignaling.listen(_onIncoming);
   }
 
   final SignalSessionManager _sessionManager;
+
+  /// X1: whether an account is blocked (BlockList.isBlocked). Its call
+  /// signals are decrypted — the 1:1 session stays in step — and go no
+  /// further: nothing rings, nothing is answered or recovered towards it.
+  final Future<bool> Function(String snowId) _isBlocked;
   final SealedSenderService _sealedSenderService;
   final SenderCertificateManager _senderCertificateManager;
   final SocketManager _socketManager;
@@ -389,6 +395,12 @@ class CallSignaling {
       );
       debugPrint('[DIAG:CallSignal] drDecrypt ${sw.elapsedMilliseconds}ms');
 
+      // X1: an account this user blocked — dropped, not dispatched.
+      if (await _isBlocked(senderId)) {
+        debugPrint('[CallSignaling] from a blocked account — dropped');
+        return;
+      }
+
       final inner = jsonDecode(utf8.decode(plaintextBytes))
           as Map<String, dynamic>;
       final type = inner['type'] as String? ?? '';
@@ -406,13 +418,16 @@ class CallSignaling {
     } catch (e) {
       // Don't log event type/content — Zero-Trace §23
       debugPrint('[CallSignaling] dispatch error: ${e.runtimeType} after ${sw.elapsedMilliseconds}ms');
+      // X1: nothing goes back to an account this user blocked — no session
+      // reset, no retry receipt.
+      final from = senderId;
+      if (from != null && await _isBlocked(from)) return;
       // B-2 §5.7: identity failures are not ratchet desyncs. A forged /
-      // downgraded binding or a peer awaiting re-verification must NOT
-      // trigger archive-reset + retry_receipt — the fresh handshake would hit
-      // the same rejection and the peer would resend forever. The
-      // user-visible notice comes from VerifiedIdentityStore.
-      if (e is IdentityBindingInvalidException ||
-          e is IdentityKeyChangedException) {
+      // downgraded / missing binding must NOT trigger archive-reset +
+      // retry_receipt — the fresh handshake would hit the same rejection and
+      // the peer would resend forever. The user-visible notice comes from
+      // VerifiedIdentityStore.
+      if (e is IdentityBindingInvalidException) {
         debugPrint('[CallSignaling] identity rejection — recovery skipped');
         return;
       }
@@ -537,6 +552,9 @@ class CallSignaling {
         1,
         envelopeDeviceId: unsealed.senderDeviceId,
       );
+      // X1: an account this user blocked — nothing to accept or decline
+      // towards (a decline sends nothing to it).
+      if (await _isBlocked(senderId)) return null;
       final inner = jsonDecode(utf8.decode(plaintextBytes)) as Map<String, dynamic>;
       return CallSignalingEvent(
         type: inner['type'] as String? ?? '',

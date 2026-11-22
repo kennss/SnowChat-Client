@@ -1,32 +1,33 @@
 /// @file        group_detail_provider.dart
-/// @description Group detail and member-management provider. Handles group fetch, member add/remove, admin toggle, leave, and rename via server API.
+/// @description Group detail provider: a read-only view of a group protocol v2 group as this
+///              device holds it — members, roles, name — kept current from the local store.
+///              Nothing is asked of the server; the group's screens act through
+///              Gv2GroupActions.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (P5.6: groupDetailProvider is released when nothing watches it). Earlier 2026-11-20 (v1 groups removed: no server load, no GMK-encrypted name, no member
+///              removal / admin toggle / leave / rename through the server — the provider
+///              is the v2 view only; an id that is not a v2 group id is an empty detail).
+///              Earlier same day (group protocol v2: read-only view of a v2 group from the
+///              local store). Earlier 2026-11-12 (GMK name resolution). Earlier 2026-11-10
+///              (B-2 §5.7 identity exceptions terminal). Earlier 2026-04-26 (header English
+///              translation)
 ///
 /// @functions
 ///  - GroupMember: group-member data model
 ///  - GroupDetail: group-detail data model
-///  - GroupDetailNotifier: StateNotifier managing group-detail state
-///  - GroupDetailNotifier.loadGroup(): load group info from server
-///  - GroupDetailNotifier.removeMember(): remove member
-///  - GroupDetailNotifier.toggleAdmin(): toggle admin role
-///  - GroupDetailNotifier.leaveGroup(): leave the group
-///  - GroupDetailNotifier.updateName(): change group name
+///  - GroupDetailNotifier: StateNotifier keeping a v2 group's detail in step with the store
+///  - GroupDetailNotifier.loadGroup(): read the detail from the local store again
 ///  - groupDetailProvider: family StateNotifierProvider keyed by group ID
 
-import '../../../core/crypto/identity_binding_exception.dart';
-import '../../../core/crypto/identity_key_changed_exception.dart';
-import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../core/crypto/group_metadata_crypto.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/network/api_endpoints.dart';
+import '../../../core/group_v2/gv2_codec.dart';
+import '../../../core/storage/tables/gv2_tables.dart';
 import '../../../app/providers.dart';
+import 'gv2_group_provider.dart';
 
 /// A single member within a group.
 class GroupMember {
@@ -66,9 +67,7 @@ class GroupMember {
 class GroupDetail {
   final String id;
   final String? name;
-  final String? description;
   final String creatorId;
-  final int senderKeyEpoch;
   final List<GroupMember> members;
   final bool isLoading;
   final String? error;
@@ -76,9 +75,7 @@ class GroupDetail {
   const GroupDetail({
     required this.id,
     this.name,
-    this.description,
     this.creatorId = '',
-    this.senderKeyEpoch = 0,
     this.members = const [],
     this.isLoading = false,
     this.error,
@@ -86,9 +83,7 @@ class GroupDetail {
 
   GroupDetail copyWith({
     String? name,
-    String? description,
     String? creatorId,
-    int? senderKeyEpoch,
     List<GroupMember>? members,
     bool? isLoading,
     String? error,
@@ -96,9 +91,7 @@ class GroupDetail {
     return GroupDetail(
       id: id,
       name: name ?? this.name,
-      description: description ?? this.description,
       creatorId: creatorId ?? this.creatorId,
-      senderKeyEpoch: senderKeyEpoch ?? this.senderKeyEpoch,
       members: members ?? this.members,
       isLoading: isLoading ?? this.isLoading,
       error: error,
@@ -124,217 +117,90 @@ class GroupDetail {
 }
 
 class GroupDetailNotifier extends StateNotifier<GroupDetail> {
-  final ApiClient _apiClient;
   final String _groupId;
   final Ref _ref;
 
   GroupDetailNotifier({
-    required ApiClient apiClient,
     required String groupId,
     required Ref ref,
-  })  : _apiClient = apiClient,
-        _groupId = groupId,
+  })  : _groupId = groupId,
         _ref = ref,
-        super(GroupDetail(id: groupId, isLoading: true)) {
-    loadGroup();
+        super(GroupDetail(id: groupId, isLoading: gv2IsGroupId(groupId))) {
+    // Only a group protocol v2 group has a detail; any other id stays an
+    // empty, settled detail.
+    if (gv2IsGroupId(groupId)) _watch();
   }
 
-  /// Load group info and members from the server.
+  final List<StreamSubscription<Object?>> _subscriptions = [];
+
+  @override
+  void dispose() {
+    for (final s in _subscriptions) {
+      unawaited(s.cancel());
+    }
+    super.dispose();
+  }
+
+  /// Keep the detail in step with the local store.
+  void _watch() {
+    final store = _ref.read(snowDatabaseProvider).gv2Store;
+    _subscriptions
+      ..add(store.watchGroup(_groupId).listen((_) => _load()))
+      ..add(store.watchMemberRows(_groupId).listen((_) => _load()));
+  }
+
+  /// Read the detail from the local store again.
   Future<void> loadGroup() async {
-    if (!mounted) return;
-    state = state.copyWith(isLoading: true, error: null);
+    if (!mounted || !gv2IsGroupId(_groupId)) return;
+    await _load();
+  }
+
+  /// The detail from the local store: the confirmed and unconfirmed members
+  /// as the change log names them, with the owner as "creator". An
+  /// account's id doubles as its user id here (a v2 group knows no server
+  /// user ids).
+  Future<void> _load() async {
     try {
-      final response = await _apiClient.get(ApiEndpoints.group(_groupId));
+      final store = _ref.read(snowDatabaseProvider).gv2Store;
+      final row = await store.group(_groupId);
+      final rows = row == null ? const <Never>[] : await store.memberRows(_groupId);
       if (!mounted) return;
-      final data = Map<String, dynamic>.from(response.data as Map);
-
-      final membersRaw = data['members'] as List<dynamic>? ?? [];
-      final members = membersRaw.map((m) {
-        final map = Map<String, dynamic>.from(m as Map);
-        return GroupMember(
-          userId: (map['userId'] ?? map['id'] ?? '') as String,
-          snowchatId: (map['snowchatId'] ?? '') as String,
-          displayName: map['displayName'] as String?,
-          isAdmin: (map['isAdmin'] ?? false) as bool,
-          status: (map['status'] ?? 'active') as String,
-          joinedAt: (map['joinedAt'] ?? '') as String,
-        );
-      }).toList();
-
-      // Phase 8.8: Decrypt group name with locally stored GMK
-      String? groupName;
-      final encName = data['encryptedName'] as String?;
-      if (encName != null) {
-        final (gmk, _) = await GroupMetadataCrypto.loadGMK(_groupId);
-        if (gmk != null) {
-          groupName = GroupMetadataCrypto.decryptGroupName(gmk, encName);
-        } else {
-          // GMK missing — auto-request
-          debugPrint('[GroupDetail] GMK missing for $_groupId — requesting');
-          _ref.read(socketManagerProvider).requestGmk(_groupId);
-        }
+      final known = _ref.read(gv2KnownNamesProvider);
+      var owner = '';
+      final members = <GroupMember>[];
+      for (final m in rows) {
+        final snowId = m.snowId;
+        if (snowId == null) continue;
+        if (m.role == gv2RoleOwner) owner = snowId;
+        final name = known[snowId] ?? m.nickname;
+        members.add(GroupMember(
+          userId: snowId,
+          snowchatId: snowId,
+          displayName: (name == null || name.isEmpty) ? null : name,
+          isAdmin: m.role == gv2RoleAdmin,
+          status: m.checkState == Gv2MemberCheckState.confirmed
+              ? 'accepted'
+              : 'pending',
+          joinedAt: '',
+        ));
       }
-      groupName ??= data['name'] as String?;
-
-      if (!mounted) return;
-      state = state.copyWith(
-        name: groupName,
-        creatorId: (data['creatorId'] ?? '') as String,
-        senderKeyEpoch: (data['senderKeyEpoch'] ?? 0) as int,
+      state = GroupDetail(
+        id: _groupId,
+        name: row?.title,
+        creatorId: owner,
         members: members,
-        isLoading: false,
       );
     } catch (e) {
-      debugPrint('[GroupDetail] Failed to load group: $e');
       if (!mounted) return;
-      state = state.copyWith(isLoading: false, error: e.toString());
-    }
-  }
-
-  /// Remove a member from the group.
-  Future<bool> removeMember(String targetUserId) async {
-    try {
-      await _apiClient.delete(
-        ApiEndpoints.groupMember(_groupId, targetUserId),
-      );
-      state = state.copyWith(
-        members: state.members.where((m) => m.userId != targetUserId).toList(),
-      );
-      return true;
-    } catch (e) {
-      debugPrint('[GroupDetail] Failed to remove member: $e');
-      return false;
-    }
-  }
-
-  /// Toggle admin status for a member.
-  Future<bool> toggleAdmin(String targetUserId) async {
-    final member = state.members.where((m) => m.userId == targetUserId).firstOrNull;
-    if (member == null) return false;
-
-    final newIsAdmin = !member.isAdmin;
-    try {
-      await _apiClient.patch(
-        ApiEndpoints.groupMember(_groupId, targetUserId),
-        data: {'isAdmin': newIsAdmin},
-      );
-      state = state.copyWith(
-        members: state.members.map((m) {
-          if (m.userId == targetUserId) {
-            return m.copyWith(isAdmin: newIsAdmin);
-          }
-          return m;
-        }).toList(),
-      );
-      return true;
-    } catch (e) {
-      debugPrint('[GroupDetail] Failed to toggle admin: $e');
-      return false;
-    }
-  }
-
-  /// Leave the group.
-  Future<bool> leaveGroup() async {
-    try {
-      await _apiClient.post(ApiEndpoints.groupLeave(_groupId));
-      return true;
-    } catch (e) {
-      debugPrint('[GroupDetail] Failed to leave group: $e');
-      return false;
-    }
-  }
-
-  /// Update the group name with GMK rotation (Phase 8.8).
-  Future<bool> updateName(String newName) async {
-    try {
-      // Load current GMK epoch
-      final (_, currentEpoch) = await GroupMetadataCrypto.loadGMK(_groupId);
-      final newEpoch = currentEpoch + 1;
-
-      // Generate new GMK (rotation on every name change — audit #9)
-      final newGmk = GroupMetadataCrypto.generateGMK();
-      final encryptedName = GroupMetadataCrypto.encryptGroupName(newGmk, newName);
-
-      await _apiClient.put(
-        ApiEndpoints.groupName(_groupId),
-        data: {
-          'encryptedName': encryptedName,
-          'gmkEpoch': newEpoch,
-        },
-      );
-
-      // Store new GMK locally
-      await GroupMetadataCrypto.storeGMK(_groupId, newGmk, newEpoch);
-
-      state = state.copyWith(name: newName);
-      debugPrint('[GroupDetail] Name updated with GMK rotation epoch=$newEpoch');
-
-      // Distribute new GMK to all members via 1:1 E2EE
-      final sessionManager = _ref.read(signalSessionManagerProvider);
-      final mySnowId = _ref.read(currentSnowIdProvider) ?? '';
-      final signingKeySeed = sessionManager.signal.signingKeySeed;
-      final signature = signingKeySeed != null
-          ? GroupMetadataCrypto.signGMK(
-              signingKeySeed: signingKeySeed,
-              groupId: _groupId,
-              gmk: newGmk,
-              epoch: newEpoch,
-            )
-          : null;
-
-      for (final member in state.members) {
-        if (member.snowchatId == mySnowId) continue;
-        if (member.status != 'accepted') continue;
-        try {
-          await sessionManager.ensureSession(member.snowchatId);
-          final deviceId = await sessionManager.getDeviceIdForRecipient(member.snowchatId);
-          final payload = utf8.encode(jsonEncode({
-            'type': 'group_metadata_key',
-            'groupId': _groupId,
-            'gmk': base64Encode(newGmk),
-            'epoch': newEpoch,
-            if (signature != null) 'signature': base64Encode(signature),
-            'coordinatorSnowId': mySnowId,
-          }));
-          final encrypted = await sessionManager.encrypt(
-            member.snowchatId, deviceId, Uint8List.fromList(payload),
-          );
-          _ref.read(socketManagerProvider).sendPrivateMessage({
-            'recipientId': member.snowchatId,
-            'encryptedContent': {
-              'ciphertext': base64Encode(encrypted['ciphertext'] as Uint8List),
-            },
-            'messageType': encrypted['messageType'],
-            'type': 'group_metadata_key',
-          });
-        } on IdentityBindingInvalidException catch (idErr) {
-          // B-2 §5.7: forged / downgraded / replayed identity — terminal,
-          // never retried (the store already raised the security notice).
-          debugPrint('[GroupDetail] GMK distribute: identity rejected (${idErr.reason.name}) — terminal');
-        } on IdentityKeyChangedException {
-          // B-2 §5.5: verified contact awaits re-verification — terminal.
-          debugPrint('[GroupDetail] GMK distribute: peer awaits identity re-verification — terminal');
-        } catch (e) {
-          debugPrint('[GroupDetail] GMK distribute to ${member.snowchatId} failed: $e');
-        }
-      }
-
-      return true;
-    } catch (e) {
-      debugPrint('[GroupDetail] Failed to update name: $e');
-      return false;
+      state = state.copyWith(isLoading: false, error: e.runtimeType.toString());
     }
   }
 }
 
-final groupDetailProvider =
-    StateNotifierProvider.family<GroupDetailNotifier, GroupDetail, String>(
-  (ref, groupId) {
-    final apiClient = ref.read(apiClientProvider);
-    return GroupDetailNotifier(
-      apiClient: apiClient,
-      groupId: groupId,
-      ref: ref,
-    );
-  },
+// Released when no screen watches it: each one held two whole-table
+// watches of the group tables for every group opened in the session, and
+// read up to 256 members again on every write to them.
+final groupDetailProvider = StateNotifierProvider.autoDispose
+    .family<GroupDetailNotifier, GroupDetail, String>(
+  (ref, groupId) => GroupDetailNotifier(groupId: groupId, ref: ref),
 );

@@ -1,12 +1,10 @@
 /// @file        nft_provider.dart
 /// @description Riverpod Providers for NFT state management.
 ///              3-tier fallback: DAS API first -> server API -> RPC.
-///              Phase 2: removed all server-escrow market Providers (PDA migration).
-///              Market Providers live in `features/marketplace/providers/`.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed nftAssetByMintProvider, which only the NFT marketplace transaction labels used). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - nftServiceProvider: provide NFTService instance (incl. DAS URL)
@@ -49,11 +47,6 @@ final nftServiceProvider = Provider<NFTService>((ref) {
 
 /// All NFT collections for the current wallet.
 /// NFTService internally handles a 3-tier DAS → Server → RPC fallback.
-///
-/// Tensor PDA listings are auto-excluded — once list_legacy runs, the
-/// token is moved to the ListState PDA ATA, so it drops out of the DAS
-/// `getAssetsByOwner(user)` response. No separate server filtering needed
-/// (the Phase 1 escrow-era `_fetchMyListedMints` has been removed).
 final nftCollectionsProvider = FutureProvider<List<NFTCollection>>((ref) async {
   final walletState = ref.watch(walletProvider);
   final address = walletState.publicKey ?? '';
@@ -71,16 +64,6 @@ final allNFTsProvider = FutureProvider<List<NFTAsset>>((ref) async {
 final nftCountProvider = FutureProvider<int>((ref) async {
   final nfts = await ref.watch(allNFTsProvider.future);
   return nfts.length;
-});
-
-/// Phase X-2: NFT asset by mint — keepAlive cache (no autoDispose) so
-/// scrolling Activity list does not refire DAS lookups. Used by
-/// enhanced_tx_list_tile to render "Listed Nomos #7 at 1 SOL".
-/// Returns null on lookup failure (UI falls back to short mint).
-final nftAssetByMintProvider =
-    FutureProvider.family<NFTAsset?, String>((ref, mint) async {
-  if (mint.isEmpty) return null;
-  return ref.read(nftServiceProvider).fetchAssetByMint(mint);
 });
 
 // ---------------------------------------------------------------------------

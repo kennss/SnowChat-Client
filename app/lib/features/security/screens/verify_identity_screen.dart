@@ -14,21 +14,20 @@
 ///              non-consuming identity directory — accepted only if it derives
 ///              the peer's snowId.
 ///
-///              A legacy peer whose keys changed while marked verified is
-///              blocked (§5.5); marking verified here adopts the pending keys,
-///              clears the block and asks the server to redeliver held
-///              messages.
+///              After a rejected or missing identity binding of this contact
+///              the screen shows a red banner until the user verifies again.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-11-10 (B-2: Safety Number v2 over account keys; re-verify
-///              flow unblocks a pending legacy key change)
+/// @lastUpdated 2026-11-21 (marking verified vouches for the account (VouchSource.safetyNumber)). Earlier 2026-11-21 (legacy TOFU removed: no pending key change or held messages; the
+///              banner is the identity-rejection one). Earlier 2026-11-10 (B-2: Safety Number
+///              v2 over account keys)
 ///
 /// @functions
 ///  - VerifyIdentityScreen: ConsumerStatefulWidget for the verify flow
 ///  - _bootstrap(): resolve both account keys and compute / load the v2 number
 ///  - _resolvePeerAccountKey(): store → identity directory (derive-checked)
-///  - _toggleVerified(): mark verified (re-verify unblocks pending changes)
+///  - _toggleVerified(): mark verified / unverified (verifying lifts the rejection cooldown)
 library;
 
 import 'dart:async';
@@ -42,6 +41,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/crypto/identity_binding.dart';
 import '../../../core/crypto/safety_number.dart';
+import '../../../core/crypto/verified_identity_store.dart' show VouchSource;
 import '../../../core/storage/daos/identity_verification_dao.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
@@ -71,7 +71,6 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
 
   /// Legacy peer whose keys changed while verified — messaging is paused
   /// until the user re-verifies (B-2 §5.5).
-  bool _pendingKeyChange = false;
 
   @override
   void initState() {
@@ -101,11 +100,6 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
     try {
       final dao = ref.read(identityVerificationDaoProvider);
       final identityManager = ref.read(identityManagerProvider);
-      final store = ref.read(verifiedIdentityStoreProvider);
-
-      final rec = await store.get(widget.peerSnowchatId);
-      _pendingKeyChange = rec?.hasPendingChange ?? false;
-
       final mySnow = await identityManager.getSnowChatId();
       final myAccount = await identityManager.getPublicKey();
       if (mySnow == null || mySnow.isEmpty || myAccount == null) {
@@ -176,22 +170,19 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
 
   Future<void> _toggleVerified(bool next, bool currentlyVerified) async {
     final dao = ref.read(identityVerificationDaoProvider);
-    if (next == currentlyVerified && !(next && _pendingKeyChange)) return;
+    if (next == currentlyVerified) return;
     if (next) {
-      // Re-verification adopts a pending legacy key change and lifts the
-      // block, then asks the server to redeliver messages we held back.
-      final store = ref.read(verifiedIdentityStoreProvider);
-      final adopted = await store.acceptPendingChange(widget.peerSnowchatId);
+      // Verified in person: lift the hard-rejection cooldown so the next
+      // send tries again at once.
       ref
           .read(signalSessionManagerProvider)
           .clearIdentityRejection(widget.peerSnowchatId);
       await dao.markVerified(widget.peerSnowchatId);
-      if (adopted) {
-        if (mounted) setState(() => _pendingKeyChange = false);
-        final queue = ref.read(messageQueueProvider);
-        queue.releaseHeldForPeer(widget.peerSnowchatId);
-        unawaited(queue.fetchPending());
-      }
+      // The user checked this account: it counts as known in the group
+      // pickers from now on.
+      await ref
+          .read(verifiedIdentityStoreProvider)
+          .vouch(widget.peerSnowchatId, VouchSource.safetyNumber);
     } else {
       await dao.markUnverified(widget.peerSnowchatId);
     }
@@ -288,11 +279,10 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
     final digits = _digits60!;
     final row = verificationStream.value;
     final verified = (row?.verified as bool?) ?? false;
-    final wasPreviouslyVerified =
-        (row?.wasPreviouslyVerified as bool?) ?? false;
     final lastChangedAt = row?.lastChangedAt as int?;
 
-    final mismatchActive =
+    // A rejected or missing identity binding latched since the last verify.
+    final rejectedActive =
         lastChangedAt != null && (lastChangedAt > 0) && !verified;
 
     return ListView(
@@ -330,14 +320,9 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
         ),
         const SizedBox(height: SnowSizes.lg),
 
-        // --- Pending legacy key change (blocked until re-verified) ---
-        if (_pendingKeyChange) const _PendingChangeBanner(),
-        if (_pendingKeyChange) const SizedBox(height: SnowSizes.md),
-
-        // --- Mismatch banner (if applicable) ---
-        if (mismatchActive)
-          _ChangedBanner(wasPreviouslyVerified: wasPreviouslyVerified),
-        if (mismatchActive) const SizedBox(height: SnowSizes.md),
+        // --- Identity rejection banner (if applicable) ---
+        if (rejectedActive) const _RejectedBanner(),
+        if (rejectedActive) const SizedBox(height: SnowSizes.md),
 
         // --- Instruction text ---
         const Text(
@@ -364,7 +349,7 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
             border: Border.all(color: SnowColors.divider),
           ),
           child: SwitchListTile(
-            value: verified && !_pendingKeyChange,
+            value: verified,
             title: const Text(
               'Mark as Verified',
               style: TextStyle(color: SnowColors.textPrimary),
@@ -380,7 +365,7 @@ class _VerifyIdentityScreenState extends ConsumerState<VerifyIdentityScreen> {
             ),
             activeThumbColor: SnowColors.primary,
             onChanged: (next) =>
-                _toggleVerified(next, verified && !_pendingKeyChange),
+                _toggleVerified(next, verified),
           ),
         ),
         const SizedBox(height: SnowSizes.md),
@@ -412,74 +397,10 @@ final _verificationProvider =
   return dao.watchByPeer(snowchatId);
 });
 
-class _ChangedBanner extends StatelessWidget {
-  final bool wasPreviouslyVerified;
-
-  const _ChangedBanner({required this.wasPreviouslyVerified});
-
-  @override
-  Widget build(BuildContext context) {
-    final critical = wasPreviouslyVerified;
-    final color = critical ? SnowColors.error : Colors.amber.shade800;
-    final bg = (critical ? SnowColors.error : Colors.amber)
-        .withValues(alpha: 0.12);
-    final title = critical
-        ? 'Safety number changed — re-verify'
-        : 'Safety number changed';
-    final body = critical
-        ? 'You previously verified this contact. Their identity key '
-            'changed, which can mean they reinstalled the app — or that '
-            'someone is trying to impersonate them. Verify the new number '
-            'before continuing.'
-        : 'The safety number for this contact changed. This is normal if '
-            'they reinstalled the app, but worth confirming before you '
-            'share anything sensitive.';
-    return Container(
-      padding: const EdgeInsets.all(SnowSizes.md),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.6)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(critical ? Icons.warning_rounded : Icons.shield_rounded,
-              color: color),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: color,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  body,
-                  style: const TextStyle(
-                    color: SnowColors.textPrimary,
-                    fontSize: 13,
-                    height: 1.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// B-2 §5.5: shown while a verified legacy contact's key change is pending.
-class _PendingChangeBanner extends StatelessWidget {
-  const _PendingChangeBanner();
+/// A rejected or missing identity binding of this contact (latched by the
+/// identity-change handler) — shown until the user verifies again.
+class _RejectedBanner extends StatelessWidget {
+  const _RejectedBanner();
 
   @override
   Widget build(BuildContext context) {
@@ -493,18 +414,33 @@ class _PendingChangeBanner extends StatelessWidget {
       child: const Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.pause_circle_outline_rounded, color: SnowColors.error),
+          Icon(Icons.warning_rounded, color: SnowColors.error),
           SizedBox(width: 12),
           Expanded(
-            child: Text(
-              "This contact's security keys changed after you verified them. "
-              'Messaging is paused. Compare the number below with your '
-              'contact, then turn on "Mark as Verified" to continue.',
-              style: TextStyle(
-                color: SnowColors.textPrimary,
-                fontSize: 13,
-                height: 1.4,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "Identity couldn't be verified",
+                  style: TextStyle(
+                    color: SnowColors.error,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  "A message or session from this contact was refused because "
+                  "their identity proof was missing or didn't verify. Someone "
+                  'may be trying to impersonate them. Compare the number '
+                  'below with your contact before you continue.',
+                  style: TextStyle(
+                    color: SnowColors.textPrimary,
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+              ],
             ),
           ),
         ],

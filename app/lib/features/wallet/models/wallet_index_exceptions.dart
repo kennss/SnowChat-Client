@@ -7,7 +7,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-25
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed ActiveListingsBlockingException with the NFT marketplace feature). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - WalletException: base
@@ -17,7 +17,6 @@
 ///  - ImportLimitExceededException
 ///  - DerivedLimitExceededException
 ///  - InFlightTransactionException
-///  - ActiveListingsBlockingException
 ///  - WalletNotFoundException
 ///  - IdentityMnemonicMissingException
 ///  - WalletSecretMissingException
@@ -83,25 +82,13 @@ class DerivedLimitExceededException extends WalletException {
   final int maxDerived;
 }
 
-/// Attempt to delete / evict keys of a wallet with an in-flight transfer or marketplace tx (A-5).
+/// Attempt to delete / evict keys of a wallet with an in-flight transfer (A-5).
 class InFlightTransactionException extends WalletException {
   const InFlightTransactionException()
       : super(
           'A transaction is in progress on this wallet. '
           'Wait for it to complete before removing.',
         );
-}
-
-/// Attempt to delete a wallet with active marketplace listings (D-2). Fail-closed on RPC failure.
-class ActiveListingsBlockingException extends WalletException {
-  const ActiveListingsBlockingException(this.reason)
-      : super(
-          'Cannot remove wallet: $reason. '
-          'Cancel listings on this wallet first.',
-        );
-
-  /// "$N active listing(s) found" or "RPC unavailable, cannot verify"
-  final String reason;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,9 @@
 /// @file        nft_models.dart
 /// @description NFT domain models. NFT asset, attribute, collection data classes.
-///              Marketplace listing models live in `features/marketplace/marketplace_models.dart`.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-24)
+/// @lastUpdated 2026-11-12 (removed the marketplace-only NFTAsset fields: listingPriceLamports / formattedListingPrice, isListed, creatorAddresses). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-24)
 ///
 /// @functions
 ///  - NftTokenStandard: NFT standard enum (NonFungible, ProgrammableNonFungible, Core, etc.)
@@ -82,10 +81,7 @@ class NFTAsset {
     this.attributes = const [],
     this.externalUrl,
     this.animationUrl,
-    this.listingPriceLamports,
-    this.isListed = false,
     this.isCompressed = false,
-    this.creatorAddresses = const <String>[],
   });
 
   /// Mint address of the NFT.
@@ -115,30 +111,8 @@ class NFTAsset {
   /// Animation / video / 3D URL (rendering to be added later).
   final String? animationUrl;
 
-  /// If listed on marketplace, the price in lamports.
-  final BigInt? listingPriceLamports;
-
-  final bool isListed;
-
   /// Whether this is a compressed NFT (cNFT / Bubblegum).
   final bool isCompressed;
-
-  /// Ordered list of creator addresses from Metaplex metadata. Required
-  /// for Tensor `transfer_creators_fee` which checks each passed
-  /// remaining_account address matches metadata.creators[].address in order.
-  final List<String> creatorAddresses;
-
-  /// Formatted listing price in SOL.
-  String? get formattedListingPrice {
-    if (listingPriceLamports == null) return null;
-    final sol = listingPriceLamports! ~/ BigInt.from(1000000000);
-    final frac = (listingPriceLamports! % BigInt.from(1000000000)).abs();
-    var fracStr = frac.toString().padLeft(9, '0');
-    // Trim trailing zeros but keep at least 2 decimals.
-    fracStr = fracStr.replaceAll(RegExp(r'0+$'), '');
-    if (fracStr.isEmpty) fracStr = '0';
-    return '$sol.$fracStr SOL';
-  }
 
   NFTAsset copyWith({
     String? mint,
@@ -151,8 +125,6 @@ class NFTAsset {
     List<NFTAttribute>? attributes,
     String? externalUrl,
     String? animationUrl,
-    BigInt? listingPriceLamports,
-    bool? isListed,
     bool? isCompressed,
   }) {
     return NFTAsset(
@@ -166,8 +138,6 @@ class NFTAsset {
       attributes: attributes ?? this.attributes,
       externalUrl: externalUrl ?? this.externalUrl,
       animationUrl: animationUrl ?? this.animationUrl,
-      listingPriceLamports: listingPriceLamports ?? this.listingPriceLamports,
-      isListed: isListed ?? this.isListed,
       isCompressed: isCompressed ?? this.isCompressed,
     );
   }

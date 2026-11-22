@@ -26,7 +26,11 @@
  * @author      Kennt Kim
  * @company     Calida Lab
  * @created     2026-03-29
- * @lastUpdated 2026-05-06 (snowchat/device_capability channel — exposes
+ * @lastUpdated 2026-11-11 (snowchat/mlkit_translation — TranslationBridge owns
+ *              Android on-device translation natively; the google_mlkit_*
+ *              Flutter plugins were removed so iOS no longer links ML Kit.
+ *              cleanUpFlutterEngine releases the ML Kit translators).
+ *              Earlier 2026-05-06 (snowchat/device_capability channel — exposes
  *              ActivityManager.MemoryInfo.totalMem to Dart for the
  *              SnowChat AI tile RAM gate. Cold-launch auto-download was
  *              removed on the Dart side; the gate decides whether the
@@ -40,9 +44,11 @@
  *    English locale so every Resources.getConfiguration call from this
  *    Activity (and its child services that derive their context from
  *    here) resolves to English regardless of the device language setting.
- *  - MainActivity.configureFlutterEngine(): registers the five
- *    SnowChat-owned MethodChannels — LiteRtLm, voip_decline_recovery,
- *    diag_log, keyguard, device_capability.
+ *  - MainActivity.configureFlutterEngine(): registers the six
+ *    SnowChat-owned MethodChannels — LiteRtLm, mlkit_translation,
+ *    voip_decline_recovery, diag_log, keyguard, device_capability.
+ *  - MainActivity.cleanUpFlutterEngine(): detaches TranslationBridge and
+ *    closes its ML Kit translators when the engine goes away.
  */
 
 package com.snowchat.snowchat
@@ -60,6 +66,7 @@ import java.util.Locale
 class MainActivity : FlutterFragmentActivity() {
 
     private var liteRtLmBridge: LiteRtLmBridge? = null
+    private var translationBridge: TranslationBridge? = null
 
     // 2026-05-08 i18n locale lock (Phase 0) — match iOS
     // CFBundleLocalizations=['en']. Wraps the Activity's base context
@@ -85,6 +92,11 @@ class MainActivity : FlutterFragmentActivity() {
 
         // Phase 10: LiteRT-LM on-device AI bridge.
         liteRtLmBridge = LiteRtLmBridge(applicationContext, flutterEngine)
+
+        // On-device translation (ML Kit) — Android side of the per-platform
+        // translation channel; iOS uses Apple Translation natively.
+        translationBridge?.detach()
+        translationBridge = TranslationBridge(flutterEngine)
 
         // [SnowChat 2026-05-05] VoIP DECLINE cold-launch recovery channel.
         // The flutter_callkit_incoming fork (CallkitIncomingBroadcastReceiver
@@ -220,5 +232,11 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        translationBridge?.detach()
+        translationBridge = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 }

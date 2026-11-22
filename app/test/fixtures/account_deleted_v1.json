@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "note": "Shared golden vectors for the account deletion proof v1 (server/src/utils/accountDeletionProof.ts and the Dart client). Generated deterministically from fixed labels. toleranceMs is the server acceptance window around nowMs.",
+  "toleranceMs": 600000,
+  "valid": {
+    "name": "valid",
+    "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+    "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+    "deletedAtMs": "1794528000000",
+    "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+    "nowMs": "1794528001500",
+    "messageHex": "ff536e6f77436861745f4163636f756e7444656c657465645f7631736e6f776562323832636561656234343239356335633132613765666431623463333938000001a1d2343800",
+    "accountIdHex": "eb282ceaeb44295c5c12a7efd1b4c398"
+  },
+  "rejected": [
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "erQn69w3h7KjIlXkuHljTClKUE6JrnzV8LooDJEmkQnoFMj/Cqyib8y6NMAIrD2/efJYqQjqVzKTnkpfA/9dCQ==",
+      "nowMs": "1794528001500",
+      "name": "signature over a different time",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "J9S9+czdK9YjJqKZ7ptqjVO5TJ9yz1JRDwjbhdk7ziOjYCcEObfMsT8HgTPLcFisitlaDIi+nFI5/q/QqpNuCg==",
+      "nowMs": "1794528001500",
+      "name": "signature by another account",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "NB9qWk9rdCJqjrP5MtXfsjuPw5kYQAVHMcm9k95NhkUo7SReZdrSb7b+rCxasKKRowdnzY0HoGcqWM2WTg/TBw==",
+      "nowMs": "1794528001500",
+      "name": "signature over another account id",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmaEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+      "nowMs": "1794528001500",
+      "name": "tampered signature",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6JeZ6fFkouXsTZis34UJ2IwkkdY+shMsAa0s/nHsJQHQ==",
+      "nowMs": "1794528001500",
+      "name": "non-canonical signature scalar (S + L)",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snow01000000000000000000000000000000",
+      "accountPublicKeyHex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "cBZM+aidMJgvPLOcL7RBc03cYUwb2AdheuxyQbtpPiNKFMLSgbhNqasn1RfsqGPyKVkZl8aVA4dF3V/qsBZfCQ==",
+      "nowMs": "1794528001500",
+      "name": "small-order account key with a universal forgery",
+      "reason": "signature"
+    },
+    {
+      "snowId": "snowa2147ea30ec42dba651192a001f8e03e",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+      "nowMs": "1794528001500",
+      "name": "snowId that does not belong to the key",
+      "reason": "account"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "EB282CEAEB44295C5C12A7EFD1B4C398A767F86872958555B2AF4BF8FDF7E2A6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+      "nowMs": "1794528001500",
+      "name": "uppercase account key",
+      "reason": "account"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+      "nowMs": "1794527399999",
+      "name": "time just past the tolerance (future)",
+      "reason": "time"
+    },
+    {
+      "snowId": "snoweb282ceaeb44295c5c12a7efd1b4c398",
+      "accountPublicKeyHex": "eb282ceaeb44295c5c12a7efd1b4c398a767f86872958555b2af4bf8fdf7e2a6",
+      "deletedAtMs": "1794528000000",
+      "sigB64": "2KxugTmbEYmodFHT3ny2rdiNJq+9MYjtKQBVeBZdbX6cpahC/OYbBu48kyoaV75zwkkdY+shMsAa0s/nHsJQDQ==",
+      "nowMs": "1794528600001",
+      "name": "time just past the tolerance (past)",
+      "reason": "time"
+    }
+  ]
+}

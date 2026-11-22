@@ -1,23 +1,24 @@
 /// @file        encrypted_message_handler.dart
-/// @description E2EE chat flow integration. Encrypt outgoing messages, decrypt incoming messages, 1:1/group E2EE, file transfer handling
+/// @description E2EE chat flow integration. Encrypt outgoing messages, decrypt incoming messages, 1:1 E2EE, file transfer handling. (Group messages are group protocol v2 — core/group_v2; only its invite travels here, as a sealed 1:1 message.)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: the send path no longer drops on an identity change — the Signal-style policy lives in IdentityAdmission (unverified legacy change → continue with notice; verified → IdentityKeyChangedException until re-verify; forged binding → IdentityBindingInvalidException) and both typed failures are rethrown untouched so callers mark the message failed without retry; user-visible notices come from VerifiedIdentityStore events. Receive paths pass the envelope / sealed-certificate deviceId to decrypt() for binding.deviceId matching and no longer cache an unverified incoming deviceId). Earlier 2026-09-04 (sealed delete-chat: sendSealedDeleteChat() sends inner type 'delete_chat' over the shared _sendSealedControl helper, and _doDecryptSealed surfaces it via metadata._isDeleteChat before the generic Message build so it never renders. Gives Delete-chat an offline-durable propagation path — the REST delete's chat_deleted socket event only reaches a peer connected at that instant). Earlier 2026-08-03 (F3: _doDecryptSealed now derives the Signal messageType from the unsealed DR ciphertext itself via resolveSealedMessageType() instead of the transport field socketEvent['messageType'] (which Sealed Sender never carries → always 1/0 → prekey first-contact messages misrouted as normal → X3DH responder session never built → first message to a brand-new contact lost). Also enforces Sealed Sender Step 9 identity cross-check on prekey messages). Earlier 2026-07-15 (sealed unsend: sendSealedUnsend() + inner type 'delete' over the shared _sendSealedControl helper (read-receipt path refactored onto it); _doDecryptSealed surfaces it via metadata._isUnsend. Sealed read receipt: sendSealedReadReceipt() sends a silent sealed_control envelope with inner type 'read_receipt'; surfaced via metadata._isReadReceipt before the generic Message build so it never renders). Earlier 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
+/// @lastUpdated 2026-11-22 (SC-05: no non-sealed 1:1 send — sendEncryptedMessage and the unused
+///              sendFileMessage / sendVoiceMessage are gone; session_reset and the retry answer are
+///              sealed — sendSealedSessionReset / sendSealedRetry, and an inner `session_reset`
+///              surfaces as metadata `_isSessionReset`; providers.dart sets sendSealedSessionReset as
+///              the session manager's reset notifier). Earlier 2026-11-21 (1:1 payload carries `cid` — the sender's own message id — and decrypt
+///              returns it as Message.peerClientId: the receiver stores a message the 1:1 outbox
+///              sent again once). Earlier 2026-11-21 (X1: what an account this user blocked sent is decrypted — the session stays in step — and refused with BlockedSenderException before anything of it is acted on; isBlocked). Earlier 2026-11-21 (no IdentityKeyChangedException: the identity failure of a send or a sealed decrypt is IdentityBindingInvalidException alone). Earlier 2026-11-21 (comment: sendSealedDeleteChat is the only deletion signal — no server chat_deleted). Earlier 2026-11-20 (a decrypted 1:1 message's conversationId is its authenticated sender, never the envelope's. v1 groups removed: sendGroupMessage / decryptGroupMessage / sendGroupFileMessage / sendGroupVoiceMessage and the GroupSessionManager are gone. sendSealedGroupInvite() asks the identity directory first, so that an invite is never sealed to an identity the peer no longer has). Earlier 2026-11-13 (group protocol v2: sendSealedGroupInvite() — the 1:1 invite message, acknowledged by the server — and the sealed decrypt surfaces an incoming invite as metadata `_isGroupInviteV2` instead of a chat message). Earlier 2026-11-10 (B-2 Identity Binding v1: the send path no longer drops on an identity change — the Signal-style policy lives in IdentityAdmission (unverified legacy change → continue with notice; verified → IdentityKeyChangedException until re-verify; forged binding → IdentityBindingInvalidException) and both typed failures are rethrown untouched so callers mark the message failed without retry; user-visible notices come from VerifiedIdentityStore events. Receive paths pass the envelope / sealed-certificate deviceId to decrypt() for binding.deviceId matching and no longer cache an unverified incoming deviceId). Earlier 2026-09-04 (sealed delete-chat: sendSealedDeleteChat() sends inner type 'delete_chat' over the shared _sendSealedControl helper, and _doDecryptSealed surfaces it via metadata._isDeleteChat before the generic Message build so it never renders. Gives Delete-chat an offline-durable propagation path — the REST delete's chat_deleted socket event only reaches a peer connected at that instant). Earlier 2026-08-03 (F3: _doDecryptSealed now derives the Signal messageType from the unsealed DR ciphertext itself via resolveSealedMessageType() instead of the transport field socketEvent['messageType'] (which Sealed Sender never carries → always 1/0 → prekey first-contact messages misrouted as normal → X3DH responder session never built → first message to a brand-new contact lost). Also enforces Sealed Sender Step 9 identity cross-check on prekey messages). Earlier 2026-07-15 (sealed unsend: sendSealedUnsend() + inner type 'delete' over the shared _sendSealedControl helper (read-receipt path refactored onto it); _doDecryptSealed surfaces it via metadata._isUnsend. Sealed read receipt: sendSealedReadReceipt() sends a silent sealed_control envelope with inner type 'read_receipt'; surfaced via metadata._isReadReceipt before the generic Message build so it never renders). Earlier 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
 ///
 /// @functions
 ///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class
-///  - EncryptedMessageHandler.sendEncryptedMessage(): Send 1:1 encrypted message (with reply)
 ///  - EncryptedMessageHandler.decryptIncomingMessage(): Decrypt 1:1 incoming message (in-flight Future dedup)
 ///  - EncryptedMessageHandler._doDecrypt(): Perform the actual Signal decryption (internal only)
-///  - EncryptedMessageHandler.sendGroupMessage(): Send encrypted group message (Sender Key, with reply)
-///  - EncryptedMessageHandler.decryptGroupMessage(): Decrypt incoming group message (reply restoration)
-///  - EncryptedMessageHandler.sendFileMessage(): Send E2EE file attachment message
-///  - EncryptedMessageHandler.sendGroupFileMessage(): Send group E2EE file attachment message
-///  - EncryptedMessageHandler.sendVoiceMessage(): Send E2EE voice message (AAC encrypted)
-///  - EncryptedMessageHandler.sendGroupVoiceMessage(): Send group E2EE voice message
 ///  - EncryptedMessageHandler.getDecryptedFileBytes(): Extract fileId/fileKey from message metadata, download and decrypt
 ///  - EncryptedMessageHandler.sendSealedMessage(): Send Sealed Sender 1:1 encrypted message (seal() wraps DR ciphertext)
+///  - EncryptedMessageHandler.sendSealedSessionReset(): Sealed control telling the peer this device re-established the session
+///  - EncryptedMessageHandler.sendSealedRetry(): Sealed answer to a retry request (isRetry / originalMessageId inside)
 ///  - EncryptedMessageHandler.decryptSealedMessage(): Sealed Sender unseal + DR decrypt -> return Message
 ///  - EncryptedMessageHandler._tryDispatchTransfer(): wallet V2 Phase B — transfer_* type dispatch + EventBus emit
 ///  - EncryptedMessageHandler._validateTransferRequest(): Validate UUID v4 / amount / decimals / mint / sentAt
@@ -27,26 +28,25 @@
 ///  - EncryptedMessageHandler._isValidUuidV4(): UUID v4 regex validation (replay window guard)
 ///  - EncryptedMessageHandler._isValidBase58Address(): Solana Base58 32-byte validation (Ed25519HDPublicKey.fromBase58)
 
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:solana/solana.dart' show Ed25519HDPublicKey;
 
+import '../blocking/block_list.dart' show BlockedSenderException;
 import '../../features/chat/models/message.dart';
 import '../../features/wallet/models/transfer_request.dart';
 import '../../features/wallet/services/transfer_event_bus.dart';
 import '../network/file_service.dart';
+import '../group_v2/gv2_invite.dart' show gv2InviteInnerType;
 import '../network/socket_manager.dart';
 import 'file_encryptor.dart';
-import 'group_session_manager.dart';
 import 'identity_binding_exception.dart';
-import 'identity_change_handler.dart';
-import 'identity_key_changed_exception.dart';
 import 'sealed_sender.dart';
-import 'sender_certificate.dart';
 import 'sender_certificate_manager.dart';
+import 'signal_protocol_service.dart' show SignalProtocolException;
 import 'signal_session_manager.dart';
 
 /// Thrown when a Sealed Sender message unsealed successfully (so the sender is
@@ -76,7 +76,7 @@ class SealedDecryptException implements Exception {
 ///
 /// - Encrypts outgoing messages before sending via socket
 /// - Decrypts incoming messages from socket events
-/// - Handles both 1:1 and group E2EE
+/// - Handles 1:1 E2EE (and carries the sealed invite of group protocol v2)
 ///
 /// Socket send payload matches server's PrivateMessagePayload:
 /// { recipientId, encryptedContent (base64), type ('e2ee_text'),
@@ -86,12 +86,11 @@ class SealedDecryptException implements Exception {
 class EncryptedMessageHandler {
   final SignalSessionManager _sessionManager;
   final SocketManager _socketManager;
-  final GroupSessionManager? _groupSessionManager;
   final FileService? _fileService;
   // Sealed Sender service + certificate manager are lazy-wired.
   // `sealedSenderServiceProvider` is a StateProvider whose initial value
-  // is null — the service activates only after `/auth/server-key` fetch,
-  // which happens post-login. Constructing this handler reads the
+  // is null — the service activates once an account is signed in (from
+  // the server keys pinned in the build). Constructing this handler reads the
   // current (often still-null) snapshot; the wireSealedSender() setter
   // lets providers.dart push the activated instance in later without
   // rebuilding the handler (and every consumer depending on it).
@@ -117,11 +116,6 @@ class EncryptedMessageHandler {
   /// environments). In production providers.dart always injects this.
   final TransferEventBus? _transferEventBus;
 
-  /// Identity-change handler (wired by providers). B-2: user-visible notices
-  /// are driven by VerifiedIdentityStore events the handler subscribes to,
-  /// so this reference is kept only for wiring symmetry with MessageQueue.
-  IdentityChangeHandler? identityChangeHandler;
-
   /// In-flight decrypt futures: prevents double-decryption when multiple
   /// broadcast-stream listeners (ConversationListProvider + MessageRepository)
   /// call decryptIncomingMessage concurrently for the same socket event.
@@ -133,152 +127,33 @@ class EncryptedMessageHandler {
   /// finds and reuses the same Future.
   final Map<String, Future<Message>> _inflightDecrypts = {};
 
-  /// Public access for group session initialization from ChatNotifier.
-  GroupSessionManager? get groupSessionManager => _groupSessionManager;
-
-  /// Public access for direct encrypt/decrypt (SKDM inline, pairwise fallback).
+  /// Public access for direct 1:1 encrypt/decrypt.
   SignalSessionManager get sessionManager => _sessionManager;
 
   EncryptedMessageHandler({
     required SignalSessionManager sessionManager,
     required SocketManager socketManager,
-    GroupSessionManager? groupSessionManager,
     FileService? fileService,
     SealedSenderService? sealedSenderService,
     SenderCertificateManager? senderCertificateManager,
     TransferEventBus? transferEventBus,
+    required Future<bool> Function(String snowId) isBlocked,
   })  : _sessionManager = sessionManager,
         _socketManager = socketManager,
-        _groupSessionManager = groupSessionManager,
         _fileService = fileService,
         _sealedSenderService = sealedSenderService,
         _senderCertificateManager = senderCertificateManager,
-        _transferEventBus = transferEventBus;
+        _transferEventBus = transferEventBus,
+        _isBlocked = isBlocked;
+
+  /// Whether an account is blocked (BlockList.isBlocked): what it sent is
+  /// decrypted (the session stays in step) and then refused with
+  /// [BlockedSenderException] — before anything of it is acted on.
+  final Future<bool> Function(String snowId) _isBlocked;
 
   // ---------------------------------------------------------------------------
   // 1:1 Messaging
   // ---------------------------------------------------------------------------
-
-  /// Encrypt and send a text message to [recipientId].
-  ///
-  /// Flow:
-  /// 1. Ensure session exists (X3DH if needed via ensureSession)
-  /// 2. Build plaintext JSON payload: { text, type, timestamp, ttl?, fileKey?, metadata? }
-  /// 3. Encrypt with Double Ratchet -> { ciphertext, messageType }
-  /// 4. Send via socket matching server's PrivateMessagePayload:
-  ///    { recipientId, encryptedContent(b64), type('e2ee_text'), clientMessageId }
-  Future<void> sendEncryptedMessage({
-    required String conversationId,
-    required String recipientId,
-    required String text,
-    required String clientMessageId,
-    String? attachmentFileKey,
-    MessageType type = MessageType.text,
-    Map<String, dynamic>? metadata,
-    int? ttlSeconds,
-    String? replyToId,
-    String? replyToPreview,
-    String? replyToSenderId,
-    Function(dynamic)? onAck,
-  }) async {
-    debugPrint('[E2EE:Send] Step 1: ensureSession($recipientId)');
-    // Step 1: Ensure we have a session with the recipient.
-    //
-    // B-2 (§5.5/§5.7): identity policy runs inside createSession. An
-    // unverified legacy peer whose keys changed is updated and the send
-    // CONTINUES (the store emits a "safety number changed" notice). Only two
-    // typed failures stop the send, and both are terminal for this message —
-    // the caller marks it failed and must NOT retry:
-    //   - IdentityKeyChangedException: legacy peer the user had verified;
-    //     blocked until re-verified on the verify screen.
-    //   - IdentityBindingInvalidException: forged / downgraded / replayed
-    //     binding (security warning already emitted).
-    try {
-      await _sessionManager.ensureSession(recipientId);
-    } on IdentityKeyChangedException {
-      debugPrint('[E2EE:Send] peer awaits identity re-verification — '
-          'message not sent');
-      rethrow;
-    } on IdentityBindingInvalidException catch (e) {
-      debugPrint('[E2EE:Send] peer identity binding rejected '
-          '(${e.reason.name}) — message not sent');
-      rethrow;
-    }
-    debugPrint('[E2EE:Send] Step 1 OK');
-
-    // Step 2: Build the plaintext payload (JSON-encoded, never logged)
-    final payload = _buildPayload(
-      text: text,
-      type: type,
-      attachmentFileKey: attachmentFileKey,
-      metadata: metadata,
-      ttlSeconds: ttlSeconds,
-      replyToId: replyToId,
-      replyToPreview: replyToPreview,
-      replyToSenderId: replyToSenderId,
-    );
-    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
-
-    // Step 3: Encrypt for the recipient's device
-    // Use actual device ID from session (not hardcoded 'primary')
-    debugPrint('[E2EE:Send] Step 3: getDeviceId + encrypt');
-    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
-    final encrypted = await _sessionManager.encrypt(
-      recipientId,
-      deviceId,
-      plaintextBytes,
-    );
-    debugPrint('[E2EE:Send] Step 3 OK: deviceId=$deviceId '
-        'msgType=${encrypted['messageType']}');
-
-    // Step 4: Send via socket matching server's PrivateMessagePayload.
-    // Wrap the caller's onAck so we can register the server-assigned
-    // messageId as an alias in MessageSendLog — peers send retry requests
-    // using the server id, not the client id, and without this alias
-    // `lookup()` returns null and the entire retry pipeline silently SKIPs
-    // (the 2026-04-24 Galaxy ↔ emulator-5554 deadlock was a direct symptom).
-    void Function(dynamic)? wrappedAck = onAck;
-    wrappedAck = (response) {
-      try {
-        if (response is Map) {
-          final serverMsgId = response['messageId'];
-          if (serverMsgId is String && serverMsgId.isNotEmpty) {
-            _sessionManager.signal.messageSendLog
-                .addAlias(clientMessageId, serverMsgId);
-            debugPrint(
-              '[E2EE:Send] messageSendLog alias registered: '
-              '$clientMessageId → $serverMsgId',
-            );
-          }
-        }
-      } catch (e) {
-        debugPrint('[E2EE:Send] ack alias registration failed: $e');
-      }
-      if (onAck != null) onAck(response);
-    };
-
-    debugPrint('[E2EE:Send] Step 4: sendPrivateMessage');
-    _socketManager.sendPrivateMessage({
-      'recipientId': recipientId,
-      'encryptedContent':
-          base64Encode(encrypted['ciphertext'] as Uint8List),
-      'type': 'e2ee_text',
-      'messageType': encrypted['messageType'] as int, // 1=normal, 2=prekey
-      'clientMessageId': clientMessageId,
-      if (ttlSeconds != null) 'expiresIn': ttlSeconds,
-    }, onAck: wrappedAck);
-    debugPrint('[E2EE:Send] Step 4 OK — message dispatched');
-
-    // Phase 10 P0-A: Record plaintext in MessageSendLog for retry requests.
-    // If the recipient fails to decrypt, they'll send a retry request and we
-    // re-encrypt from this log entry under the new session.
-    _sessionManager.signal.messageSendLog.record(
-      clientMessageId,
-      plaintextBytes,
-      conversationId: conversationId,
-      isGroup: false,
-    );
-  }
 
   /// Decrypt an incoming 1:1 message from a socket event.
   ///
@@ -350,8 +225,9 @@ class EncryptedMessageHandler {
     final messageType = socketEvent['messageType'] as int? ?? 1;
     debugPrint('[E2EE] Decrypting: sender=$senderId device=$deviceId '
         'msgType=$messageType hasContent=${encryptedPayload != null}');
-    // Phase 3: server CUID required. No conv_ fallback.
-    final conversationId = socketEvent['conversationId'] as String? ?? senderId;
+    // A 1:1 room is its sender's (keyed by the peer's snowId) — never a
+    // conversation id the envelope (the server) names.
+    final conversationId = senderId;
     final timestamp = socketEvent['serverTimestamp'] != null
         ? DateTime.parse(socketEvent['serverTimestamp'] as String)
         : (socketEvent['timestamp'] != null
@@ -383,6 +259,9 @@ class EncryptedMessageHandler {
         messageType,
         envelopeDeviceId: incomingDeviceId,
       );
+      // X1: an account this user blocked — refused before anything of it is
+      // acted on (a transfer control, a session reset, a message).
+      if (await _isBlocked(senderId)) throw const BlockedSenderException();
 
       // Parse the decrypted JSON payload
       final payload = jsonDecode(utf8.decode(plaintextBytes))
@@ -410,6 +289,7 @@ class EncryptedMessageHandler {
       final replyToId = payload['replyToId'] as String?;
       final replyToPreview = payload['replyToPreview'] as String?;
       final replyToSenderId = payload['replyToSenderId'] as String?;
+      final peerClientId = payload['cid'] as String?;
 
       return Message(
         id: messageId,
@@ -427,6 +307,7 @@ class EncryptedMessageHandler {
         replyToId: replyToId,
         replyToPreview: replyToPreview,
         replyToSenderId: replyToSenderId,
+        peerClientId: peerClientId,
       );
     } catch (e, st) {
       debugPrint('[EncryptedMessageHandler] Decryption failed for '
@@ -508,6 +389,7 @@ class EncryptedMessageHandler {
 
     // Step 3: Build the plaintext payload (JSON-encoded, never logged)
     final payload = _buildPayload(
+      clientMessageId: clientMessageId,
       text: text,
       type: type,
       attachmentFileKey: attachmentFileKey,
@@ -552,7 +434,6 @@ class EncryptedMessageHandler {
       clientMessageId,
       plaintextBytes,
       conversationId: conversationId,
-      isGroup: false,
     );
   }
 
@@ -626,10 +507,9 @@ class EncryptedMessageHandler {
   ///
   /// Travels over the same silent sealed_control channel as unsend / read
   /// receipts, which means it is QUEUED like any other message: an offline peer
-  /// applies it on their next connect. The live `chat_deleted` socket event the
-  /// REST delete emits only reaches a peer who is connected at that instant,
-  /// which is why deleting while the peer was offline left their room intact
-  /// (field-confirmed on real devices, 2026-09-04).
+  /// applies it on their next connect. It is the only signal a peer gets: the
+  /// server says nothing about a deleted 1:1 (its old `chat_deleted` socket
+  /// event reached only a connected peer, and was the server's word).
   ///
   /// Server-opaque: this is an ordinary sealed_control row (senderId=NULL +
   /// senderHash), so it adds no new metadata class — in particular it does NOT
@@ -647,6 +527,74 @@ class EncryptedMessageHandler {
       },
       clientMessageIdPrefix: 'delchat',
     );
+  }
+
+  /// Tell [recipientId] that this device re-established the 1:1 session
+  /// (SignalSessionManager.archiveAndResetSession): the control is the first
+  /// message of the new session — a prekey message — so decrypting it builds
+  /// the session on the peer's side. Sealed (SC-05): the server learns
+  /// neither sender nor that it is a reset. Returns false when it could not
+  /// be sent (Sealed Sender not active, socket down, no cached identity key):
+  /// then nothing is sent at all — the next real message is a prekey message
+  /// and does the same.
+  Future<bool> sendSealedSessionReset(String recipientId) async {
+    if (!isSealedSenderAvailable) return false;
+    return _sendSealedControl(
+      recipientId: recipientId,
+      payload: {
+        'type': 'session_reset',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      },
+      clientMessageIdPrefix: 'reset',
+    );
+  }
+
+  /// Answer a peer's retry request (RetryHandler): send the logged payload
+  /// of [originalMessageId] again, sealed, with `isRetry` and
+  /// `originalMessageId` added to its inner metadata so the peer fills the
+  /// placeholder of the message it could not decrypt. The session was reset
+  /// by the caller, so this is a prekey message. Returns false when Sealed
+  /// Sender is not active, the socket is down, or the peer's identity key is
+  /// not cached — nothing is sent then (never a non-sealed answer, SC-05).
+  Future<bool> sendSealedRetry({
+    required String recipientId,
+    required Uint8List loggedPayload,
+    required String originalMessageId,
+  }) async {
+    if (!isSealedSenderAvailable || !_socketManager.isConnected) return false;
+    final decoded = jsonDecode(utf8.decode(loggedPayload));
+    if (decoded is! Map<String, dynamic>) return false;
+    final payload = Map<String, dynamic>.from(decoded);
+    final metadata = payload['metadata'] is Map
+        ? Map<String, dynamic>.from(payload['metadata'] as Map)
+        : <String, dynamic>{};
+    metadata['isRetry'] = true;
+    metadata['originalMessageId'] = originalMessageId;
+    payload['metadata'] = metadata;
+
+    await _sessionManager.ensureSession(recipientId);
+    final certificate = await _senderCertificateManager!.getCertificate();
+    final recipientIdentityPubKey =
+        _sessionManager.signal.getRemoteIdentityKey(recipientId);
+    if (recipientIdentityPubKey == null) return false;
+    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+    final encrypted = await _sessionManager.encrypt(
+      recipientId,
+      deviceId,
+      Uint8List.fromList(utf8.encode(jsonEncode(payload))),
+    );
+    final sealedEnvelope = _sealedSenderService!.seal(
+      recipientIdentityPubKey: recipientIdentityPubKey,
+      drCiphertext: encrypted['ciphertext'] as Uint8List,
+      certificate: certificate,
+      messageContext: sealedType1to1,
+    );
+    _socketManager.sendSealedMessage(
+      recipientId: recipientId,
+      sealedContent: base64Encode(sealedEnvelope),
+      clientMessageId: 'retry_$originalMessageId',
+    );
+    return true;
   }
 
   /// Seal an inner control payload to [recipientId] over the sealed_control
@@ -703,6 +651,81 @@ class EncryptedMessageHandler {
       control: true,
     );
     return true;
+  }
+
+  /// Group protocol v2: send an invite message ([invite] — the bytes of a
+  /// Gv2InviteMessage) to [recipientId] over the sealed 1:1 path. Not a
+  /// control envelope: the recipient is pushed, like for a chat message, so
+  /// that its app comes up and takes the invite in. The inner payload is
+  /// `{type: 'group_invite_v2', invite: base64}`; the receiver intercepts
+  /// it before any chat row is made.
+  ///
+  /// The peer's identity is looked up in the directory first
+  /// (SignalSessionManager.refreshPeerIdentity): a session with an identity
+  /// it no longer has is put aside, so the invite is sealed to the one it
+  /// has now.
+  ///
+  /// Returns true only when the server acknowledged the envelope; false
+  /// when the socket is down, the directory cannot be reached, the peer has
+  /// no usable session identity, the
+  /// server refused it or did not answer within [timeout] (the caller — the
+  /// v2 outbox — sends it again later). Nothing is encrypted when the
+  /// socket is down. An identity failure (IdentityBindingInvalidException)
+  /// propagates.
+  Future<bool> sendSealedGroupInvite({
+    required String recipientId,
+    required Uint8List invite,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    if (_sealedSenderService == null || _senderCertificateManager == null) {
+      return false;
+    }
+    if (!_socketManager.isConnected) return false;
+
+    // An invite is often the first message to someone in a long while: the
+    // session this device holds may be with an identity the peer no longer
+    // has (it reinstalled, or registered again). Sealed to that, the invite
+    // could not be opened and nobody would know. The directory is asked
+    // first; a stale session is put aside and a new one set up.
+    try {
+      await _sessionManager.refreshPeerIdentity(recipientId);
+    } on SignalProtocolException {
+      return false; // the directory is not reachable: tried again later
+    }
+    await _sessionManager.ensureSession(recipientId);
+    final certificate = await _senderCertificateManager!.getCertificate();
+    final recipientIdentityPubKey =
+        _sessionManager.signal.getRemoteIdentityKey(recipientId);
+    if (recipientIdentityPubKey == null) return false;
+    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+
+    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode({
+      'type': gv2InviteInnerType,
+      'invite': base64Encode(invite),
+    })));
+    final encrypted = await _sessionManager.encrypt(
+      recipientId,
+      deviceId,
+      plaintextBytes,
+    );
+    final sealedEnvelope = _sealedSenderService!.seal(
+      recipientIdentityPubKey: recipientIdentityPubKey,
+      drCiphertext: encrypted['ciphertext'] as Uint8List,
+      certificate: certificate,
+      messageContext: sealedType1to1,
+    );
+
+    final accepted = Completer<bool>();
+    _socketManager.sendSealedMessage(
+      recipientId: recipientId,
+      sealedContent: base64Encode(sealedEnvelope),
+      clientMessageId: 'gv2inv_${DateTime.now().millisecondsSinceEpoch}',
+      onAck: (response) {
+        if (accepted.isCompleted) return;
+        accepted.complete(response is Map && response['messageId'] is String);
+      },
+    );
+    return accepted.future.timeout(timeout, onTimeout: () => false);
   }
 
   /// Decrypt an incoming Sealed Sender message.
@@ -768,8 +791,6 @@ class EncryptedMessageHandler {
       throw StateError('Sealed message missing sealedContent/encryptedContent');
     }
 
-    final conversationId =
-        socketEvent['conversationId'] as String? ?? messageId;
     final timestamp = socketEvent['serverTimestamp'] != null
         ? DateTime.parse(socketEvent['serverTimestamp'] as String)
         : (socketEvent['timestamp'] != null
@@ -830,13 +851,18 @@ class EncryptedMessageHandler {
         envelopeDeviceId: senderDeviceId,
       );
 
+      // X1: the certificate-authenticated sender is an account this user
+      // blocked — refused before anything of it is acted on (a transfer
+      // control, a read receipt, an unsend, a group invite, a message).
+      if (await _isBlocked(senderId)) throw const BlockedSenderException();
+
       // Step 6: Parse the decrypted JSON payload
       final payload = jsonDecode(utf8.decode(plaintextBytes))
           as Map<String, dynamic>;
 
-      // Derive conversationId from sender if not provided by server
-      final resolvedConversationId =
-          socketEvent['conversationId'] as String? ?? senderId;
+      // The room is the certificate-authenticated sender's — never a
+      // conversation id the envelope names.
+      final resolvedConversationId = senderId;
 
       // Wallet V2 Phase B (2026-04-20): transfer_* type dispatch (Sealed path).
       // Goes through the same dispatcher as the normal 1:1 path — the sender
@@ -897,6 +923,22 @@ class EncryptedMessageHandler {
         );
       }
 
+      // Sealed session reset (2026-11-22): the peer re-established the
+      // session; decrypting this prekey message built it here. Surfaced via
+      // metadata so MessageQueue consumes it silently — never a bubble.
+      if (payload['type'] == 'session_reset') {
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: const {'_isSessionReset': true},
+        );
+      }
+
       // Sealed delete-chat (2026-09-04): the peer deleted the whole 1:1 room.
       // Silent E2EE control — surfaced via metadata so MessageQueue's control
       // branch wipes the room + Signal session. Detected BEFORE the generic
@@ -914,6 +956,27 @@ class EncryptedMessageHandler {
         );
       }
 
+      // Group protocol v2 invite: not a chat message. Surfaced via metadata
+      // so MessageQueue hands it to the v2 group actions and consumes it —
+      // detected BEFORE the generic Message build so it can never render as
+      // a bubble or create a 1:1 room.
+      if (payload['type'] == gv2InviteInnerType) {
+        final invite = payload['invite'];
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: {
+            '_isGroupInviteV2': true,
+            'invite': ?(invite is String ? invite : null),
+          },
+        );
+      }
+
       final text = payload['text'] as String? ?? '';
       final msgType = _parseMessageType(payload['type'] as String?);
       final msgMetadata = payload['metadata'] as Map<String, dynamic>?;
@@ -921,6 +984,7 @@ class EncryptedMessageHandler {
       final replyToId = payload['replyToId'] as String?;
       final replyToPreview = payload['replyToPreview'] as String?;
       final replyToSenderId = payload['replyToSenderId'] as String?;
+      final peerClientId = payload['cid'] as String?;
 
       return Message(
         id: messageId,
@@ -938,14 +1002,14 @@ class EncryptedMessageHandler {
         replyToId: replyToId,
         replyToPreview: replyToPreview,
         replyToSenderId: replyToSenderId,
+        peerClientId: peerClientId,
       );
-    } on IdentityKeyChangedException {
-      // Real identity-change alarm — must propagate unchanged to the upstream
-      // handler that raises the Safety Number warning. Never wrap/suppress it.
-      rethrow;
     } on IdentityBindingInvalidException {
       // B-2 hard failure — must reach the queue unwrapped so it is ACKed as a
       // terminal rejection (no retry request, no session reset).
+      rethrow;
+    } on BlockedSenderException {
+      // X1 — terminal as well: unwrapped, acknowledged, never answered.
       rethrow;
     } catch (e, st) {
       debugPrint('[EncryptedMessageHandler:Sealed] Decryption failed for '
@@ -955,396 +1019,6 @@ class EncryptedMessageHandler {
       // self-heal, instead of a blind sender=null retry the server rejects.
       throw SealedDecryptException(senderId, senderDeviceId, e);
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Group Messaging (Sender Keys)
-  // ---------------------------------------------------------------------------
-
-  /// Encrypt and send a message to a group using Sender Keys.
-  ///
-  /// Flow:
-  /// 1. Build plaintext JSON payload
-  /// 2. Encrypt with own Sender Key via GroupSessionManager (O(1))
-  /// 3. Send via Socket.IO 'send_group_message' event
-  /// 4. Server fans out the same ciphertext to all group members
-  ///
-  /// **Phase 6.9**: [myId] (current user's SnowChat ID) MUST be passed by the
-  /// caller. GroupSessionManager no longer captures myId at construction time.
-  Future<Message> sendGroupMessage({
-    required String conversationId,
-    required String groupId,
-    required String myId,
-    required String text,
-    MessageType type = MessageType.text,
-    Map<String, dynamic>? metadata,
-    int? ttlSeconds,
-    String? replyToId,
-    String? replyToPreview,
-    String? replyToSenderId,
-  }) async {
-    if (_groupSessionManager == null) {
-      throw StateError('GroupSessionManager not configured');
-    }
-    if (myId.isEmpty) {
-      throw ArgumentError(
-          'sendGroupMessage: myId must not be empty (group $groupId)');
-    }
-
-    final payload = _buildPayload(
-      text: text,
-      type: type,
-      metadata: metadata,
-      ttlSeconds: ttlSeconds,
-      replyToId: replyToId,
-      replyToPreview: replyToPreview,
-      replyToSenderId: replyToSenderId,
-    );
-    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
-
-    final ciphertext = _groupSessionManager.sendGroupMessage(
-      groupId,
-      myId,
-      plaintextBytes,
-    );
-
-    final messageId = _generateMessageId();
-    final now = DateTime.now();
-
-    // Send via Socket.IO matching server's SendGroupMessagePayload
-    _socketManager.sendGroupMessage({
-      'groupChatId': groupId,
-      'encryptedPayload': base64Encode(ciphertext),
-      if (ttlSeconds != null) 'expiresIn': ttlSeconds,
-    });
-
-    return Message(
-      id: messageId,
-      conversationId: conversationId,
-      senderSnowchatId: '', // Caller fills in
-      plaintext: text,
-      timestamp: now,
-      type: type,
-      status: MessageStatus.sending,
-      metadata: metadata,
-      expiresAt: ttlSeconds != null
-          ? now.add(Duration(seconds: ttlSeconds))
-          : null,
-    );
-  }
-
-  /// Decrypt an incoming group message (from 'new_group_message' socket event).
-  ///
-  /// Socket event fields (from server messageHandler):
-  /// - `senderSnowchatId` / `senderId`: sender SnowChat ID
-  /// - `groupChatId`: group ID
-  /// - `encryptedPayload`: base64-encoded Sender Key ciphertext
-  /// - `messageId` / `id`: server-assigned message ID
-  /// - `serverTimestamp` / `timestamp`: ISO 8601 timestamp
-  /// - `senderKeyEpoch`: sender key epoch (for key rotation tracking)
-  Future<Message> decryptGroupMessage(
-    Map<String, dynamic> socketEvent,
-  ) async {
-    if (_groupSessionManager == null) {
-      throw StateError('GroupSessionManager not configured');
-    }
-
-    final senderId = (socketEvent['senderSnowchatId'] ??
-        socketEvent['senderId']) as String;
-    final groupId = (socketEvent['groupChatId'] ??
-        socketEvent['groupId']) as String;
-    final encryptedPayload =
-        socketEvent['encryptedContent'] ?? socketEvent['encryptedPayload'];
-    final conversationId =
-        socketEvent['conversationId'] as String? ?? 'group_$groupId';
-    final messageId =
-        (socketEvent['messageId'] ?? socketEvent['id']) as String;
-    final timestamp = socketEvent['serverTimestamp'] != null
-        ? DateTime.parse(socketEvent['serverTimestamp'] as String)
-        : (socketEvent['timestamp'] != null
-            ? DateTime.parse(socketEvent['timestamp'] as String)
-            : DateTime.now());
-
-    // Decode the base64 ciphertext
-    Uint8List ciphertext;
-    if (encryptedPayload is String) {
-      ciphertext = Uint8List.fromList(base64Decode(encryptedPayload));
-    } else if (encryptedPayload is List<int>) {
-      ciphertext = Uint8List.fromList(encryptedPayload);
-    } else {
-      return _failedMessage(
-        messageId: messageId,
-        conversationId: conversationId,
-        senderId: senderId,
-        timestamp: timestamp,
-      );
-    }
-
-    try {
-      final plaintextBytes = _groupSessionManager.decryptGroupMessage(
-        groupId,
-        senderId,
-        ciphertext,
-      );
-
-      final payload = jsonDecode(utf8.decode(plaintextBytes))
-          as Map<String, dynamic>;
-
-      final text = payload['text'] as String? ?? '';
-      final msgType = _parseMessageType(payload['type'] as String?);
-      final msgMetadata = payload['metadata'] as Map<String, dynamic>?;
-      final ttlSeconds = payload['ttl'] as int?;
-      final replyToId = payload['replyToId'] as String?;
-      final replyToPreview = payload['replyToPreview'] as String?;
-      final replyToSenderId = payload['replyToSenderId'] as String?;
-
-      return Message(
-        id: messageId,
-        conversationId: conversationId,
-        senderSnowchatId: senderId,
-        plaintext: text,
-        timestamp: timestamp,
-        type: msgType,
-        status: MessageStatus.delivered,
-        metadata: msgMetadata,
-        expiresAt: ttlSeconds != null
-            ? timestamp.add(Duration(seconds: ttlSeconds))
-            : null,
-        ttlSeconds: ttlSeconds,
-        replyToId: replyToId,
-        replyToPreview: replyToPreview,
-        replyToSenderId: replyToSenderId,
-      );
-    } catch (e) {
-      debugPrint('[EncryptedMessageHandler] Group decryption failed for '
-          'message $messageId in group $groupId from $senderId: $e');
-      // Rethrow so the caller (_handleGroupMessage) can fall through
-      // to pairwise fallback instead of getting a fake success.
-      rethrow;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Encrypted File Transfer
-  // ---------------------------------------------------------------------------
-
-  /// Encrypt and send a file message to a 1:1 recipient.
-  ///
-  /// Flow:
-  /// 1. Read file bytes from [filePath]
-  /// 2. Encrypt file with random key via FileEncryptor
-  /// 3. Upload encrypted blob to server → get fileId
-  /// 4. Build E2EE message containing file metadata + fileKey
-  /// 5. Send via Double Ratchet → recipient decrypts message → gets fileKey
-  ///    → downloads blob → decrypts file
-  ///
-  /// The server never sees: file content, file name, file type, or file key.
-  Future<void> sendFileMessage({
-    required String conversationId,
-    required String recipientId,
-    required String clientMessageId,
-    required String filePath,
-    required String fileName,
-    required String mimeType,
-    int? ttlSeconds,
-  }) async {
-    if (_fileService == null) {
-      throw StateError('FileService not configured');
-    }
-
-    // Step 1: Read file
-    final fileData = await File(filePath).readAsBytes();
-
-    // Step 2: Encrypt with random key
-    final encResult = await FileEncryptor.encryptFile(
-      Uint8List.fromList(fileData),
-    );
-
-    // Step 3: Upload encrypted blob
-    final fileId = await _fileService.uploadEncryptedFile(
-      encResult.encryptedData,
-      encResult.contentHash,
-    );
-
-    // Step 4: Build E2EE message with file metadata
-    final fileMetadata = {
-      'type': 'file',
-      'fileId': fileId,
-      'fileKey': base64Encode(encResult.fileKey),
-      'fileName': fileName,
-      'mimeType': mimeType,
-      'size': fileData.length,
-      'contentHash': encResult.contentHash,
-    };
-
-    // Step 5: Send as encrypted message
-    await sendEncryptedMessage(
-      conversationId: conversationId,
-      recipientId: recipientId,
-      text: fileName,
-      clientMessageId: clientMessageId,
-      type: MessageType.file,
-      metadata: fileMetadata,
-      ttlSeconds: ttlSeconds,
-    );
-  }
-
-  /// Encrypt and send a file message to a group.
-  ///
-  /// Same flow as 1:1 file messages but encrypts with Sender Key.
-  Future<Message> sendGroupFileMessage({
-    required String conversationId,
-    required String groupId,
-    required String myId,
-    required String filePath,
-    required String fileName,
-    required String mimeType,
-    int? ttlSeconds,
-  }) async {
-    if (_fileService == null) {
-      throw StateError('FileService not configured');
-    }
-
-    final fileData = await File(filePath).readAsBytes();
-
-    final encResult = await FileEncryptor.encryptFile(
-      Uint8List.fromList(fileData),
-    );
-
-    final fileId = await _fileService.uploadEncryptedFile(
-      encResult.encryptedData,
-      encResult.contentHash,
-    );
-
-    final fileMetadata = {
-      'type': 'file',
-      'fileId': fileId,
-      'fileKey': base64Encode(encResult.fileKey),
-      'fileName': fileName,
-      'mimeType': mimeType,
-      'size': fileData.length,
-      'contentHash': encResult.contentHash,
-    };
-
-    return sendGroupMessage(
-      conversationId: conversationId,
-      groupId: groupId,
-      myId: myId,
-      text: fileName,
-      type: MessageType.file,
-      metadata: fileMetadata,
-      ttlSeconds: ttlSeconds,
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Encrypted Voice Message
-  // ---------------------------------------------------------------------------
-
-  /// Encrypt and send a voice message to a 1:1 recipient.
-  ///
-  /// Flow:
-  /// 1. Read audio bytes from [audioPath]
-  /// 2. Encrypt audio with random key via FileEncryptor
-  /// 3. Upload encrypted blob to server -> get fileId
-  /// 4. Build E2EE message: { type: "voice", fileId, fileKey, duration, mimeType }
-  /// 5. Send via Double Ratchet
-  ///
-  /// Max duration: 5 minutes (300 seconds). Format: AAC/M4A.
-  Future<void> sendVoiceMessage({
-    required String conversationId,
-    required String recipientId,
-    required String clientMessageId,
-    required String audioPath,
-    required int durationSeconds,
-    int? ttlSeconds,
-  }) async {
-    if (_fileService == null) {
-      throw StateError('FileService not configured');
-    }
-
-    // Step 1: Read audio file
-    final audioData = await File(audioPath).readAsBytes();
-
-    // Step 2: Encrypt with random key
-    final encResult = await FileEncryptor.encryptFile(
-      Uint8List.fromList(audioData),
-    );
-
-    // Step 3: Upload encrypted blob
-    final fileId = await _fileService.uploadEncryptedFile(
-      encResult.encryptedData,
-      encResult.contentHash,
-    );
-
-    // Step 4: Build E2EE message with voice metadata
-    final voiceMetadata = {
-      'type': 'voice',
-      'fileId': fileId,
-      'fileKey': base64Encode(encResult.fileKey),
-      'duration': durationSeconds,
-      'mimeType': 'audio/aac',
-      'size': audioData.length,
-      'contentHash': encResult.contentHash,
-    };
-
-    // Step 5: Send as encrypted message
-    await sendEncryptedMessage(
-      conversationId: conversationId,
-      recipientId: recipientId,
-      text: 'Voice message',
-      clientMessageId: clientMessageId,
-      type: MessageType.voice,
-      metadata: voiceMetadata,
-      ttlSeconds: ttlSeconds,
-    );
-  }
-
-  /// Encrypt and send a voice message to a group.
-  ///
-  /// Same flow as 1:1 voice messages but encrypts with Sender Key.
-  Future<Message> sendGroupVoiceMessage({
-    required String conversationId,
-    required String groupId,
-    required String myId,
-    required String audioPath,
-    required int durationSeconds,
-    int? ttlSeconds,
-  }) async {
-    if (_fileService == null) {
-      throw StateError('FileService not configured');
-    }
-
-    final audioData = await File(audioPath).readAsBytes();
-
-    final encResult = await FileEncryptor.encryptFile(
-      Uint8List.fromList(audioData),
-    );
-
-    final fileId = await _fileService.uploadEncryptedFile(
-      encResult.encryptedData,
-      encResult.contentHash,
-    );
-
-    final voiceMetadata = {
-      'type': 'voice',
-      'fileId': fileId,
-      'fileKey': base64Encode(encResult.fileKey),
-      'duration': durationSeconds,
-      'mimeType': 'audio/aac',
-      'size': audioData.length,
-      'contentHash': encResult.contentHash,
-    };
-
-    return sendGroupMessage(
-      conversationId: conversationId,
-      groupId: groupId,
-      myId: myId,
-      text: 'Voice message',
-      type: MessageType.voice,
-      metadata: voiceMetadata,
-      ttlSeconds: ttlSeconds,
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1686,7 +1360,12 @@ class EncryptedMessageHandler {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /// [clientMessageId] travels as `cid`: this device's own id for the
+  /// message. The 1:1 outbox sends a message again when the server's ack did
+  /// not come back; the receiver stores it once per (sender, cid). Inside the
+  /// E2EE payload only — the server never sees it.
   Map<String, dynamic> _buildPayload({
+    required String clientMessageId,
     required String text,
     required MessageType type,
     String? attachmentFileKey,
@@ -1697,6 +1376,7 @@ class EncryptedMessageHandler {
     String? replyToSenderId,
   }) {
     return {
+      'cid': clientMessageId,
       'text': text,
       'type': type.name,
       'timestamp': DateTime.now().toIso8601String(),
@@ -1740,9 +1420,5 @@ class EncryptedMessageHandler {
       default:
         return MessageType.text;
     }
-  }
-
-  static String _generateMessageId() {
-    return 'msg_${DateTime.now().millisecondsSinceEpoch}';
   }
 }

@@ -3,21 +3,34 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-22 (the Next / Done bar is in the fields' TextFieldTapRegion — the app-wide
+///              tap-outside dismissal removed it on pointer-down and Next never fired). Earlier 2026-11-22 (passcode kinds — "Passcode options": 6 digits / custom numeric / custom
+///              alphanumeric, validated by kind, stored by PasscodeStore; the wallet is named only when
+///              AppConfig.enableWallet). Earlier 2026-11-22 (iOS PIN fields get a Next / Done bar — the iPhone number pad has no
+///              return key, so the keypad could not be closed and the confirmation field under the
+///              pinned Continue button could not be reached; Continue closes the keyboard first).
+///              Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - SetupProfileScreen: profile-setup ConsumerStatefulWidget
 ///  - _isValid: input validation (nickname 2-20 chars, PIN 4-6 digits, PIN match)
 ///  - _onContinue(): on validation pass, save profile via onboarding provider and advance
+///  - _pinKeyboardBar(): iOS Next / Done bar for the PIN fields
+///  - _pickKind(): the Passcode options sheet
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
+import '../../../app/app_config.dart';
+import '../../../app/keyboard_behavior.dart';
+import '../../../core/security/passcode.dart';
 import '../../../app/providers.dart';
 import '../onboarding_provider.dart';
+import '../widgets/passcode_input.dart';
 
 class SetupProfileScreen extends ConsumerStatefulWidget {
   /// If true, this screen is part of the restore flow.
@@ -38,6 +51,9 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
   final _nicknameFocus = FocusNode();
   final _pinFocus = FocusNode();
   final _pinConfirmFocus = FocusNode();
+
+  /// The kind of passcode being set ("Passcode options"; six digits first).
+  PasscodeKind _kind = PasscodeKind.numeric6;
   String? _existingNickname;
 
   String? _nicknameError;
@@ -49,6 +65,9 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
   @override
   void initState() {
     super.initState();
+    // The PIN bar (Next / Done) follows which field has the focus.
+    _pinFocus.addListener(_onFocusChange);
+    _pinConfirmFocus.addListener(_onFocusChange);
     _entrySw = Stopwatch()..start();
     debugPrint('[Perf] 🎨 SetupProfile initState (isRestore=${widget.isRestore})');
     if (widget.isRestore) {
@@ -89,6 +108,8 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
 
   @override
   void dispose() {
+    _pinFocus.removeListener(_onFocusChange);
+    _pinConfirmFocus.removeListener(_onFocusChange);
     _nicknameController.dispose();
     _pinController.dispose();
     _pinConfirmController.dispose();
@@ -98,6 +119,58 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
     super.dispose();
   }
 
+  /// "Passcode options": a new kind clears what was typed for the old one.
+  Future<void> _pickKind() async {
+    final picked = await showPasscodeKindPicker(context, _kind);
+    if (picked == null || picked == _kind || !mounted) return;
+    setState(() {
+      _kind = picked;
+      _pinController.clear();
+      _pinConfirmController.clear();
+      _pinError = null;
+      _pinConfirmError = null;
+    });
+  }
+
+  void _onFocusChange() {
+    if (mounted) setState(() {});
+  }
+
+  /// iOS only: the iPhone number pad has no return key, so a PIN field gets a
+  /// bar above the Continue button — Next moves to the confirmation, Done
+  /// closes the keypad (the confirmation field sits under the pinned button
+  /// while the keypad is up).
+  Widget? _pinKeyboardBar() {
+    if (defaultTargetPlatform != TargetPlatform.iOS) return null;
+    // The letters keyboard has its own return key.
+    if (!_kind.isNumeric) return null;
+    final onPin = _pinFocus.hasFocus;
+    final onConfirm = _pinConfirmFocus.hasFocus;
+    if (!onPin && !onConfirm) return null;
+    // Part of the fields: a tap on the bar is not "outside" — otherwise the
+    // app-wide tap-outside dismissal unfocused on pointer-down, the bar went
+    // away with the focus, and Next never fired (found on the iPhone).
+    return TextFieldTapRegion(
+      child: Container(
+        color: SnowColors.surface,
+        padding: const EdgeInsets.symmetric(horizontal: SnowSizes.md),
+        alignment: Alignment.centerRight,
+        child: TextButton(
+          onPressed: onPin
+              ? () => _pinConfirmFocus.requestFocus()
+              : () => _pinConfirmFocus.unfocus(),
+          child: Text(
+            onPin ? 'Next' : 'Done',
+            style: const TextStyle(
+              color: SnowColors.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   bool get _isValid {
     final nickname = _nicknameController.text.trim();
     final pin = _pinController.text;
@@ -105,8 +178,7 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
 
     return nickname.length >= 2 &&
         nickname.length <= 20 &&
-        pin.length >= 4 &&
-        pin.length <= 6 &&
+        _kind.validate(pin) == null &&
         pin == pinConfirm;
   }
 
@@ -127,20 +199,17 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
         _nicknameError = null;
       }
 
-      // PIN validation
-      if (pin.isEmpty) {
-        _pinError = null;
-      } else if (pin.length < 4) {
-        _pinError = 'PIN must be at least 4 digits';
-      } else {
-        _pinError = null;
-      }
+      // Passcode validation (by kind) — shown once something was typed and
+      // it is at least as long as the kind needs, so the hint is not an
+      // error while typing.
+      final problem = _kind.validate(pin);
+      _pinError = pin.isEmpty || pin.length < _kind.minLength ? null : problem;
 
-      // PIN confirmation validation
+      // Confirmation
       if (pinConfirm.isEmpty) {
         _pinConfirmError = null;
       } else if (pin != pinConfirm) {
-        _pinConfirmError = 'PINs do not match';
+        _pinConfirmError = 'Passcodes do not match';
       } else {
         _pinConfirmError = null;
       }
@@ -149,13 +218,15 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
 
   Future<void> _onContinue() async {
     if (!_isValid) return;
+    // Close the keypad before the identity is made and the screen changes.
+    dismissKeyboard();
 
     final nickname = _nicknameController.text.trim();
     final pin = _pinController.text;
 
     await ref
         .read(onboardingProvider.notifier)
-        .setProfile(nickname: nickname, pin: pin);
+        .setProfile(nickname: nickname, kind: _kind, passcode: pin);
 
     if (!mounted) return;
 
@@ -373,7 +444,7 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
 
                     // PIN section
                     const Text(
-                      'Create a PIN',
+                      'Create a passcode',
                       style: TextStyle(
                         color: SnowColors.textPrimary,
                         fontSize: 18,
@@ -381,12 +452,23 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
                       ),
                     ),
                     const SizedBox(height: SnowSizes.sm),
-                    const Text(
-                      'Your PIN is used to unlock the app and authorize transactions. Choose 4-6 digits.',
-                      style: TextStyle(
+                    Text(
+                      '${AppConfig.enableWallet ? 'Your passcode unlocks the app and authorizes transactions.' : 'Your passcode unlocks the app.'} ${passcodeHint(_kind)}',
+                      style: const TextStyle(
                         color: SnowColors.textTertiary,
                         fontSize: 13,
                         height: 1.4,
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton(
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                        onPressed: _pickKind,
+                        child: const Text(
+                          'Passcode options',
+                          style: TextStyle(color: SnowColors.primary),
+                        ),
                       ),
                     ),
                     const SizedBox(height: SnowSizes.md),
@@ -399,16 +481,18 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
                       onSubmitted: (_) => _pinConfirmFocus.requestFocus(),
                       textInputAction: TextInputAction.next,
                       obscureText: true,
-                      maxLength: 6,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      maxLength: _kind.maxLength,
+                      keyboardType: passcodeKeyboard(_kind),
+                      inputFormatters: passcodeFormatters(_kind),
+                      autocorrect: false,
+                      enableSuggestions: false,
                       style: const TextStyle(
                         color: SnowColors.textPrimary,
                         fontSize: 20,
                         letterSpacing: 8,
                       ),
                       decoration: InputDecoration(
-                        hintText: 'PIN',
+                        hintText: 'Passcode',
                         hintStyle: const TextStyle(
                           color: SnowColors.textTertiary,
                           letterSpacing: 0,
@@ -464,16 +548,18 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
                       },
                       textInputAction: TextInputAction.done,
                       obscureText: true,
-                      maxLength: 6,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      maxLength: _kind.maxLength,
+                      keyboardType: passcodeKeyboard(_kind),
+                      inputFormatters: passcodeFormatters(_kind),
+                      autocorrect: false,
+                      enableSuggestions: false,
                       style: const TextStyle(
                         color: SnowColors.textPrimary,
                         fontSize: 20,
                         letterSpacing: 8,
                       ),
                       decoration: InputDecoration(
-                        hintText: 'Confirm PIN',
+                        hintText: 'Confirm passcode',
                         hintStyle: const TextStyle(
                           color: SnowColors.textTertiary,
                           letterSpacing: 0,
@@ -520,6 +606,9 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
                 ),
               ),
             ),
+
+            // Next / Done for the PIN fields (iOS number pad has no return)
+            ?_pinKeyboardBar(),
 
             // Continue button
             Padding(

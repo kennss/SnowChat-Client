@@ -3,13 +3,13 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-08-05 (onboarding: tab is now explore-first — empty state replaced by embedded CommunityExplore (search + trending discover); "My Communities" header above the feed; "+" menu drops redundant Browse (tab is the browse) keeping Create/Join-with-code; "Channel"→"Community" rename throughout). Earlier 2026-06-25 (member-count refresh on resume; member tap → openDirectChatWith). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (the expanded roster leads with "New group from members" — a v2 group from this community's roster, where groups can run). Earlier 2026-11-20 (v1 groups removed: no per-community unread badge — a community has no rooms — and no mute toggle; expandChannelId opens the list with that community expanded, e.g. after joining through an invite link). Earlier 2026-08-05 (onboarding: tab is now explore-first — empty state replaced by embedded CommunityExplore (search + trending discover); "My Communities" header above the feed; "+" menu drops redundant Browse (tab is the browse) keeping Create/Join-with-code; "Channel"→"Community" rename throughout). Earlier 2026-06-25 (member-count refresh on resume; member tap → openDirectChatWith). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
-///  - channelUnreadCountProvider: sum unread count per channelId (derived from conversationList)
 ///  - ChannelListScreen: channel list + member accordion (replaces former ContactListScreen)
 ///  - _leaveChannel(): leave-channel confirmation + execution
-///  - _showChannelOptions(): Manage/Mute/Leave bottom sheet
+///  - _showChannelOptions(): Manage/Invite/Leave bottom sheet
+///  - _expand(channelId): show a community expanded (on arrival via expandChannelId)
 
 import 'dart:async';
 
@@ -22,6 +22,7 @@ import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/toast.dart';
+import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../../core/network/api_endpoints.dart';
 import '../../chat/providers/conversation_list_provider.dart';
 import '../../chat/services/start_direct_chat.dart';
@@ -29,21 +30,12 @@ import '../models/channel.dart';
 import '../providers/channel_provider.dart';
 import '../widgets/community_explore.dart';
 
-/// Aggregated unread count per channel, derived from conversation list state.
-final channelUnreadCountProvider =
-    Provider.family<int, String>((ref, channelId) {
-  final conversations = ref.watch(conversationListProvider);
-  int total = 0;
-  for (final c in conversations) {
-    if (c.channelId == channelId) {
-      total += c.unreadCount;
-    }
-  }
-  return total;
-});
-
 class ChannelListScreen extends ConsumerStatefulWidget {
-  const ChannelListScreen({super.key});
+  /// A community to show expanded (its member list) on arrival — set after
+  /// joining one through an invite link.
+  final String? expandChannelId;
+
+  const ChannelListScreen({super.key, this.expandChannelId});
 
   @override
   ConsumerState<ChannelListScreen> createState() => _ChannelListScreenState();
@@ -64,6 +56,25 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
     Future.microtask(() {
       ref.invalidate(myChannelsProvider);
       _listenForMemberChanges();
+    });
+    _expand(widget.expandChannelId);
+  }
+
+  @override
+  void didUpdateWidget(ChannelListScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The tab stays alive: a later arrival names its community here.
+    if (widget.expandChannelId != oldWidget.expandChannelId) {
+      _expand(widget.expandChannelId);
+    }
+  }
+
+  /// Show [channelId] expanded, with a fresh member list.
+  void _expand(String? channelId) {
+    if (channelId == null || channelId.isEmpty) return;
+    _expandedChannels.add(channelId);
+    Future.microtask(() {
+      if (mounted) ref.invalidate(_channelDetailProvider(channelId));
     });
   }
 
@@ -245,7 +256,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
 
   Widget _buildChannelSection(ChannelInfo channel) {
     final isExpanded = _expandedChannels.contains(channel.id);
-    final unread = ref.watch(channelUnreadCountProvider(channel.id));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -297,30 +307,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
                     ),
                   ),
                 ),
-                // Muted icon
-                if (channel.isMuted)
-                  const Padding(
-                    padding: EdgeInsets.only(right: 6),
-                    child: Icon(Icons.notifications_off_rounded,
-                        color: SnowColors.textTertiary, size: 16),
-                  ),
-                // Unread badge (when collapsed)
-                if (!isExpanded && unread > 0)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: SnowColors.primary,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      unread > 99 ? '99+' : '$unread',
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ),
               ],
             ),
           ),
@@ -388,25 +374,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
                   );
                 },
               ),
-            ListTile(
-              leading: Icon(
-                channel.isMuted
-                    ? Icons.notifications_rounded
-                    : Icons.notifications_off_rounded,
-                color: SnowColors.textSecondary,
-              ),
-              title: Text(
-                channel.isMuted ? 'Unmute Notifications' : 'Mute Notifications',
-                style: const TextStyle(color: SnowColors.textPrimary),
-              ),
-              onTap: () async {
-                Navigator.pop(context);
-                final success = await ref
-                    .read(channelActionsProvider)
-                    .muteChannel(channel.id, !channel.isMuted);
-                if (success) ref.invalidate(myChannelsProvider);
-              },
-            ),
             ListTile(
               leading:
                   const Icon(Icons.exit_to_app_rounded, color: SnowColors.error),
@@ -586,8 +553,47 @@ class _ChannelMemberList extends ConsumerWidget {
             return roleOrder(a).compareTo(roleOrder(b));
           });
 
+        final myId = ref.read(currentSnowIdProvider);
+        final hasOthers = members.any((m) {
+          final id = (m['user'] as Map<String, dynamic>?)?['snowchatId'];
+          return id is String && id.isNotEmpty && id != myId;
+        });
+
         return Column(
-          children: sorted.map((m) {
+          children: [
+            // A new v2 group from this roster (only where groups can run).
+            if (gv2GroupsAvailable && hasOthers)
+              InkWell(
+                onTap: () => context.push(
+                  '/create-group?community=${Uri.encodeQueryComponent(channelId)}'
+                  '&name=${Uri.encodeQueryComponent(channelName)}',
+                ),
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 40, vertical: 10),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 24),
+                      Icon(
+                        Icons.group_add_rounded,
+                        color: SnowColors.primary,
+                        size: 22,
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'New group from members',
+                          style: TextStyle(
+                            color: SnowColors.primary,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ...sorted.map((m) {
             final user = m['user'] as Map<String, dynamic>? ?? {};
             final snowchatId = user['snowchatId'] as String? ?? '';
             final displayName = user['displayName'] as String?;
@@ -649,7 +655,8 @@ class _ChannelMemberList extends ConsumerWidget {
                 ),
               ),
             );
-          }).toList(),
+          }),
+          ],
         );
       },
       loading: () => const Padding(

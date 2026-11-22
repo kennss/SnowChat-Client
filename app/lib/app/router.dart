@@ -1,9 +1,11 @@
 /// @file        router.dart
-/// @description App routing config based on GoRouter. Defines onboarding, tab navigation, and full-screen routes (device management, message search, group info, group member add, friends list, marketplace)
+/// @description App routing config based on GoRouter. Defines onboarding, tab navigation, and full-screen routes (device management, message search, group info, group member add, friends list)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2: first-contact deeplinks forward the inviter account key ?k= to AddFriendScreen via addFriendDeeplinkPath()). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: /settings/network and /settings/hidden-wallets are now behind AppConfig.enableWallet like the other wallet routes). Earlier 2026-08-05 (bottom-nav "Channels"→"Communities"; Channel→Community route display fallbacks). Earlier 2026-05-06 (option 2 Signal pattern: wrapped /call in a
+/// @lastUpdated 2026-11-22 (/settings/passcode — ChangePasscodeScreen). Earlier 2026-11-22 (every route change drops the keyboard focus — DismissKeyboardOnRouteChange
+///              on the root GoRouter and the ShellRoute). Earlier 2026-11-21 (_CallRouteHost closes the in-app incoming screen when a late CallKit
+///              window takes the call over). Earlier 2026-11-21 (/add-group-members takes the places taken with the existing accounts). Earlier 2026-11-21 (/create-group?community=&name=: a new group from a community roster). Earlier 2026-11-20 (v1 groups removed: /contacts?expand=<channelId> opens the Communities tab with that community expanded; the community routes name their parameter channelId; /group-info is always Gv2GroupInfoScreen — an id that is not a group on this device reads as such there). Earlier 2026-11-20 (/pin-reset: PinResetScreen for a forgotten PIN). Earlier 2026-11-20 (/group-info shows Gv2GroupInfoScreen for a group protocol v2 group id). Earlier 2026-11-12 (removed the /marketplace and /marketplace/create routes with the NFT marketplace feature). Earlier 2026-11-10 (B-2: first-contact deeplinks forward the inviter account key ?k= to AddFriendScreen via addFriendDeeplinkPath()). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: /settings/network and /settings/hidden-wallets are now behind AppConfig.enableWallet like the other wallet routes). Earlier 2026-08-05 (bottom-nav "Channels"→"Communities"; Channel→Community route display fallbacks). Earlier 2026-05-06 (option 2 Signal pattern: wrapped /call in a
 ///              PopScope that blocks back navigation during an active call
 ///              regardless of host Activity. Native CallActivity already
 ///              swallows back-press while the keyguard is locked; this is
@@ -17,6 +19,8 @@
 ///  - routerProvider: Riverpod provider for the GoRouter instance
 ///  - _MainShell: ShellRoute widget containing the bottom tab navigation bar
 
+import 'keyboard_behavior.dart';
+import '../features/settings/screens/change_passcode_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -30,12 +34,13 @@ import '../features/onboarding/screens/verify_phrase_screen.dart';
 import '../features/onboarding/screens/restore_screen.dart';
 import '../features/onboarding/screens/setup_profile_screen.dart';
 import '../features/onboarding/screens/pin_login_screen.dart';
+import '../features/onboarding/screens/pin_reset_screen.dart';
 import '../features/chat/screens/conversation_list_screen.dart';
 import '../features/chat/screens/chat_screen.dart';
 import '../features/chat/screens/message_search_screen.dart';
 import '../features/chat/screens/new_chat_screen.dart';
 import '../features/chat/screens/create_group_screen.dart';
-import '../features/group/screens/group_info_screen.dart';
+import '../features/group/screens/gv2_group_info_screen.dart';
 import '../features/group/screens/add_group_members_screen.dart';
 import '../features/contacts/screens/contact_list_screen.dart';
 import '../features/channels/screens/channel_list_screen.dart';
@@ -67,9 +72,6 @@ import '../features/wallet/screens/tx_history_screen.dart';
 import '../features/nft/screens/nft_gallery_screen.dart';
 import '../features/nft/screens/nft_detail_screen.dart';
 import '../features/nft/screens/nft_send_screen.dart';
-import '../features/marketplace/screens/marketplace_screen.dart'
-    as mp;
-import '../features/marketplace/screens/create_listing_screen.dart';
 import '../features/ai/screens/ai_chat_screen.dart';
 import '../features/ai/screens/ai_onboarding_screen.dart';
 import '../features/call/screens/outgoing_call_screen.dart';
@@ -139,6 +141,8 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: initialLocation,
+    // A keyboard opened on one screen never stays over the next one.
+    observers: [DismissKeyboardOnRouteChange()],
     // Last-line-of-defense for deeplinks the redirect somehow misses
     // (some GoRouter versions evaluate the URI before redirect for path-only
     // matches). Show a transparent loading frame while we push the corrected
@@ -211,6 +215,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, __) => const PinLoginScreen(),
       ),
       GoRoute(
+        path: '/pin-reset',
+        builder: (_, __) => const PinResetScreen(),
+      ),
+      GoRoute(
         path: '/create-identity',
         builder: (_, __) => const CreateIdentityScreen(),
       ),
@@ -236,6 +244,8 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       // --- Main Shell (Tab Navigation) ---
       ShellRoute(
+        // Tab changes too (a NavigatorObserver serves one navigator).
+        observers: [DismissKeyboardOnRouteChange()],
         navigatorKey: _shellNavigatorKey,
         builder: (_, state, child) => _MainShell(child: child),
         routes: [
@@ -263,8 +273,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/contacts',
-            pageBuilder: (_, __) => const NoTransitionPage(
-              child: ChannelListScreen(),
+            pageBuilder: (_, state) => NoTransitionPage(
+              child: ChannelListScreen(
+                expandChannelId: state.uri.queryParameters['expand'],
+              ),
             ),
           ),
           if (AppConfig.enableWallet)
@@ -297,7 +309,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/create-group',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const CreateGroupScreen(),
+        // ?community=<id>&name=<name>: pick from that community's roster.
+        builder: (_, state) => CreateGroupScreen(
+          communityId: state.uri.queryParameters['community'],
+          communityName: state.uri.queryParameters['name'],
+        ),
       ),
       GoRoute(
         path: '/add-channel',
@@ -321,10 +337,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, __) => const CreateChannelScreen(),
       ),
       GoRoute(
-        path: '/channel-info/:groupId',
+        path: '/channel-info/:channelId',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, state) => ChannelInfoScreen(
-          groupId: state.pathParameters['groupId']!,
+          channelId: state.pathParameters['channelId']!,
         ),
       ),
       GoRoute(
@@ -348,28 +364,37 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, __) => const JoinWithCodeScreen(),
       ),
       GoRoute(
-        path: '/invite-link/:groupId',
+        path: '/invite-link/:channelId',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, state) => InviteLinkScreen(
-          groupId: state.pathParameters['groupId']!,
+          channelId: state.pathParameters['channelId']!,
           channelName: state.uri.queryParameters['name'] ?? 'Community',
         ),
       ),
       GoRoute(
         path: '/group-info/:groupId',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) => GroupInfoScreen(
+        // What it shows and changes is the group's change log, as this
+        // device holds it ("not on this device" for any other id).
+        builder: (_, state) => Gv2GroupInfoScreen(
           groupId: state.pathParameters['groupId'] ?? '',
         ),
       ),
       GoRoute(
         path: '/add-group-members/:groupId',
         parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) => AddGroupMembersScreen(
-          groupId: state.pathParameters['groupId'] ?? '',
-          existingMemberSnowchatIds:
-              (state.extra as List<String>?) ?? [],
-        ),
+        builder: (_, state) {
+          // What the group info screen hands over. Opened otherwise, the
+          // picker allows the whole size; the server's log decides in the
+          // end (an invite past the limit is refused as `full`).
+          final extra =
+              state.extra as ({List<String> existing, int taken})?;
+          return AddGroupMembersScreen(
+            groupId: state.pathParameters['groupId'] ?? '',
+            existingMemberSnowchatIds: extra?.existing ?? const [],
+            placesTaken: extra?.taken ?? 0,
+          );
+        },
       ),
       GoRoute(
         path: '/add-contact',
@@ -395,6 +420,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/settings/devices',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const DeviceManagementScreen(),
+      ),
+      GoRoute(
+        path: '/settings/passcode',
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const ChangePasscodeScreen(),
       ),
       // Solana network toggle + hidden sub-wallets are wallet-only screens. Without
       // the guard they stayed reachable in an ENABLE_WALLET=false build.
@@ -474,16 +504,6 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, state) => NFTSendScreen(
           nft: state.extra as NFTAsset,
         ),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/marketplace',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const mp.MarketplaceScreen(),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/marketplace/create',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const CreateListingScreen(),
       ),
       // Phase 10: AI
       GoRoute(
@@ -612,6 +632,14 @@ class _CallRouteHost extends ConsumerWidget {
     // Auto-dismiss when call truly ends
     ref.listen<CallState>(callProvider, (prev, next) {
       if (next.status == CallStatus.idle && (prev?.status != CallStatus.idle)) {
+        if (context.canPop()) context.pop();
+        return;
+      }
+      // V3: a late CallKit window took over a call ringing on the in-app
+      // screen — close the screen so only one incoming UI is up.
+      if (next.status == CallStatus.incoming &&
+          (prev?.inAppIncoming ?? false) &&
+          !next.inAppIncoming) {
         if (context.canPop()) context.pop();
       }
     });

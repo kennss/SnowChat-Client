@@ -1,13 +1,16 @@
 /// @file        blocked_contacts_screen.dart
-/// @description Blocked-users list screen — fetch /users/blocked from server + unblock.
+/// @description Blocked-users list screen — this device's blocked accounts (named from the server's
+///              list) + unblock.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-08
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (X1: the list is this device's (BlockList); unblock goes through it). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - BlockedContactsScreen: blocked-contacts list ConsumerWidget
 ///  - _confirmUnblock(): unblock confirmation dialog
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -148,9 +151,11 @@ class BlockedContactsScreen extends ConsumerWidget {
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              ref.read(contactProvider.notifier).unblockContact(snowchatId);
-              // Refresh the blocked list (server roundtrip).
-              ref.invalidate(blockedContactsProvider);
+              // On this device at once (the list follows it), the server
+              // next (BlockList).
+              unawaited(
+                ref.read(contactProvider.notifier).unblockContact(snowchatId),
+              );
             },
             child: const Text(
               'Unblock',

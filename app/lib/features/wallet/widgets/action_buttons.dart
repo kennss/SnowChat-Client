@@ -1,13 +1,12 @@
 /// @file        action_buttons.dart
-/// @description Circular action buttons for wallet home (Receive, Send, Swap,
-///              Market).
+/// @description Circular action buttons for wallet home (Receive, Send, Swap).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-12 (removed the Market button with the NFT marketplace feature). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
-///  - ActionButtons: widget showing the Receive/Send/Swap/Market circular button row
+///  - ActionButtons: widget showing the Receive/Send/Swap circular button row
 
 /// Phantom-style circular action buttons: Receive, Send, Swap.
 library;
@@ -27,13 +26,11 @@ class ActionButtons extends StatelessWidget {
     this.onReceive,
     this.onSend,
     this.onSwap,
-    this.onMarket,
   });
 
   final VoidCallback? onReceive;
   final VoidCallback? onSend;
   final VoidCallback? onSwap;
-  final VoidCallback? onMarket;
 
   @override
   Widget build(BuildContext context) {
@@ -56,11 +53,6 @@ class ActionButtons extends StatelessWidget {
             icon: Icons.swap_horiz_rounded,
             label: 'Swap',
             onTap: onSwap,
-          ),
-          _ActionButton(
-            icon: Icons.storefront_rounded,
-            label: 'Market',
-            onTap: onMarket,
           ),
         ],
       ),

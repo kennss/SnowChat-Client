@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10: added decryptionFailed state — for placeholder messages)
+/// @lastUpdated 2026-11-21 (peerClientId: on a received 1:1 message, the sender's own id for it — the
+///              receiver's duplicate guard). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10: added decryptionFailed state — for placeholder messages)
 ///
 /// @functions
 ///  - MessageType: message type enum (text, file, voice, system)
@@ -18,6 +19,7 @@
 ///  - isDeleted: whether the message is deleted
 ///  - isImageFile: checks whether this is an image file message
 ///  - fileId/fileKey/fileName/fileMimeType/fileSize: file metadata accessors
+///  - peerClientId: a received 1:1 message's own id at its sender (`cid`)
 
 enum MessageType { text, file, voice, system }
 
@@ -50,6 +52,11 @@ class Message {
   /// Display name of the sender (for group chat sender label).
   final String? senderDisplayName;
 
+  /// A received 1:1 message: the sender's own id for it (`cid` in the E2EE
+  /// payload). The receiver stores a message once per (sender, this id) —
+  /// the sender's outbox may send it again after a lost ack.
+  final String? peerClientId;
+
   const Message({
     required this.id,
     required this.conversationId,
@@ -66,6 +73,7 @@ class Message {
     this.replyToSenderId,
     this.isDeleted = false,
     this.senderDisplayName,
+    this.peerClientId,
   });
 
   /// Whether this message has expired.
@@ -145,6 +153,7 @@ class Message {
       replyToSenderId: replyToSenderId ?? this.replyToSenderId,
       isDeleted: isDeleted ?? this.isDeleted,
       senderDisplayName: senderDisplayName ?? this.senderDisplayName,
+      peerClientId: peerClientId,
     );
   }
 }

@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-14)
+/// @lastUpdated 2026-11-20 (the Group card shows only where groups can run (gv2GroupsAvailable);
+///              _startChat: the room id is the recipient's snowId — the server's reply only says
+///              whether a 1:1 may start, it never names the room). Earlier 2026-04-26 (header English translation; previous: 2026-04-14)
 ///
 /// @functions
 ///  - NewChatScreen: ConsumerStatefulWidget for starting a new chat
@@ -19,6 +21,7 @@ import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../core/crypto/key_derivation.dart';
 import '../../../core/network/api_endpoints.dart';
+import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../contacts/contact_provider.dart';
 import '../models/conversation.dart';
 import '../providers/conversation_list_provider.dart';
@@ -60,9 +63,7 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
 
     try {
       final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.get(
-        ApiEndpoints.userLookup(snowId),
-      );
+      final response = await apiClient.get(ApiEndpoints.userLookup(snowId));
       final data = Map<String, dynamic>.from(response.data as Map);
       setState(() {
         _foundUser = data;
@@ -86,8 +87,9 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
     }
 
     if (!KeyDerivation.isValidSnowChatId(snowId)) {
-      setState(() =>
-          _error = 'Invalid SnowChat ID format (snow + 32 hex chars)');
+      setState(
+        () => _error = 'Invalid SnowChat ID format (snow + 32 hex chars)',
+      );
       return;
     }
 
@@ -96,40 +98,44 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
       return;
     }
 
+    // A 1:1 room's id is the peer's snowId.
+    final convId = snowId;
+
     // Check if conversation already exists
     final conversations = ref.read(conversationListProvider);
-    final existing = conversations.where((c) =>
-        c.type == ConversationType.direct &&
-        c.participantIds.contains(snowId));
-
-    if (existing.isNotEmpty) {
+    if (conversations.any(
+      (c) => c.type == ConversationType.direct && c.id == convId,
+    )) {
       context.pop();
-      context.push('/chat/${existing.first.id}');
+      context.push('/chat/$convId');
       return;
     }
 
-    // Phase 3: Create conversation via server API (single ID)
+    // Ask the server whether a 1:1 may start (a friend or a community
+    // co-member; refused otherwise). Its reply never names the room.
     try {
       final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.post(
+      await apiClient.post(
         ApiEndpoints.conversationFindOrCreate,
         data: {'recipientSnowchatId': snowId},
       );
-      final convId = (response.data as Map)['id'] as String;
 
       // Add to conversation list BEFORE navigating so chatProvider
       // can resolve recipientSnowchatId immediately (avoids group fallback bug).
       final notifier = ref.read(conversationListProvider.notifier);
-      final alreadyExists =
-          ref.read(conversationListProvider).any((c) => c.id == convId);
+      final alreadyExists = ref
+          .read(conversationListProvider)
+          .any((c) => c.id == convId);
       if (!alreadyExists) {
-        notifier.addConversation(Conversation(
-          id: convId,
-          type: ConversationType.direct,
-          participantIds: [myId, snowId],
-          title: _foundUser?['displayName'] as String?,
-          createdAt: DateTime.now(),
-        ));
+        notifier.addConversation(
+          Conversation(
+            id: convId,
+            type: ConversationType.direct,
+            participantIds: [myId, snowId],
+            title: _foundUser?['displayName'] as String?,
+            createdAt: DateTime.now(),
+          ),
+        );
       }
 
       // Refresh full list in background (for server-accurate data)
@@ -163,33 +169,37 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Mode selector: two equal cards
-            Row(
-              children: [
-                Expanded(
-                  child: _ModeCard(
-                    icon: Icons.person_rounded,
-                    label: 'Message',
-                    isSelected: !_isGroupMode,
-                    onTap: () => setState(() => _isGroupMode = false),
+            // Mode selector: two equal cards — only where groups can run
+            // (this build pins the server keys); otherwise this screen
+            // starts a 1:1 only.
+            if (gv2GroupsAvailable) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: _ModeCard(
+                      icon: Icons.person_rounded,
+                      label: 'Message',
+                      isSelected: !_isGroupMode,
+                      onTap: () => setState(() => _isGroupMode = false),
+                    ),
                   ),
-                ),
-                const SizedBox(width: SnowSizes.md),
-                Expanded(
-                  child: _ModeCard(
-                    icon: Icons.group_add_rounded,
-                    label: 'Group',
-                    isSelected: _isGroupMode,
-                    onTap: () {
-                      context.push('/create-group');
-                    },
+                  const SizedBox(width: SnowSizes.md),
+                  Expanded(
+                    child: _ModeCard(
+                      icon: Icons.group_add_rounded,
+                      label: 'Group',
+                      isSelected: _isGroupMode,
+                      onTap: () {
+                        context.push('/create-group');
+                      },
+                    ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: SnowSizes.lg),
-            const Divider(color: SnowColors.divider, height: 1),
-            const SizedBox(height: SnowSizes.lg),
+                ],
+              ),
+              const SizedBox(height: SnowSizes.lg),
+              const Divider(color: SnowColors.divider, height: 1),
+              const SizedBox(height: SnowSizes.lg),
+            ],
 
             const Text(
               'Enter SnowChat ID',
@@ -202,10 +212,7 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
             const SizedBox(height: SnowSizes.sm),
             const Text(
               'Enter the recipient\'s SnowChat ID to start a conversation.',
-              style: TextStyle(
-                color: SnowColors.textTertiary,
-                fontSize: 13,
-              ),
+              style: TextStyle(color: SnowColors.textTertiary, fontSize: 13),
             ),
             const SizedBox(height: SnowSizes.lg),
 
@@ -264,8 +271,7 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
                     SnowAvatar(
                       snowId: _foundUser!['snowchatId'] as String? ?? '',
                       size: 40,
-                      displayName:
-                          _foundUser!['displayName'] as String? ?? '',
+                      displayName: _foundUser!['displayName'] as String? ?? '',
                     ),
                     const SizedBox(width: SnowSizes.md),
                     Expanded(
@@ -273,8 +279,7 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _foundUser!['displayName'] as String? ??
-                                'Unknown',
+                            _foundUser!['displayName'] as String? ?? 'Unknown',
                             style: const TextStyle(
                               color: SnowColors.textPrimary,
                               fontWeight: FontWeight.w600,
@@ -321,12 +326,15 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
             ),
             const SizedBox(height: SnowSizes.md),
 
-            ...ref.watch(contactProvider)
+            ...ref
+                .watch(contactProvider)
                 .where((c) => !c.isBlocked)
-                .map((c) => _buildContactItem(
-                      c.displayName ?? c.snowChatId,
-                      c.snowChatId,
-                    )),
+                .map(
+                  (c) => _buildContactItem(
+                    c.displayName ?? c.snowChatId,
+                    c.snowChatId,
+                  ),
+                ),
           ],
         ),
       ),
@@ -345,10 +353,7 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
       leading: SnowAvatar(snowId: snowId, size: 40, displayName: name),
       title: Text(
         name,
-        style: const TextStyle(
-          color: SnowColors.textPrimary,
-          fontSize: 15,
-        ),
+        style: const TextStyle(color: SnowColors.textPrimary, fontSize: 15),
       ),
       subtitle: Text(
         '${snowId.substring(0, 10)}...${snowId.substring(snowId.length - 4)}',
@@ -405,8 +410,9 @@ class _ModeCard extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                color:
-                    isSelected ? SnowColors.primary : SnowColors.textSecondary,
+                color: isSelected
+                    ? SnowColors.primary
+                    : SnowColors.textSecondary,
                 fontSize: 14,
                 fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
               ),

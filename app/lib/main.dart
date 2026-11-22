@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-08-04 (wrap root ProviderScope in RestartWidget so "Reset App" / "Delete Account" can rebuild the whole app + provider tree in-session — clears identity-scoped in-memory state that survived storage/drift wipes). Earlier 2026-08-02 (QA_DISABLE_SCREEN_PROTECT dart-define guard around ScreenProtector — lets a headless-emulator QA build screencap the UI; prod/release keep FLAG_SECURE, default off). Earlier 2026-05-11 (App-wide screen capture protection — moved
+/// @lastUpdated 2026-11-21 (QA_DISABLE_SCREEN_PROTECT now also calls preventScreenshotOff on iOS — at start, after the first frame and on every resume — the plugin wraps the Flutter view in a secure text field when it registers, which blanked screenshots and hid the UI from XCUITest even with the flag set, and it can unwrap only once the scene is foreground-active). Earlier 2026-08-04 (wrap root ProviderScope in RestartWidget so "Reset App" / "Delete Account" can rebuild the whole app + provider tree in-session — clears identity-scoped in-memory state that survived storage/drift wipes). Earlier 2026-08-02 (QA_DISABLE_SCREEN_PROTECT dart-define guard around ScreenProtector — lets a headless-emulator QA build screencap the UI; prod/release keep FLAG_SECURE, default off). Earlier 2026-05-11 (App-wide screen capture protection — moved
 ///              ScreenProtector.protectDataLeakageOn() + preventScreenshotOn()
 ///              from per-screen wiring (5 screens) to single one-shot init in
 ///              main() before runApp. Never toggled off — every SnowChat
@@ -30,6 +30,7 @@
 ///  - _firebaseBackgroundHandler(): FCM background message handler
 ///  - _CachedDnsHttpOverrides: workaround for Dart DNS bug — resolve once at app start, then cache
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:firebase_core/firebase_core.dart';
@@ -197,6 +198,20 @@ void main() async {
   if (!disableScreenProtect) {
     await ScreenProtector.protectDataLeakageOn();
     await ScreenProtector.preventScreenshotOn();
+  } else {
+    // iOS: the plugin puts the Flutter view inside a secure text field when
+    // it registers, which also hides the screen from UI automation, so the
+    // QA build turns it off. The plugin finds the Flutter view only once the
+    // window scene is foreground-active — at cold start main() runs before
+    // that and the call does nothing — so it is made again on every resume.
+    await ScreenProtector.preventScreenshotOff();
+    // The binding holds the listener for the life of the app.
+    AppLifecycleListener(
+      onResume: () => unawaited(ScreenProtector.preventScreenshotOff()),
+    );
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(ScreenProtector.preventScreenshotOff()),
+    );
   }
 
   // Force dark status bar

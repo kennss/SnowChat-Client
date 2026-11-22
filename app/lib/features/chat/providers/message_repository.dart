@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-11-11 (at-rest level 1: received attachments are written via AttachmentStorage.ensureDirectory() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
+/// @lastUpdated 2026-11-21 (persistOutgoingMessage makes a 1:1 room's row when it is gone — after the
+///              peer deleted the chat, messages sent from the still-open screen had no row and the
+///              chat vanished from the list on restart). Earlier 2026-11-21 (P5.6: a received attachment is written only under a checked file id and extension (AttachmentStorage.relativePathFor)). Earlier 2026-11-20 (v1 groups removed: recipientId / groupId are fixed by the chat's id; the per-chat message_deleted listener is gone — a remote unsend is applied once, by GlobalMessageRouter; deleteConversationLocally wipes the Signal session of the room's peer (its id) and translates its comments). Earlier 2026-11-11 (at-rest level 1: received attachments are written via AttachmentStorage.ensureDirectory() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
 ///
 /// @functions
 ///  - MessageRepository: message data layer (drift SSoT, server fetch, socket reception)
@@ -12,7 +14,7 @@
 ///  - persistMessage(): persist a single message into drift DB
 ///  - persistServerMessages(): batch-persist messages fetched from server
 ///  - watchMessages(): return a drift watch stream
-///  - startSocketListeners(): register socket event listeners
+///  - startSocketListeners(): register the message-status listener
 ///  - convertToMessage(): LocalMessage -> Message conversion
 ///  - updateConversationListPreview(): update conversation-list preview
 ///  - deleteMessageLocally(): delete a single message + attachments + local files
@@ -60,8 +62,11 @@ class MessageRepository {
   final Ref? _ref;
   final ExpiringMessageManager? _expiringManager;
 
-  String? recipientId;
-  String? groupId;
+  /// The peer's snowId of a 1:1 room (its id); null for a group.
+  final String? recipientId;
+
+  /// The id of a group protocol v2 group (its id); null for a 1:1 room.
+  final String? groupId;
   bool get isGroup => groupId != null;
 
   /// Callback for when a new incoming message is received via socket.
@@ -72,11 +77,7 @@ class MessageRepository {
   void Function(String messageId, MessageStatus newStatus, {String? serverMessageId})?
       onMessageStatusChanged;
 
-  /// Callback for when a message is remotely deleted.
-  void Function(String messageId)? onMessageDeleted;
-
   StreamSubscription<Map<String, dynamic>>? _messageStatusSubscription;
-  StreamSubscription<Map<String, dynamic>>? _messageDeletedSubscription;
 
   MessageRepository({
     required this.conversationId,
@@ -107,7 +108,7 @@ class MessageRepository {
   /// Access FileService for attachment upload/download.
   FileService? get fileService => _fileService;
 
-  /// Access ApiClient for server API calls (e.g., group member fetch).
+  /// Access ApiClient for server API calls (1:1 clear / delete).
   ApiClient? get apiClient => _apiClient;
 
   /// Access AttachmentDao for sender-side attachment creation.
@@ -176,34 +177,9 @@ class MessageRepository {
   /// _processPrivate1to1.findOrCreate path.
   Future<void> deleteConversationLocally() async {
     try {
-      // 2026-05-04 회귀 fix: 1:1 conversation 의 경우 peer 의 SnowChat ID 를
-      // 미리 조회. 아래에서 conversation row 가 삭제되면 participantIds 를
-      // 더 이상 못 읽으므로 *반드시* 삭제 전에 추출해야 함.
-      String? peerSnowIdToWipe;
-      if (_ref != null) {
-        try {
-          final convDao = _ref!.read(conversationDaoProvider);
-          final conv = await convDao.getConversation(conversationId);
-          if (conv != null && conv.type == 'direct' && conv.groupId == null) {
-            // participantIds holds the SnowChat IDs (self + peer for 1:1); pick
-            // the entry that isn't us. The column is written as CSV, so a plain
-            // jsonDecode threw FormatException here and silently skipped the
-            // Signal session wipe below (reintroducing the 2026-05-04
-            // stale-ratchet loop on delete). Use the DAO's tolerant parser.
-            final mySnow = _ref!.read(currentSnowIdProvider);
-            final list = convDao.participantIdsOf(conv.participantIds);
-            for (final p in list) {
-              if (p != mySnow) {
-                peerSnowIdToWipe = p;
-                break;
-              }
-            }
-          }
-        } catch (e) {
-          debugPrint('[MessageRepo] peer lookup before delete failed '
-              '(non-fatal): $e');
-        }
-      }
+      // 2026-05-04 regression fix: for a 1:1 the peer's Signal session is
+      // wiped below. The room's id is the peer's snowId (recipientId).
+      final peerSnowIdToWipe = recipientId;
 
       final dao = _attachmentDao;
       if (dao != null) {
@@ -235,15 +211,16 @@ class MessageRepository {
         await convDao.deleteConversation(conversationId);
       }
 
-      // 2026-05-04 회귀 fix: 1:1 인 경우 Signal SessionStore 도 wipe.
-      // drift row 만 지우고 ratchet state 남기면 같은 peer 와 다시 메시지
-      // 주고받을 때 stale state 로 decrypt 시도 → 실패 → archiveAndResetSession
-      // → 양쪽 동시 reset → X3DH bootstrap race → 서로 다른 session 생성 →
-      // session_reset 무한 loop (사용자 보고 "1:1 채팅 삭제 후 같은 peer 와
-      // 메시징 + 그룹 통신 모두 깨짐" 2026-05-04). deleteSessionForPeer 는
-      // peer 한테 알림 안 보냄 — 우리만 깨끗해지고, peer 가 다음 메시지 보낼
-      // 때 prekey-message 가 X3DH bootstrap 트리거해서 fresh session 자연
-      // convergence.
+      // 2026-05-04 regression fix: for a 1:1 the Signal SessionStore is wiped
+      // too. Deleting only the drift rows and keeping the ratchet state makes
+      // the next exchange with the same peer try to decrypt with stale state
+      // → fail → archiveAndResetSession → both sides reset at once → X3DH
+      // bootstrap race → different sessions → endless session_reset loop
+      // (user report "after deleting a 1:1 chat, messaging with the same peer
+      // + group communication all broken" 2026-05-04). deleteSessionForPeer
+      // does not notify the peer — only our side is cleaned, and the peer's
+      // next prekey message triggers an X3DH bootstrap that converges on a
+      // fresh session naturally.
       if (peerSnowIdToWipe != null && _ref != null) {
         try {
           final sessionMgr = _ref!.read(signalSessionManagerProvider);
@@ -336,6 +313,21 @@ class MessageRepository {
     required int sentTimestamp,
   }) async {
     try {
+      // A 1:1 room whose row is gone — the peer deleted the chat (both sides)
+      // while this screen stayed open — gets it back, as the receive path
+      // does (findOrCreate). insertOutgoingMessage only refreshes an existing
+      // row, so the message was stored with no chat to show it after a
+      // restart. A v2 group's row is never made here (recipientId is null).
+      final peer = recipientId;
+      final ref = _ref;
+      if (peer != null && ref != null) {
+        await ref.read(conversationDaoProvider).findOrCreate(
+              id: conversationId,
+              type: 'direct',
+              participantIds: [_myId, peer],
+              title: peer,
+            );
+      }
       await _messageDao.insertOutgoingMessage(
         message: companion,
         conversationId: conversationId,
@@ -444,26 +436,18 @@ class MessageRepository {
   // Socket listeners
   // ---------------------------------------------------------------------------
 
-  /// Phase 6: Subscribe only to message status + remote deletion events.
-  /// Incoming messages (1:1, group, SKDM, system) are handled by the
-  /// global MessageQueue which writes to drift; this repository observes
-  /// drift via watchMessages() and never decrypts.
+  /// Phase 6: Subscribe only to message status events. Incoming messages
+  /// are handled by the global MessageQueue (1:1) and the group protocol v2
+  /// inbox, which write to drift; this repository observes drift via
+  /// watchMessages() and never decrypts. A remote unsend (message_deleted)
+  /// is applied once, by GlobalMessageRouter.
   void startSocketListeners() {
     final sm = _socketManager;
     if (sm == null) return;
 
     // Message status changes (sent → delivered → read)
     _messageStatusSubscription = sm.onMessageStatus.listen(_handleMessageStatus);
-
-    // Remote deletion
-    _messageDeletedSubscription =
-        sm.onMessageDeleted.listen(_handleMessageDeleted);
   }
-
-  // Phase 6: _handlePrivateMessage / _handleGroupMessage / _handleSenderKeyDistribution
-  // removed. All incoming message processing is now in
-  // app/lib/core/messaging/message_queue.dart (single serial worker, atomic
-  // drift writes, ACK after success).
 
   void _handleMessageStatus(Map<String, dynamic> data) {
     final serverMsgId = data['messageId'] as String?;
@@ -485,13 +469,6 @@ class MessageRepository {
     } else {
       if (serverMsgId == null) return;
       onMessageStatusChanged?.call(serverMsgId, newStatus);
-    }
-  }
-
-  void _handleMessageDeleted(Map<String, dynamic> data) {
-    final messageId = data['messageId'] as String?;
-    if (messageId != null) {
-      onMessageDeleted?.call(messageId);
     }
   }
 
@@ -593,9 +570,10 @@ class MessageRepository {
       // Creates the dir with its at-rest policy (iOS: backup-excluded,
       // CompleteUnlessOpen — writable while locked, unreadable once closed).
       await AttachmentStorage.ensureDirectory();
-      final ext = fileName.contains('.') ? fileName.split('.').last : 'bin';
-      // Store relative path — immune to iOS container UUID changes
-      final relativePath = 'snowchat_attachments/$fileId.$ext';
+      // Store relative path — immune to iOS container UUID changes. The id and
+      // the extension come from the sender: checked, so they cannot leave the
+      // attachments directory.
+      final relativePath = AttachmentStorage.relativePathFor(fileId, fileName);
       await File('${dir.path}/$relativePath').writeAsBytes(plainBytes);
 
       await dao.finalizeDownload(attachmentId, relativePath);
@@ -793,6 +771,5 @@ class MessageRepository {
   /// Clean up subscriptions.
   void dispose() {
     _messageStatusSubscription?.cancel();
-    _messageDeletedSubscription?.cancel();
   }
 }

@@ -2,18 +2,13 @@
 /// @description Renders identity events into user-visible state. Subscribes
 ///              to VerifiedIdentityStore events (B-2 Identity Binding v1) and,
 ///              per event kind:
-///                - legacyKeyChanged        → amber key-change latch +
-///                                            "security keys changed" message
-///                - legacyKeyChangeBlocked  → red latch + "verify again to
-///                                            keep messaging" message
 ///                - deviceKeysChanged       → non-blocking "device keys
 ///                                            changed (reinstall?)" message
 ///                                            (Safety Number v2 is unchanged)
-///                - interceptionSuspected   → red latch + "earlier messages
-///                                            may have been intercepted"
-///                - bindingRejected         → security warning message
-///                                            (downgrade gets an "older app
-///                                            version" wording)
+///                - bindingRejected         → identity-rejection latch (the
+///                                            chat banner) + security warning
+///                                            message (downgrade gets an
+///                                            "older app version" wording)
 ///              System messages land in the peer's 1:1 conversation when one
 ///              exists. Persistent side-effects are rate-limited per
 ///              (peer, kind) so a hostile server flapping keys cannot spam the
@@ -22,7 +17,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-11-11 (bindingRequired rejection text). Earlier 2026-11-10 (B-2: event-driven from VerifiedIdentityStore —
+/// @lastUpdated 2026-11-21 (two event kinds left — deviceKeysChanged and bindingRejected; the legacy key-change and interception notices are gone with the legacy TOFU policy). Earlier 2026-11-11 (bindingRequired rejection text). Earlier 2026-11-10 (B-2: event-driven from VerifiedIdentityStore —
 ///              replaces handleMismatch(), which callers invoked from catch
 ///              blocks; Safety Number is no longer recomputed here because v2
 ///              is over ACCOUNT keys and does not change on device-key changes)
@@ -97,9 +92,7 @@ class IdentityChangeHandler {
   Future<void> _render(IdentityStoreEvent e) async {
     final peer = e.peerSnowchatId;
     if (peer.isEmpty) return;
-    final critical = e.kind == IdentityEventKind.legacyKeyChangeBlocked ||
-        e.kind == IdentityEventKind.interceptionSuspected ||
-        e.kind == IdentityEventKind.bindingRejected;
+    final critical = e.kind == IdentityEventKind.bindingRejected;
 
     final rateKey = '$peer|${e.kind.name}';
     final now = DateTime.now();
@@ -130,17 +123,11 @@ class IdentityChangeHandler {
 
   Future<void> _persist(IdentityStoreEvent e, bool critical) async {
     final peer = e.peerSnowchatId;
-    // 1. Banner latch (deviceKeysChanged is informational only — the account
-    //    fingerprint did not change, so no banner).
-    switch (e.kind) {
-      case IdentityEventKind.legacyKeyChanged:
-        await _dao.markKeyChange(snowchatId: peer);
-      case IdentityEventKind.legacyKeyChangeBlocked:
-      case IdentityEventKind.interceptionSuspected:
-      case IdentityEventKind.bindingRejected:
-        await _dao.markKeyChange(snowchatId: peer, critical: true);
-      case IdentityEventKind.deviceKeysChanged:
-        break;
+    // 1. Banner latch for a rejected identity (deviceKeysChanged is
+    //    informational only — the account fingerprint did not change, so no
+    //    banner).
+    if (e.kind == IdentityEventKind.bindingRejected) {
+      await _dao.markIdentityRejected(snowchatId: peer);
     }
 
     // 2. In-conversation system message.
@@ -162,13 +149,8 @@ class IdentityChangeHandler {
 
   static String _eventTypeFor(IdentityEventKind kind) {
     switch (kind) {
-      case IdentityEventKind.legacyKeyChanged:
-      case IdentityEventKind.legacyKeyChangeBlocked:
-        return 'safety_number_changed';
       case IdentityEventKind.deviceKeysChanged:
         return 'device_keys_changed';
-      case IdentityEventKind.interceptionSuspected:
-        return 'identity_interception_suspected';
       case IdentityEventKind.bindingRejected:
         return 'identity_binding_rejected';
     }
@@ -176,20 +158,9 @@ class IdentityChangeHandler {
 
   static String _textFor(IdentityStoreEvent e) {
     switch (e.kind) {
-      case IdentityEventKind.legacyKeyChanged:
-        return "This contact's security keys changed (for example after a "
-            'reinstall). Tap to verify.';
-      case IdentityEventKind.legacyKeyChangeBlocked:
-        return 'You verified this contact, but their security keys changed. '
-            'Messaging is paused until you verify them again.';
       case IdentityEventKind.deviceKeysChanged:
         return "This contact's device keys changed (for example after a "
             'reinstall). Their account is the same.';
-      case IdentityEventKind.interceptionSuspected:
-        return 'Warning: the keys used earlier in this conversation were not '
-            "signed by this contact's account. Earlier messages may have been "
-            'intercepted. Verify this contact before sharing anything '
-            'sensitive.';
       case IdentityEventKind.bindingRejected:
         if (e.reason == IdentityBindingFailure.bindingRequired) {
           return "This contact's app did not prove their identity, so "

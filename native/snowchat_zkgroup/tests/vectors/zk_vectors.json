@@ -1,0 +1,80 @@
+{
+  "comment": "Test-only keys generated for this file. See server/scripts/generate-zk-test-vectors.ts.",
+  "libsignal": "0.107.0",
+  "now": 1794501673,
+  "serverSecretParams": "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",
+  "serverPublicParams": "AMD2sc7lkzgj3O+pRYEBOJWjGZjWNBWPL49B1sGgyqw2xm31v1R/+G+JQztSWREn7S9PqiK2iCttQrIjGXH142J2n6Q6bB7UIKUdFgwW4o0P3wK4mx71e7xcG/kvXvGtSLrWhGZP1FzZLKYOyQSSYzCpwMmzRYpYE/pdmbZMT5BNpHyhKZCUoNFkOEnz3jU5SHD+3v9Kt0WOtD6R6/Qdb2VKCJ60OEcLd1TBYOFUrG5gTwoYXGy816nVhTlatir1M8T+jfUMOlIJQsfBto2PolVv5DfgzdIagJn5PNOtsOVdgOdCADqTfIkcNTCeQwNF5uD9ZziUFLOBZAUjWabvaSfe1+82XTNeDrQgcOG3JqHzoKc8qhmv0jjfZTQHvIzkLrInMELQMDG8oTfBhz9KCdPaGtwTjhNEy38Vl35x27gSeE/dLbIbarl9Q4i8IqfmyjK5G+v2RcLMRcQchmC7dSOSfUQzCAJZCLwbTp70ID/gd+PrUT8sGsASncldFseuR7qgyCm/kaK7tRA6L1F7oUErLcLhitTUhIJbrwt0wc8lUKcE/oaGoZCfpNA3Z59JnQMPoWgOFg6/opSMP5fl82uWfpdyKpsLbqN+cSQyTtGXR9i1MPOAFpgRENy9cSgGSnQ4Xg9RQZFQ+ghRrC+VV6K1VoetXuobRemuRGnpoVQ12irAyEa4jEr7v1T7tg6Y8J8cqvzNIIHmst/kWcKTTxBqX/OJO8M1LgnEhdklWrl0I4/dKDwqHnTQKsxL88DBTl7N3U8SVWmU+uPYb1bAxtW1cLoCmSZEOUhe8efBKkgeKDG83bDoSdbWCGSnkHMeKVzxsSLM7FuKY5Zx5DJyyGoIl+3JidBcK1Y2/AJFJ4w4Bm5JcVH29E0ZjG3pcINyFg==",
+  "masterKey": "Ync0cgQH1/n++J2g2g8Xe1rxRcNhOsKsGebsQhp7904=",
+  "groupId": "F5rMV1pOZtijl1gQHUQxD625/taqL0IQClujJabcFeM=",
+  "groupPublicParams": "ABeazFdaTmbYo5dYEB1EMQ+tuf7Wqi9CEApboyWm3BXjtttHV+NbbI+Y205P9azwX4dJ2mfp7rQjn/VYPaadbEBaCF3SqRlYOeIhpNbtljyrCwAhJTtl7KC41oWL9hOxHA==",
+  "members": [
+    {
+      "accountId": "2VNX26pjFTU/Dfb9/f7p2A==",
+      "ciphertext": "ABTw/R15Aqg6qImXuRwSIXI2EBdiS3/rHJHUTaC5+wwVfnjvklS7Eh/Nqbqw7TEWm8iBC9eb/TfW2tTWk4FMqwg="
+    },
+    {
+      "accountId": "YdntwYU++35iZeSPqg/6rw==",
+      "ciphertext": "AIaqGnMj4stuQZpvRJoT7SiTPjh0I5qTAyZLiVwIPXB64Jvq+zhDjYrwGW1yYXbf88yw88tqJK257H3AsCAP028="
+    },
+    {
+      "accountId": "2umzGSN3+4tBpY5bu7XX6Q==",
+      "ciphertext": "AOa+SVzkqkf0q/oh4ryFXoUBZD/4edDXXj7yeVJpfelabJjtL8/LiDW3s36A71Yy3U1Clj9KIp8yYHsQiELtqA4="
+    },
+    {
+      "accountId": "NkwU/7+LXeacdslN4Bw+Tg==",
+      "ciphertext": "AH6n/i3b3eul/0RTAncGHNUr/JhlzOzLdjOhjPP7OEoBaMYwrSmcrYMg3ViD6GgmHEGpZQJzgvAP3zpok5oJWjE="
+    },
+    {
+      "accountId": "PDHcZWERpnDN5eLThPO82Q==",
+      "ciphertext": "AO7Bx5qsXJFADzT/jg/5Th/fRycJjBYSdV/tX0rxzEZlEDoogi1KhwdSBFkeSwqdIQbUayS0QPhBJp/eIqvKvSo="
+    },
+    {
+      "accountId": "t2ooMacn8FlsXgQdgEr7cA==",
+      "ciphertext": "AMbq5omDBwiltgZlnrDx1TDf/TltVYVEj6EqRCnx4Jxaehd4qUqEXkKSKn7XdBqExpsvEkpUFpAcUiNJMbh7yng="
+    }
+  ],
+  "credential": {
+    "salt": "uIqABSrEigjsZ+aUgIclgGvIWtS+aCRg186I/s0Mk3M=",
+    "redemptionTime": 1794441600,
+    "response": "Az14+erp0kUeDRiD98cwYQE8YGG+sITAsIbFLIy4JgwDiug1b/8NawhnDxNC2W5rAraDQ5NKshJAb4kpYSLJ8jYk0+CT66gi+TL0mSLAYaOGwsHKXCz7kVnzNm2vCLBeCEABAAAAAAAAiZVtq90VvAScT/sttkcY0M4BdvqMtKTE8UBvKy3xFQyDs33RcqRTQ2j/7gqyJuJnanXnPD3tTDawv65kfjoQBMwI+uiTc4LKaQH8xw2qQ/nrzfxxgr66ubu4okH52qIIILTN8JfYEMIGVa6jwcBnaEKBrsT5eK1xly0Gv871awDa2d1iHqrP3W+tKIWoXg3qllt2aprQ7V4fVkyYW0PFCPRnvXcfVFJHAhAwJ5K1M8jKO4IKLcc3gvc9hf8ypTkOsIy9ul4mM7yh3pspYeqEISt3Cl/L807TEurT9jtTSgyPOa+CaF3iwHSrtBs0dugURq9DeXoW+0G/zaNzsv0uAd0ZjKFTQNTVkg7Z9bXnP7w10xvJW9A/TBaouqlqSssDhQlB6Y1CSGm7uuOg5d+It5o7+Bb/yV5vDkzPZoTKlA4=",
+    "received": "Az14+erp0kUeDRiD98cwYQE8YGG+sITAsIbFLIy4JgwDiug1b/8NawhnDxNC2W5rAraDQ5NKshJAb4kpYSLJ8jYk0+CT66gi+TL0mSLAYaOGwsHKXCz7kVnzNm2vCLBeCNlTV9uqYxU1Pw32/f3+6dhUjNGj0QpNTqwsK+arS/r+crC+aFYXYgIBsWQoWQfkeqp3RrVaYKyczQPI0TbhYGa0lweZH7c6nSjyso9hs9p6AAAAAAAAAAAAAAAAAAAAAOQzJn4T4v8i2CF3FE8kGucIkNm3+8NVYrT8f4sIRTYBIHIASTozeQYpFkp/kCtSfE0eBBGJskf142KQKc33cxiAAfVqAAAAAA=="
+  },
+  "endorsements": {
+    "expiration": 1794614400,
+    "response": "AAYAAAAAAAAA8l/Q5zhJqp/cA1wOqd/EfZ6G6I664ulSIXjmB+Q9Znw0YDrXsmnPSPjRE2CgG5S3cH+kUw66SwgtAmHP2WVmJsQO50jJUq0PW7WZlP38hpzNzROXCf0Q2hSkKjsqrBlDcDGXnq1S380pH/htx5zfogfFrNUPt63pjRRkrX/h6VJ+zPXef+MNze/VXnoEzCBtHanU3/6q4tk3ARpzMzgqOTIc/wCUFS0xvCHYupnHPtbGyG2+dY781gX8llMYgPNfQAAAAAAAAACGfudBvGAJ8OHiUJx+A46mD6CLqsU6qnuJAYIcNHNSDdXPdL+owYzHeQe9egi1jtrEdp3/wEtwEMsIwKGucMMIgKT3agAAAAA=",
+    "received": [
+      "ADRgOteyac9I+NETYKAblLdwf6RTDrpLCC0CYc/ZZWYm",
+      "AMQO50jJUq0PW7WZlP38hpzNzROXCf0Q2hSkKjsqrBlD",
+      "ADIc/wCUFS0xvCHYupnHPtbGyG2+dY781gX8llMYgPNf",
+      "APJf0Oc4Saqf3ANcDqnfxH2ehuiOuuLpUiF45gfkPWZ8",
+      "AH7M9d5/4w3N79VeegTMIG0dqdTf/qri2TcBGnMzOCo5",
+      "AHAxl56tUt/NKR/4bcec36IHxazVD7et6Y0UZK1/4elS"
+    ]
+  },
+  "tokens": [
+    {
+      "members": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "token": "ABAAAAAAAAAAsboXUJvYCp6zLuhNWGqH/4Ck92oAAAAA"
+    },
+    {
+      "members": [
+        1,
+        3
+      ],
+      "token": "ABAAAAAAAAAAvTSh2Y9qhIitNuV6jYwyB4Ck92oAAAAA"
+    },
+    {
+      "members": [
+        2
+      ],
+      "token": "ABAAAAAAAAAATTuZhobbRDoGmMqcVrJNW4Ck92oAAAAA"
+    }
+  ]
+}

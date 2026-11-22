@@ -15,7 +15,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-11 (bindingRequired reason — unbound peers refused when bindings are mandatory). Earlier 2026-11-10
+/// @lastUpdated 2026-11-20 (bindingRequired: bindings are always mandatory — no build switch). Earlier 2026-11-11 (bindingRequired reason — unbound peers refused when bindings are mandatory). Earlier 2026-11-10
 ///
 /// @functions
 ///  - IdentityBindingFailure: reason taxonomy
@@ -49,9 +49,9 @@ enum IdentityBindingFailure {
   /// Binding's X25519 identity key differs from the key actually used in X3DH.
   identityKeyMismatch,
 
-  /// Peer presented no binding at all while bindings are mandatory
-  /// (AppConfig.allowUnboundIdentity == false — every beta and self-hosted
-  /// build). Treated exactly like tampering: refuse, never fall back to TOFU.
+  /// Peer presented no binding at all. Bindings are mandatory (always, since
+  /// 2026-11-20). Treated exactly like tampering: refuse, never fall back to
+  /// TOFU.
   bindingRequired,
 }
 

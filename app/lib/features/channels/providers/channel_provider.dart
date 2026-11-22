@@ -1,9 +1,11 @@
 /// @file        channel_provider.dart
-/// @description Channel state-management Provider — Phase 7 Channel != GroupChat split + Phase 9.1 PERSONAL channel.
+/// @description Channel state-management Provider — communities (member lists) + Phase 9.1 PERSONAL channel (friends).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-21 (a friend request sent by nickname is remembered and vouched for once the
+///              accepted friend list shows that nickname — settleNickFriendRequests, run by
+///              friendListProvider and the group picker). Earlier 2026-11-21 (X1: after a ban the device block list syncs (a friend ban blocks on the server)). Earlier 2026-11-21 (a friend request sent or accepted vouches for the account (VerifiedIdentityStore.vouch); acceptFriendRequest takes the request). Earlier 2026-11-20 (v1 groups removed: no mute toggle — a community has no rooms to notify about). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - myChannelsProvider: my channel list (COMMUNITY only)
@@ -14,15 +16,19 @@
 ///  - channelDiscoverProvider: public channel discovery
 ///  - channelSearchProvider: channel search
 ///  - inviteInfoProvider: invite-code lookup
-///  - ChannelActions: join/leave/mute/apply/invite/admin actions
+///  - ChannelActions: join/leave/apply/invite/admin actions
 ///  - FriendActions: add/accept/remove friend actions
 ///  - channelCategories: category constants
+
+import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
+import '../../../core/crypto/verified_identity_store.dart'
+    show VerifiedIdentityStore, VouchSource;
 import '../../../core/network/api_endpoints.dart';
 import '../models/channel.dart';
 
@@ -95,10 +101,27 @@ final friendListProvider = FutureProvider.autoDispose<List<FriendInfo>>((ref) as
   final data = await ref.watch(personalChannelProvider.future);
   if (data == null) return [];
   final friends = (data['friends'] as List?) ?? [];
-  return friends
+  final list = friends
       .map((f) => FriendInfo.fromJson(Map<String, dynamic>.from(f as Map)))
       .toList();
+  // A request this user sent by nickname vouches once it shows here,
+  // accepted (VerifiedIdentityStore.settleNickRequests).
+  await settleNickFriendRequests(ref.read(verifiedIdentityStoreProvider), list);
+  return list;
 });
+
+/// Vouch for the accepted [friends] this user had asked by nickname. The
+/// friend list's displayName is the nickname (unique on the server).
+/// Best-effort: a storage failure leaves the requests for the next time.
+Future<void> settleNickFriendRequests(
+    VerifiedIdentityStore store, List<FriendInfo> friends) async {
+  try {
+    await store.settleNickRequests(
+        friends.map((f) => (snowId: f.snowchatId, nick: f.displayName)));
+  } catch (e) {
+    debugPrint('[FriendActions] settle nickname requests failed: $e');
+  }
+}
 
 /// Incoming friend requests — PERSONAL channels where I have pending membership.
 /// These come from GET /channels/my → pendingChannels where type == PERSONAL.
@@ -220,19 +243,7 @@ class ChannelActions {
     }
   }
 
-  /// Toggle mute for a channel.
-  Future<bool> muteChannel(String channelId, bool muted) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      await apiClient.post('/channels/$channelId/mute', data: {'muted': muted});
-      return true;
-    } catch (e) {
-      debugPrint('[ChannelActions] Mute failed: $e');
-      return false;
-    }
-  }
-
-  /// Leave a channel (removes from all rooms + channel).
+  /// Leave a channel.
   Future<bool> leaveChannel(String channelId) async {
     try {
       final apiClient = _ref.read(apiClientProvider);
@@ -317,6 +328,9 @@ class ChannelActions {
     try {
       final apiClient = _ref.read(apiClientProvider);
       await apiClient.post(ApiEndpoints.channelBan(channelId, userId));
+      // Banning from the PERSONAL channel (a friend) blocks the account on
+      // the server: this device's block list takes it in now (X1).
+      unawaited(_ref.read(blockListProvider).sync());
       return true;
     } catch (e) {
       debugPrint('[ChannelActions] Ban failed: $e');
@@ -428,7 +442,9 @@ class FriendActions {
   final Ref _ref;
   FriendActions(this._ref);
 
-  /// Send a friend request by snowchatId.
+  /// Send a friend request by snowchatId. The user chose this account: it is
+  /// vouched for (VouchSource.friendRequest) once the server took the
+  /// request.
   /// Returns status string: 'pending', 'already_friend', 'already_pending', or 'error'.
   Future<String> addFriend(String snowchatId) async {
     try {
@@ -437,6 +453,9 @@ class FriendActions {
         ApiEndpoints.personalChannelAdd,
         data: {'snowchatId': snowchatId},
       );
+      await _ref
+          .read(verifiedIdentityStoreProvider)
+          .vouch(snowchatId, VouchSource.friendRequest);
       return (res.data['status'] as String?) ?? 'pending';
     } catch (e) {
       debugPrint('[FriendActions] Add friend failed: $e');
@@ -470,13 +489,18 @@ class FriendActions {
 
   /// Send a friend request by redeeming a nick-invite opaque token. Returns the
   /// same status strings as [addFriend], plus 'expired' when the token is gone.
-  Future<String> addFriendByToken(String inviteToken) async {
+  ///
+  /// [nick] is the nickname the token was looked up for: the request is
+  /// remembered under it and vouched for once the accepted friend list shows
+  /// it (this path never names the account — settleNickFriendRequests).
+  Future<String> addFriendByToken(String inviteToken, {required String nick}) async {
     try {
       final apiClient = _ref.read(apiClientProvider);
       final res = await apiClient.post(
         ApiEndpoints.personalChannelAddByToken,
         data: {'inviteToken': inviteToken},
       );
+      await _ref.read(verifiedIdentityStoreProvider).rememberNickRequest(nick);
       return (res.data['status'] as String?) ?? 'pending';
     } catch (e) {
       if (e is DioException && e.response?.statusCode == 410) return 'expired';
@@ -485,11 +509,18 @@ class FriendActions {
     }
   }
 
-  /// Accept a friend request (bidirectional).
-  Future<bool> acceptFriendRequest(String channelId) async {
+  /// Accept a friend request (bidirectional). The user chose its sender: it
+  /// is vouched for (VouchSource.friendAccepted).
+  Future<bool> acceptFriendRequest(PendingChannel request) async {
     try {
       final apiClient = _ref.read(apiClientProvider);
-      await apiClient.post(ApiEndpoints.personalChannelAccept(channelId));
+      await apiClient.post(ApiEndpoints.personalChannelAccept(request.id));
+      final requester = request.creatorSnowchatId;
+      if (requester != null) {
+        await _ref
+            .read(verifiedIdentityStoreProvider)
+            .vouch(requester, VouchSource.friendAccepted);
+      }
       return true;
     } catch (e) {
       debugPrint('[FriendActions] Accept friend failed: $e');

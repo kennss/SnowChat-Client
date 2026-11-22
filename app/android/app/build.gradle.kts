@@ -89,6 +89,11 @@ dependencies {
     // 도 함께 삭제. JAR 에 번들된 모든 플랫폼 native lib (.dylib .dll 등) 이
     // APK 에 딸려가던 ~30 MB dead weight 제거.
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.0")
+    // On-device translation (TranslationBridge.kt). Native Gradle deps instead of
+    // the google_mlkit_* Flutter plugins so iOS does not link ML Kit (2026-11-11).
+    // Same versions the plugins pinned.
+    implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.google.mlkit:language-id:17.0.6")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 

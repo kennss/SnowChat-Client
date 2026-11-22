@@ -3,7 +3,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-11 (At-rest protection level 1: snowDatabaseProvider opens the drift DB through SQLCipher via openEncryptedDatabase (random 256-bit key in secure storage, key creation main-isolate only, retry after a locked keychain); deleteDriftDatabaseFile(storage) deletes the DB files then the key; the iOS fresh-install keychain purge moved into ensureFreshInstallSecureStoragePurge() (memoized) and is awaited by the DB opener before the key is read; startup applies the attachments-dir protection). Earlier 2026-11-10 (B-2 Identity Binding v1: identityPinStoreProvider → verifiedIdentityStoreProvider (wired to IdentityVerificationDao for the verified-peer lookup and to IdentityChangeHandler for user-visible identity events); app startup drops pre-v2 Safety Number rows once per launch (idempotent)). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: TransferService is no longer instantiated at startup when AppConfig.enableWallet is false, so incoming transfer requests cannot raise a confirm dialog). Earlier 2026-08-04 (deleteDriftDatabaseFile(): remove snowchat.db + WAL/SHM on app reset / account delete so a newly created identity does not inherit the prior account's conversations — path co-located with _openDb). Earlier 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
+/// @lastUpdated 2026-11-22 (sealedSenderAutoInitProvider builds SealedSenderService from the server
+///              keys pinned in the build — no /auth/server-key fetch, SC-06; the session manager's
+///              sessionResetNotifier is the handler's sealed sendSealedSessionReset, SC-05; CallService
+///              gets the fingerprint signing seed and the peer's bound Ed25519 key, SC-10). Earlier 2026-11-22 (passcodeStoreProvider — the app passcode, salted Argon2id; startup asks it
+///              whether a passcode is set). Earlier 2026-11-21 (directOutboxProvider — the 1:1 outbox). Earlier 2026-11-21 (X1: blockListProvider — the accounts this user blocked, on this device, synced on connect; wired into the decrypt and the call signaling; P5.6: the status of a sent group message is written by the sink in the outbox's transaction, not by a listener afterwards; sealed sender init no longer gives up for the session — past its quick retries it tries again on the next socket connect or every 3 minutes; groups and calls stood on it; P5.6: no automatic accept of group invites — both conditions it stood on were the server's to make; a group invite is kept on disk by the 1:1 queue before it is acknowledged, whether or not the group runtime is up). Earlier 2026-11-21 (identity: no verifiedLookup wiring, no Safety Number v1 row drop at startup (old data), the identity-change handler is instantiated instead of assigned to unused fields). Earlier 2026-11-20 (group protocol v2 has no build flag — it runs wherever the server keys are pinned. v1 groups removed: no groupSessionManagerProvider; the message router takes no E2EE handler or account id; PushService takes no socket manager. Group protocol v2: no runtime without server keys trusted for the environment — gv2_trusted_keys.dart; the outbox's send results are written to the message rows, and the Chats list is told when a group changes; the runtime gets the group key backup — Gv2BackupClient and IdentityManager.deriveGroupBackupKey). Earlier 2026-11-13 (group protocol v2: gv2RuntimeProvider — built behind AppConfig.enableGroupsV2 once an account is signed in and the sealed sender service is up; group actions (create, invite, accept) with the invite message on the sealed 1:1 path and the friend + confirmed-identity rule for accepting without asking; takes the rows of the group queue from the socket and from MessageQueue.fetchPending, acknowledges them, and stores verified group messages through Gv2AppMessageSink). Earlier 2026-11-11 (At-rest protection level 1: snowDatabaseProvider opens the drift DB through SQLCipher via openEncryptedDatabase (random 256-bit key in secure storage, key creation main-isolate only, retry after a locked keychain); deleteDriftDatabaseFile(storage) deletes the DB files then the key; the iOS fresh-install keychain purge moved into ensureFreshInstallSecureStoragePurge() (memoized) and is awaited by the DB opener before the key is read; startup applies the attachments-dir protection). Earlier 2026-11-10 (B-2 Identity Binding v1: identityPinStoreProvider → verifiedIdentityStoreProvider (wired to IdentityVerificationDao for the verified-peer lookup and to IdentityChangeHandler for user-visible identity events); app startup drops pre-v2 Safety Number rows once per launch (idempotent)). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: TransferService is no longer instantiated at startup when AppConfig.enableWallet is false, so incoming transfer requests cannot raise a confirm dialog). Earlier 2026-08-04 (deleteDriftDatabaseFile(): remove snowchat.db + WAL/SHM on app reset / account delete so a newly created identity does not inherit the prior account's conversations — path co-located with _openDb). Earlier 2026-05-03 (Phase 11 — TokenManager 도입. authTokenProvider →
 ///              tokenSnapshotProvider 로 derived. tokenManagerProvider KeepAlive
 ///              SSoT. AuthService 의 onTokenRefresh callback 폐기. socket /
 ///              push token sync 도 events stream 으로 listen)
@@ -29,7 +33,6 @@
 ///  - conversationDaoProvider: ConversationDao provider (drift DB SSoT)
 ///  - sessionStoreProvider: SessionStore provider
 ///  - signalSessionManagerProvider: SignalSessionManager provider
-///  - groupSessionManagerProvider: GroupSessionManager provider
 ///  - fileServiceProvider: FileService provider
 ///  - encryptedMessageHandlerProvider: EncryptedMessageHandler provider
 ///  - notificationServiceProvider: NotificationService provider
@@ -41,7 +44,7 @@
 ///  - solanaConfigProvider: SolanaConfig provider for the current network
 ///  - transferEventBusProvider: Wallet V2 — chat transfer event broadcast bus (Phase B)
 
-import 'dart:convert';
+import '../core/security/passcode.dart';
 import 'dart:async';
 import 'dart:io';
 import 'app_config.dart';
@@ -53,10 +56,12 @@ import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import '../core/blocking/block_list.dart';
 import '../core/call/call_service.dart';
 import '../core/call/call_signaling.dart';
 import '../core/call/callkit_manager.dart';
 import '../core/call/turn_credential_manager.dart';
+import '../core/crypto/sealed_trusted_keys.dart' show sealedTrustedServerKeys;
 import '../core/crypto/encrypted_message_handler.dart';
 import '../core/crypto/identity_change_handler.dart';
 import '../features/call/providers/call_provider.dart';
@@ -67,8 +72,13 @@ export '../features/call/providers/call_provider.dart' show CallState, CallStatu
 import '../core/crypto/sealed_sender.dart';
 import '../core/crypto/sender_certificate_manager.dart';
 import '../features/chat/providers/expiring_message_manager.dart';
-import '../core/crypto/group_session_manager.dart';
+import '../features/chat/providers/mark_read_helper.dart';
+import '../core/group_v2/gv2_pairwise_crypto.dart';
+import '../core/group_v2/gv2_runtime.dart';
+import '../core/group_v2/gv2_trusted_keys.dart';
+import '../core/messaging/direct_outbox.dart';
 import '../core/messaging/global_message_router.dart';
+import '../core/messaging/gv2_message_sink.dart';
 import '../core/messaging/message_queue.dart';
 import '../core/call/voip_push_service.dart';
 import '../core/network/voip_native_bridge.dart';
@@ -83,6 +93,7 @@ import '../core/crypto/signal_session_manager.dart';
 import '../core/network/api_client.dart';
 import '../core/network/api_endpoints.dart';
 import '../core/network/file_service.dart';
+import '../core/network/gv2_backup_client.dart';
 import '../core/network/link_preview_service.dart';
 import '../core/network/presence_service.dart';
 import '../core/network/socket_manager.dart';
@@ -280,7 +291,7 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   }
 
   // Step 3: Auth succeeded (or offline fallback) → NOW set app state
-  final hasPin = await secureStorage.hasPin();
+  final hasPin = await ref.read(passcodeStoreProvider).has();
   ref.read(currentSnowIdProvider.notifier).state = snowId;
   // displayName initialization — attached as sender on VoIP call_invite payload.
   ref.read(currentDisplayNameProvider.notifier).state =
@@ -293,21 +304,9 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   // the user MUST establish a PIN before reaching the main app.
   ref.read(requiresPinSetupProvider.notifier).state = !hasPin;
 
-  // Step 3.5 (B-2 Safety Number v2): drop pre-v2 verification rows — their
-  // cached numbers and "verified" marks were computed over mismatched key
-  // types (SC-14) and never meant anything. Idempotent, so no marker needed.
-  // Also instantiates the identity-change handler so identity store events
-  // emitted during the cold-start queue drain are rendered.
-  try {
-    ref.read(identityChangeHandlerProvider);
-    final dropped =
-        await ref.read(identityVerificationDaoProvider).dropPreV2Rows();
-    if (dropped > 0) {
-      debugPrint('[AppStartup] Safety Number v2: reset $dropped v1 row(s)');
-    }
-  } catch (e) {
-    debugPrint('[AppStartup] Safety Number v2 migration deferred: $e');
-  }
+  // Step 3.5 (B-2): instantiate the identity-change handler so identity
+  // store events emitted during the cold-start queue drain are rendered.
+  ref.read(identityChangeHandlerProvider);
 
   // Step 4: Initialize E2EE (ensures identity key is on server)
   // Phase 11 fix: tokenManager.snapshot 직접 체크. authTokenProvider 는
@@ -368,13 +367,14 @@ final secureStorageProvider = Provider<SecureStorageService>((ref) {
   return SecureStorageService();
 });
 
-// --- Verified Identity Store (B-2 Identity Binding v1; replaces the TOFU
-// IdentityPinStore). The verified-peer lookup is wired lazily to the DAO so
-// this provider does not force the database open before it is needed.
+/// The app passcode (salted Argon2id record; core/security/passcode.dart).
+final passcodeStoreProvider = Provider<PasscodeStore>((ref) {
+  return PasscodeStore(ref.read(secureStorageProvider));
+});
+
+// --- Verified Identity Store (B-2 Identity Binding v1) ---
 final verifiedIdentityStoreProvider = Provider<VerifiedIdentityStore>((ref) {
   final store = VerifiedIdentityStore(ref.read(secureStorageProvider));
-  store.verifiedLookup =
-      (snowId) => ref.read(identityVerificationDaoProvider).isVerified(snowId);
   ref.onDispose(store.dispose);
   return store;
 });
@@ -701,21 +701,20 @@ final identityVerificationDaoProvider = Provider<IdentityVerificationDao>((ref) 
   return ref.read(snowDatabaseProvider).identityVerificationDao;
 });
 
-// --- Identity Change Handler (P0-2 Stage B: TOFU mismatch pipeline) ---
+// --- Identity Change Handler (B-2) ---
 //
-// Centralized handler for IdentityKeyChangedException raised by
-// SignalProtocolService when the TOFU pin store sees a new Ed25519 key
-// for an existing peer. Recomputes Safety Number, latches the mismatch in
-// IdentityVerificationDao, inserts a system message, and broadcasts an
-// event for the chat banner.
+// Renders VerifiedIdentityStore events (a bound peer's device keys changed;
+// an identity binding rejected or missing): latches the rejection in
+// IdentityVerificationDao, inserts a system message, and broadcasts an event
+// for the chat banner.
 final identityChangeHandlerProvider = Provider<IdentityChangeHandler>((ref) {
   final handler = IdentityChangeHandler(
     dao: ref.read(identityVerificationDaoProvider),
     messageDao: ref.read(messageDaoProvider),
     conversationDao: ref.read(conversationDaoProvider),
   );
-  // B-2: identity events (legacy key change, device keys changed, binding
-  // rejected, suspected interception) are rendered from the store stream.
+  // B-2: identity events (device keys changed, binding rejected) are
+  // rendered from the store stream.
   handler.attachStore(ref.read(verifiedIdentityStoreProvider));
   ref.onDispose(handler.dispose);
   return handler;
@@ -751,21 +750,6 @@ final signalSessionManagerProvider = Provider<SignalSessionManager>((ref) {
     secureStorage: ref.read(secureStorageProvider),
     identityManager: ref.read(identityManagerProvider),
     sessionStore: ref.read(sessionStoreProvider),
-    socketManager: ref.read(socketManagerProvider),
-  );
-});
-
-// --- Group Session Manager ---
-//
-// **Phase 6.9**: This provider is intentionally STATELESS w.r.t. myId. The
-// caller (chat_provider) MUST pass the current SnowChat ID into every
-// outbound operation. SenderKeyManager is resolved on-demand via
-// `_sessionManager.signal.senderKeyManager` so that
-// clearAllSessions()/loadSessionStore() reassignments are observed.
-final groupSessionManagerProvider = Provider<GroupSessionManager>((ref) {
-  return GroupSessionManager(
-    sessionManager: ref.read(signalSessionManagerProvider),
-    socketManager: ref.read(socketManagerProvider),
   );
 });
 
@@ -776,20 +760,22 @@ final fileServiceProvider = Provider<FileService>((ref) {
 
 // --- Phase 10.1: Sealed Sender Service ---
 // Null until sealedSenderAutoInitProvider populates it (after auth completes).
-// EncryptedMessageHandler / CallSignaling fall back to non-sealed / null while null.
+// While null, 1:1 sends wait (no non-sealed fallback, A-4) and calls are unavailable.
 final sealedSenderServiceProvider = StateProvider<SealedSenderService?>((ref) {
   return null;
 });
 
-// Auto-initializes SealedSender in reaction to authToken changes. Fresh install
-// (Galaxy case): on app startup authToken=null → skip; once onboarding completes
-// and authToken is created → this FutureProvider rebuilds → server fetches verify
-// key → fills sealedSenderServiceProvider state → callSignalingProvider /
-// callServiceProvider / callProvider auto-rebuild, swapping _IdleCallNotifier
-// for the real CallNotifier. No app restart needed.
+// Activates SealedSender once an account is signed in (authToken set) and
+// clears it on logout. The server's verify keys are the ones pinned in this
+// build (sealed_trusted_keys.dart, SC-06 of the 2026-11-10 report) — no
+// /auth/server-key fetch: a key the server hands out at run time is never
+// trusted, and an app started offline has Sealed Sender at once (calls and
+// group protocol v2 stand on it). callSignalingProvider / callServiceProvider
+// / callProvider rebuild when the service appears, swapping
+// _IdleCallNotifier for the real CallNotifier — no app restart needed.
 //
-// Must be watched somewhere to stay alive — both appStartupProvider and app.dart
-// ref.read/watch it.
+// Must be watched somewhere to stay alive — both appStartupProvider and
+// app.dart ref.read/watch it.
 final sealedSenderAutoInitProvider = FutureProvider<void>((ref) async {
   final token = ref.watch(authTokenProvider);
   if (token == null) {
@@ -798,48 +784,17 @@ final sealedSenderAutoInitProvider = FutureProvider<void>((ref) async {
     return;
   }
   if (ref.read(sealedSenderServiceProvider) != null) return; // already active
-
-  // Retry with backoff. A SINGLE transient /auth/server-key failure must not
-  // leave SealedSenderService null for the whole session: when it is null
-  // callSignaling → callService → callProvider all collapse to the
-  // _UnavailableCallService placeholder, so startCall throws "VoIP not
-  // initialized — SealedSender service unavailable" while messaging keeps
-  // working (the socket reads tokenManager.snapshot directly, bypassing this
-  // provider chain). pajooman03 field report 2026-06-08: flaky Galaxy, msgs
-  // OK but calls dead until app restart (restart re-ran this one-shot and the
-  // fetch happened to succeed). The endpoint is a cheap public GET, so a few
-  // bounded retries are safe and turn the hard failure into self-healing.
-  // Can also be re-triggered on demand via ref.invalidate (call-attempt path).
-  const backoff = <Duration>[
-    Duration(seconds: 2),
-    Duration(seconds: 5),
-    Duration(seconds: 10),
-    Duration(seconds: 20),
-  ];
-  for (var attempt = 0;; attempt++) {
-    // Token may have been revoked while we were waiting between retries.
-    if (ref.read(authTokenProvider) == null) return;
-    try {
-      final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.get('/auth/server-key');
-      final verifyKeyB64 = response.data['verifyKey'] as String;
-      final verifyKey = base64Decode(verifyKeyB64);
-      ref.read(sealedSenderServiceProvider.notifier).state =
-          SealedSenderService(serverVerifyKey: verifyKey);
-      debugPrint('[SealedSender] activated (authToken trigger, '
-          'attempt ${attempt + 1})');
-      return;
-    } catch (e) {
-      if (attempt >= backoff.length) {
-        debugPrint('[SealedSender] init failed after ${attempt + 1} attempts '
-            '— VoIP stays unavailable until re-triggered (resume / retry): $e');
-        return;
-      }
-      debugPrint('[SealedSender] init attempt ${attempt + 1} failed, retrying '
-          'in ${backoff[attempt].inSeconds}s: $e');
-      await Future<void>.delayed(backoff[attempt]);
-    }
+  final keys = sealedTrustedServerKeys;
+  if (keys == null || keys.isEmpty) {
+    // A build for an environment it pins no key for (the release scripts
+    // refuse to build one — tool/require_server_keys.dart).
+    debugPrint('[SealedSender] no server key pinned for this environment — '
+        'Sealed Sender stays off');
+    return;
   }
+  ref.read(sealedSenderServiceProvider.notifier).state =
+      SealedSenderService(trustedServerKeys: keys);
+  debugPrint('[SealedSender] activated (pinned server keys)');
 });
 
 // --- Phase 10.1: Sender Certificate Manager ---
@@ -864,24 +819,60 @@ final transferEventBusProvider = Provider<TransferEventBus>((ref) {
   return bus;
 });
 
+// --- Blocked accounts (X1) ---
+// The accounts this user blocked, on this device: read once, and brought in
+// step with the server now and on every connect (BlockList.sync). What a
+// blocked account sends is refused where it is decrypted.
+final blockListProvider = Provider<BlockList>((ref) {
+  final list = BlockList(
+    store: ref.read(snowDatabaseProvider).blockListDao,
+    api: ref.read(apiClientProvider),
+  );
+  unawaited(list.load());
+  unawaited(list.sync());
+  final connection = ref.read(socketManagerProvider).onConnectionChange.listen(
+    (connected) {
+      if (connected) unawaited(list.sync());
+    },
+  );
+  ref.onDispose(() {
+    unawaited(connection.cancel());
+    list.dispose();
+  });
+  return list;
+});
+
+/// The accounts this user blocked, as they change (after the stored list
+/// was read).
+final blockedAccountsProvider = StreamProvider<Set<String>>((ref) async* {
+  final list = ref.watch(blockListProvider);
+  await list.load();
+  yield list.blocked;
+  yield* list.changes;
+});
+
 // --- Encrypted Message Handler ---
 final encryptedMessageHandlerProvider =
     Provider<EncryptedMessageHandler>((ref) {
   final handler = EncryptedMessageHandler(
     sessionManager: ref.read(signalSessionManagerProvider),
     socketManager: ref.read(socketManagerProvider),
-    groupSessionManager: ref.read(groupSessionManagerProvider),
     fileService: ref.read(fileServiceProvider),
     sealedSenderService: ref.read(sealedSenderServiceProvider),
     senderCertificateManager: ref.read(senderCertificateManagerProvider),
     transferEventBus: ref.read(transferEventBusProvider),
+    isBlocked: ref.read(blockListProvider).isBlocked,
   );
   // B-2: instantiating the handler subscribes it to identity store events.
-  handler.identityChangeHandler = ref.read(identityChangeHandlerProvider);
+  ref.read(identityChangeHandlerProvider);
+  // SC-05: the session manager's session_reset notice goes sealed, through
+  // the handler (never a non-sealed private_message).
+  ref.read(signalSessionManagerProvider).sessionResetNotifier =
+      handler.sendSealedSessionReset;
 
   // Sealed Sender lazy-wire — sealedSenderServiceProvider is a
-  // StateProvider that flips from null to an activated service after
-  // `/auth/server-key` resolves (post-login). The handler was built with
+  // StateProvider that flips from null to an activated service once an
+  // account is signed in (sealedSenderAutoInitProvider). The handler was built with
   // the still-null snapshot (read above), so without this listener
   // _sealedSenderService stayed null forever and isSealedSenderAvailable
   // returned false — observed 2026-05-13 +287: chat_provider's sealed
@@ -929,11 +920,46 @@ final messageQueueProvider = Provider<MessageQueue>((ref) {
       await signaling.injectEnvelope(envelopeBase64);
     },
   );
+  // Group protocol v2 invites are kept on disk here, before their message
+  // is acknowledged — whether or not the group runtime is up yet. The
+  // runtime takes them in when it drains (it is told at once when it runs).
+  final database = ref.read(snowDatabaseProvider);
+  queue.onGv2Invite = (sender, invite, messageId) async {
+    final stored = await database.gv2InboxStore.storeInvite(
+      serverRowId: messageId,
+      senderSnowId: sender,
+      invite: invite,
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    if (stored) queue.onGv2InviteKept?.call();
+  };
   // B-2: instantiating the handler subscribes it to identity store events.
-  queue.identityChangeHandler = ref.read(identityChangeHandlerProvider);
-  // Phase 8.8: onGmkReceived callback is wired by ConversationListNotifier
-  // to avoid circular import (providers.dart cannot import conversation_list_provider.dart).
+  ref.read(identityChangeHandlerProvider);
   return queue;
+});
+
+// --- The 1:1 outbox ---
+// Sends outgoing 1:1 messages whenever the socket is connected and keeps them
+// until the server acks them (core/messaging/direct_outbox.dart). Started
+// with the global router (app.dart); one instance for the app.
+final directOutboxProvider = Provider<DirectOutbox>((ref) {
+  final socket = ref.read(socketManagerProvider);
+  final db = ref.read(snowDatabaseProvider);
+  final outbox = DirectOutbox(
+    jobs: db.directOutboxDao,
+    messages: ref.read(messageDaoProvider),
+    attachments: ref.read(attachmentDaoProvider),
+    // Read at each send: the handler is rebuilt when sealed sender comes up.
+    handler: () => ref.read(encryptedMessageHandlerProvider),
+    isConnected: () => socket.isReadyToSend,
+    connectionChanges: socket.onConnectionChange,
+    upload: (data, hash) =>
+        ref.read(fileServiceProvider).uploadEncryptedFile(data, hash),
+    documentsPath: () async => (await getApplicationDocumentsDirectory()).path,
+    expiring: ref.read(expiringMessageManagerProvider),
+  );
+  ref.onDispose(() => unawaited(outbox.stop()));
+  return outbox;
 });
 
 // --- Phase 6: Global Message Router (socket → queue) ---
@@ -941,15 +967,145 @@ final globalMessageRouterProvider = Provider<GlobalMessageRouter>((ref) {
   final router = GlobalMessageRouter(
     socketManager: ref.read(socketManagerProvider),
     queue: ref.read(messageQueueProvider),
-    e2eeHandler: ref.read(encryptedMessageHandlerProvider),
     sessionManager: ref.read(signalSessionManagerProvider),
     messageDao: ref.read(messageDaoProvider),
     attachmentDao: ref.read(attachmentDaoProvider),
-    myIdResolver: () => ref.read(currentSnowIdProvider) ?? '',
     ref: ref,
   );
   ref.onDispose(router.stop);
   return router;
+});
+
+// --- Group protocol v2 ---
+//
+// Null while this build pins no server keys for its environment, nobody is
+// signed in, or the sealed sender
+// service is not up yet: until then the rows of the group queue stay on the
+// server (nothing takes them from the REST fetch, and a `gv2_message` from
+// the socket is not acknowledged). Once built, it takes both and works on
+// every connect. Watched by app.dart so that it is rebuilt when what it
+// depends on changes.
+final gv2RuntimeProvider = Provider<Gv2Runtime?>((ref) {
+  // No server keys trusted for this environment (a build whose keys are not
+  // pinned yet): group protocol v2 does not run.
+  final trustedKeys = gv2TrustedServerKeys;
+  if (trustedKeys == null) return null;
+  final snowId = ref.watch(currentSnowIdProvider);
+  final sealed = ref.watch(sealedSenderServiceProvider);
+  final certificates = ref.watch(senderCertificateManagerProvider);
+  if (snowId == null || snowId.isEmpty || sealed == null || certificates == null) {
+    return null;
+  }
+
+  final db = ref.read(snowDatabaseProvider);
+  final api = ref.read(apiClientProvider);
+  final socket = ref.read(socketManagerProvider);
+  final sessions = ref.read(signalSessionManagerProvider);
+  final identity = ref.read(identityManagerProvider);
+  final verified = ref.read(verifiedIdentityStoreProvider);
+  final queue = ref.read(messageQueueProvider);
+  final e2ee = ref.read(encryptedMessageHandlerProvider);
+
+  final sink = Gv2AppMessageSink(
+    groups: db.gv2Store,
+    messages: ref.read(messageDaoProvider),
+    conversations: ref.read(conversationDaoProvider),
+    attachments: ref.read(attachmentDaoProvider),
+    viewing: MarkReadHelper.isConversationActive,
+    documentsDir: () async => (await getApplicationDocumentsDirectory()).path,
+    onStored: (m) => queue.gv2MessageStored(
+      groupId: m.groupId,
+      messageId: m.messageId,
+      senderSnowId: m.senderSnowId,
+      plaintext: m.payload.text,
+      type: m.payload.type,
+      metadata: m.payload.metadata,
+      ttlSeconds: m.payload.ttlSeconds,
+      viewing: m.viewing,
+      groupName: m.groupName,
+      senderName: m.senderName,
+      receivedAtMs: m.receivedAtMs,
+    ),
+    onRemoved: queue.gv2MessagesRemoved,
+    // The Chats list follows a group that changed on this device (created,
+    // joined, renamed, left); the open chat shows new rows by itself.
+    onGroupChanged: (groupId, _) => queue.gv2GroupChanged(groupId),
+  );
+  final runtime = Gv2Runtime(
+    db: db,
+    mySnowId: snowId,
+    authenticatedPost: (path) async => (await api.post<Object?>(path)).data,
+    // The account key this device already holds for a peer (Identity
+    // Binding v1): a member claiming that snowId must show the same key.
+    pinnedAccountKey: (peer) async => (await verified.get(peer))?.accountPublicKey,
+    crypto: Gv2SealedPairwiseCrypto(
+      sealed: sealed,
+      certificate: certificates.getCertificate,
+      sessions: Gv2SessionManagerSessions(sessions),
+    ),
+    myDeviceId: sessions.getDeviceId,
+    memberKey: identity.deriveGroupMemberKey,
+    memberCert: (groupId, issuedAtMs) => identity.signGroupMemberCert(
+      groupId: groupId,
+      issuedAtMs: issuedAtMs,
+    ),
+    accountPublicKey: () async {
+      final key = await identity.getPublicKey();
+      if (key == null) throw StateError('No identity key available');
+      return key;
+    },
+    // The invite message travels the ordinary sealed 1:1 path.
+    sendInvite: (recipient, invite) =>
+        e2ee.sendSealedGroupInvite(recipientId: recipient, invite: invite),
+    // Every invite waits for the user (no automatic accept — P5.6).
+    // Over the socket when it is up, else with the 1:1 acknowledgements'
+    // REST route. Throws when neither took it: the inbox tries again.
+    ack: (ids) async {
+      if (socket.isConnected) {
+        try {
+          await socket.sendGv2Ack(ids);
+          return;
+        } catch (_) {
+          // Fall through to REST.
+        }
+      }
+      await api.post<Object?>(ApiEndpoints.ackMessages, data: {'gv2Ids': ids});
+    },
+    sink: sink,
+    // The list of this account's groups, sealed under a key from the
+    // recovery phrase (design §9.8): a reinstall finds its groups there.
+    backupApi: Gv2BackupClient(api),
+    backupKey: identity.deriveGroupBackupKey,
+    trustedKeys: trustedKeys,
+    // X1: an invite from an account this user blocked is dropped.
+    isBlocked: ref.read(blockListProvider).isBlocked,
+  );
+
+  queue.onGv2Rows = runtime.receive;
+  // An invite the 1:1 queue kept (an inbox row) is taken in on a drain.
+  queue.onGv2InviteKept = () => unawaited(runtime.pump());
+  final rows = socket.onGv2Row.listen(
+    (row) => unawaited(runtime.receive([row])),
+  );
+  final connection = socket.onConnectionChange.listen((connected) {
+    if (connected) unawaited(runtime.pump());
+  });
+  // What became of the messages this account queued (the row of a message
+  // the server took reads "sent", one that will never go reads "failed" —
+  // a group shows no "delivered", design §12) is written by the sink in the
+  // outbox's own transaction (Gv2AppMessageSink.outgoing).
+  // What waited — on the server while this was not running, and on this
+  // device from the last run.
+  unawaited(queue.fetchPending());
+  unawaited(runtime.pump());
+  ref.onDispose(() {
+    queue.onGv2Rows = null;
+    queue.onGv2InviteKept = null;
+    unawaited(rows.cancel());
+    unawaited(connection.cancel());
+    runtime.dispose();
+  });
+  return runtime;
 });
 
 // --- Notification Service ---
@@ -1014,7 +1170,6 @@ final voipNativeBaseUrlPushProvider = FutureProvider<void>((ref) async {
 // --- Push Service ---
 final pushServiceProvider = Provider<PushService>((ref) {
   final pushService = PushService(
-    socketManager: ref.read(socketManagerProvider),
     notificationService: ref.read(notificationServiceProvider),
     apiClient: ref.read(apiClientProvider),
     secureStorage: ref.read(secureStorageProvider),
@@ -1125,6 +1280,8 @@ final callSignalingProvider = Provider<CallSignaling?>((ref) {
     // currentSnowIdProvider 를 closure 로 wire — sync read 라 BG isolate
     // 안전.
     mySnowchatIdResolver: () => ref.read(currentSnowIdProvider),
+    // X1: a blocked account's call signals go nowhere.
+    isBlocked: ref.read(blockListProvider).isBlocked,
   );
   ref.onDispose(signaling.dispose);
   return signaling;
@@ -1143,6 +1300,11 @@ final callServiceProvider = Provider<CallService?>((ref) {
     // Pre-v204 outbound bypassed CallKit, leaving AURemoteIO without
     // PhoneCall priority → silent two-way audio failure.
     callKit: ref.read(callKitManagerProvider),
+    // SC-10: DTLS fingerprints are signed with this device's Signal-layer
+    // Ed25519 key and checked against the peer's account-bound one.
+    fingerprintSigningSeed: () =>
+        signaling.sessionManager.signal.signingKeySeed,
+    peerFingerprintKey: signaling.sessionManager.getPeerEd25519PublicKey,
   );
   // v2.5 (2026-05-03): wire CallService → VoipNativeBridge audio session
   // events. The previous design had CallService register its own

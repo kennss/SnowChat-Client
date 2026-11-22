@@ -3,12 +3,12 @@
 ///              streams the per-peer Safety Number verification record.
 ///              Used by:
 ///                - VerifyIdentityScreen (read + manual mark/unmark)
-///                - IdentityChangeHandler (TOFU mismatch latching)
+///                - IdentityChangeHandler (identity-rejection latch)
 ///                - ChatScreen banner (watchByPeer for live UI)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-11-10 (B-2 Safety Number v2: currentVersion=2 over ACCOUNT public keys; dropPreV2Rows() invalidates every cached v1 number and resets every v1 verified=true (SC-14 made them meaningless); getCurrentByPeer()/isVerified() ignore pre-v2 rows; markKeyChange() latches a key-change event without needing a Safety Number (it does not change under v2 for same-account device-key changes); markMismatch() can force critical severity)
+/// @lastUpdated 2026-11-21 (legacy TOFU removed: no markMismatch, isVerified or dropPreV2Rows (old data); markKeyChange → markIdentityRejected — the only latch left is a rejected or missing identity binding, always shown in red). Earlier 2026-11-10 (B-2 Safety Number v2: currentVersion=2 over ACCOUNT public keys; dropPreV2Rows() invalidates every cached v1 number and resets every v1 verified=true (SC-14 made them meaningless); getCurrentByPeer()/isVerified() ignore pre-v2 rows; markKeyChange() latches a key-change event without needing a Safety Number (it does not change under v2 for same-account device-key changes); markMismatch() can force critical severity)
 ///
 /// @functions
 ///  - getByPeer(snowchatId): Read the current verification row, or null.
@@ -17,15 +17,10 @@
 ///                             screen on first load).
 ///  - markVerified(snowchatId): Set verified=true + verifiedAt=now.
 ///  - markUnverified(snowchatId): Set verified=false (clears verifiedAt).
-///  - markMismatch(...): TOFU mismatch latch — wasPreviouslyVerified ←
-///                       current verified, verified=false, lastChangedAt=now,
-///                       update pinnedEd25519 and safetyNumber.
 ///  - deleteByPeer(snowchatId): Remove a peer's verification row (P2 cleanup
 ///                              on removeContact / blockContact / deleteChat).
 ///  - getCurrentByPeer(snowchatId): Row only if computed with the current algorithm
-///  - isVerified(snowchatId): verified flag of a current-algorithm row
-///  - dropPreV2Rows(): one-way Safety Number v2 migration (idempotent)
-///  - markKeyChange(...): latch a key-change banner without a new number
+///  - markIdentityRejected(snowchatId): latch the identity-rejection banner
 library;
 
 import 'dart:convert';
@@ -52,36 +47,16 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
     return row;
   }
 
-  /// True iff the user verified [snowchatId] under the current algorithm.
-  Future<bool> isVerified(String snowchatId) async {
-    final row = await getCurrentByPeer(snowchatId);
-    return row?.verified ?? false;
-  }
-
-  /// One-way v1 → v2 migration: v1 numbers mixed the local ACCOUNT key with
-  /// the peer's SIGNAL key (SC-14), so they never matched between honest
-  /// peers — every cached number and every "verified" mark is meaningless.
-  /// Deleting the rows invalidates both at once. Idempotent; safe to run on
-  /// every start.
-  Future<int> dropPreV2Rows() {
-    return (delete(identityVerifications)
-          ..where((v) => v.algorithmVersion.isSmallerThanValue(currentVersion)))
-        .go();
-  }
-
-  /// Latch a key-change event for [snowchatId] (banner + severity) without a
-  /// new Safety Number. [critical] forces the red "previously verified"
-  /// severity (used for suspected interception). Creates a placeholder row
-  /// (empty key / number — recomputed by the verify screen) when absent.
-  Future<void> markKeyChange({
-    required String snowchatId,
-    bool critical = false,
-  }) async {
+  /// Latch an identity rejection for [snowchatId] (the red chat banner): a
+  /// binding of this contact failed verification, or they presented none.
+  /// The verified mark is cleared. `wasPreviouslyVerified` is the banner's
+  /// critical flag (always set here). Creates a placeholder row (empty key /
+  /// number — recomputed by the verify screen) when absent.
+  Future<void> markIdentityRejected({required String snowchatId}) async {
     if (snowchatId.isEmpty) return;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final existing = await getCurrentByPeer(snowchatId);
     if (existing == null) {
-      await deleteByPeer(snowchatId); // drop any stale pre-v2 row
       await into(identityVerifications).insert(
         IdentityVerificationsCompanion.insert(
           peerSnowchatId: snowchatId,
@@ -89,7 +64,7 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
           safetyNumber: '',
           verified: const Value(false),
           lastChangedAt: Value(nowMs),
-          wasPreviouslyVerified: Value(critical),
+          wasPreviouslyVerified: const Value(true),
           algorithmVersion: const Value(currentVersion),
           createdAt: nowMs,
           updatedAt: nowMs,
@@ -103,7 +78,7 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
       verified: const Value(false),
       verifiedAt: const Value(null),
       lastChangedAt: Value(nowMs),
-      wasPreviouslyVerified: Value(critical || existing.verified),
+      wasPreviouslyVerified: const Value(true),
       updatedAt: Value(nowMs),
     ));
   }
@@ -139,7 +114,7 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
   /// raising a mismatch.
   ///
   /// Does NOT clear [wasPreviouslyVerified] / [lastChangedAt] — those are
-  /// owned by [markMismatch] and never silently reset by this method.
+  /// owned by [markIdentityRejected] and never silently reset by this method.
   Future<void> upsertVerification({
     required String snowchatId,
     required Uint8List ed25519Key,
@@ -221,71 +196,5 @@ class IdentityVerificationDao extends DatabaseAccessor<SnowDatabase>
     await (delete(identityVerifications)
           ..where((v) => v.peerSnowchatId.equals(snowchatId)))
         .go();
-  }
-
-  /// Latch a TOFU mismatch:
-  ///   - wasPreviouslyVerified ← current verified value (snapshot)
-  ///   - verified ← false
-  ///   - lastChangedAt ← now
-  ///   - pinnedEd25519 ← base64(newKey)
-  ///   - safetyNumber  ← newSafetyNumber
-  ///
-  /// If no prior row exists, create one with verified=false. This is the
-  /// only entry point that should ever flip wasPreviouslyVerified to true,
-  /// so the banner severity decision (red vs amber) stays correct.
-  Future<void> markMismatch({
-    required String snowchatId,
-    required Uint8List newKey,
-    required String newSafetyNumber,
-    int algorithmVersion = currentVersion,
-  }) async {
-    if (snowchatId.isEmpty) {
-      throw ArgumentError('markMismatch: snowchatId must not be empty');
-    }
-    if (newKey.length != 32) {
-      throw ArgumentError('markMismatch: Ed25519 key must be 32 bytes');
-    }
-    if (newSafetyNumber.length != 60) {
-      throw ArgumentError(
-          'markMismatch: safetyNumber must be 60 digits');
-    }
-
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final keyB64 = base64Encode(newKey);
-    final existing = await getByPeer(snowchatId);
-
-    if (existing == null) {
-      // First sighting that already failed TOFU — wasPreviouslyVerified=false
-      // because we've never had a verified pin to compare against.
-      await into(identityVerifications).insert(
-        IdentityVerificationsCompanion.insert(
-          peerSnowchatId: snowchatId,
-          pinnedEd25519: keyB64,
-          safetyNumber: newSafetyNumber,
-          verified: const Value(false),
-          lastChangedAt: Value(nowMs),
-          wasPreviouslyVerified: const Value(false),
-          algorithmVersion: Value(algorithmVersion),
-          createdAt: nowMs,
-          updatedAt: nowMs,
-        ),
-      );
-      return;
-    }
-
-    await (update(identityVerifications)
-          ..where((v) => v.peerSnowchatId.equals(snowchatId)))
-        .write(IdentityVerificationsCompanion(
-      pinnedEd25519: Value(keyB64),
-      safetyNumber: Value(newSafetyNumber),
-      verified: const Value(false),
-      verifiedAt: const Value(null),
-      lastChangedAt: Value(nowMs),
-      // Snapshot what the user's verification stance was at the moment of
-      // the mismatch so the UI can color-code the banner correctly.
-      wasPreviouslyVerified: Value(existing.verified),
-      algorithmVersion: Value(algorithmVersion),
-      updatedAt: Value(nowMs),
-    ));
   }
 }

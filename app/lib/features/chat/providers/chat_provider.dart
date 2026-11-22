@@ -3,7 +3,25 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-11 (at-rest level 1: sent file / voice copies go through AttachmentStorage.ensureDirectory() + protectFile() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: deleteChat() now also sends a sealed_control 'delete_chat' to the peer so an OFFLINE peer loses the room too — ordered AFTER the server DELETE (purgePairRows would wipe a control queued before it) and BEFORE _localCleanup (which wipes the Signal session needed to encrypt it)). Earlier 2026-08-06 (deleteMessageForMe now calls ConversationListNotifier.refreshPreviewAfterDelete(conversationId) after the local delete — covers every sender delete/unsend path (deleteMessageForEveryone routes through it) so unsending the last message advances the Chats-list preview to the surviving newest message instead of lingering the deleted text). Earlier 2026-08-05 (outgoing send (text/file/voice) now persists via MessageRepository.persistOutgoingMessage, which refreshes the drift `conversations` snippet in the same transaction — previously the send path wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart; status updates still use persistMessage so they don't move the snippet). Earlier 2026-08-03 (F8: clearChat/deleteChat now resolve the shared server CUID via _serverConversationId() (idempotent find-or-create on the peer's snowchatId) before the server DELETE — a snow-id fallback room, created when the peer messages first, 404'd on the CUID-keyed endpoint so the server clear/delete silently no-op'd and Delete's "the other person also loses this conversation" promise broke; deleteChat also tombstones by the CUID so loadFromServer's filter matches). Earlier 2026-07-15 (sealed unsend: deleteMessageForEveryone routes 1:1 delete-for-everyone through EncryptedMessageHandler.sendSealedUnsend (server-opaque) with a client-side 5-min window; group stays on the plaintext server fan-out. Sealed read receipt: wire e2eeHandler + directPeerResolver into MarkReadHelper and e2eeHandler into MessageRepository so read receipts travel E2EE instead of plaintext message_read). Earlier 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
+/// @lastUpdated 2026-11-21 (1:1 sends go through the 1:1 outbox (DirectOutbox): text, file and voice are
+///              stored and shown at once — also offline, where text used to be dropped — and the
+///              outbox uploads / sends / retries them; the 10 s "failed" timer is gone;
+///              retryFailedMessage() for the failed bubble). Earlier 2026-11-21 (typing: no typer name in ChatState — it was the raw snow-id the server
+///              relays, shown as "snow… is typing…"; the 1:1 header already names the peer).
+///              Earlier 2026-11-21 (P5.6: the kept copy of a file or voice message the group refused is deleted; P5.6: removing the chat of a group this account left erases the group too; P5.6: the disappearing-message timers are cancelled only after a clear / leave / end was made — a failed one left the messages without expiry). Earlier 2026-11-21 (P5.6: attachment paths only through AttachmentStorage.relativePathFor — the upload's file id is the server's word; earlier the same day: a text, file or voice message the user sends in a 1:1 vouches for its peer). Earlier same day (comment: the peer is told only by the sealed delete_chat). Earlier 2026-11-20 (v1 groups removed: a chat's id says what it is — the peer's snowId
+///              for a 1:1, a v2 group id for a group — so nothing waits for the list to
+///              resolve it; no Sender Key send, SKDM broadcast or server group calls; a
+///              remote unsend arrives through GlobalMessageRouter only; sent files are
+///              always encrypted (the plaintext upload branch is gone). Earlier: group protocol v2: a chat whose id is a v2 group id sends, takes back,
+///              clears, leaves and ends through Gv2ChatActions — queued on this device,
+///              stored under the final message id — and takes none of the v1 group paths;
+///              no typing events for such a group).
+///              Earlier 2026-11-12 (a remote "typing…" indicator now clears itself after 6 s unless
+///              renewed — a lost / reordered stop event used to leave it on forever).
+///              Earlier 2026-11-11 (auto-translate trigger removed from ChatNotifier — the
+///              immortal chat provider pushed into the per-screen autoDispose translation
+///              cache, so results were dropped for an empty room or a reopened room;
+///              translationCacheProvider now drives itself). Earlier same day (at-rest level 1: sent file / voice copies go through AttachmentStorage.ensureDirectory() + protectFile() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-09-04 (sealed delete-chat: deleteChat() now also sends a sealed_control 'delete_chat' to the peer so an OFFLINE peer loses the room too — ordered AFTER the server DELETE (purgePairRows would wipe a control queued before it) and BEFORE _localCleanup (which wipes the Signal session needed to encrypt it)). Earlier 2026-08-06 (deleteMessageForMe now calls ConversationListNotifier.refreshPreviewAfterDelete(conversationId) after the local delete — covers every sender delete/unsend path (deleteMessageForEveryone routes through it) so unsending the last message advances the Chats-list preview to the surviving newest message instead of lingering the deleted text). Earlier 2026-08-05 (outgoing send (text/file/voice) now persists via MessageRepository.persistOutgoingMessage, which refreshes the drift `conversations` snippet in the same transaction — previously the send path wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart; status updates still use persistMessage so they don't move the snippet). Earlier 2026-08-03 (F8: clearChat/deleteChat now resolve the shared server CUID via _serverConversationId() (idempotent find-or-create on the peer's snowchatId) before the server DELETE — a snow-id fallback room, created when the peer messages first, 404'd on the CUID-keyed endpoint so the server clear/delete silently no-op'd and Delete's "the other person also loses this conversation" promise broke; deleteChat also tombstones by the CUID so loadFromServer's filter matches). Earlier 2026-07-15 (sealed unsend: deleteMessageForEveryone routes 1:1 delete-for-everyone through EncryptedMessageHandler.sendSealedUnsend (server-opaque) with a client-side 5-min window; group stays on the plaintext server fan-out. Sealed read receipt: wire e2eeHandler + directPeerResolver into MarkReadHelper and e2eeHandler into MessageRepository so read receipts travel E2EE instead of plaintext message_read). Earlier 2026-05-13 (+286: 1:1 sealed sender 활성화. April 13 부터
 ///              disabled 상태였지만 두 blocker 가 모두 해소됨 — (a)
 ///              production .env 의 persistent SEALED_SENDER_PRIVATE_KEY
 ///              박힘 + server "loaded from environment" startup log
@@ -19,43 +37,39 @@
 ///              패턴; 2026-05-11 Tier 2A disappearing; 2026-04-26
 ///              header English.)
 ///  - Phase 1 Step 6: ChatNotifier split (MessageRepository + MarkReadHelper extracted)
-///  - Phase 8.7 round 9: top-level broadcastSenderKeyToGroup helper to
-///    pre-distribute Sender Key Distribution Messages without waiting for
-///    the user to send a message (fixes 2-3min lazy SKDM trickle).
 ///
 /// @functions
 ///  - chatProvider: family StateNotifierProvider providing a ChatNotifier per conversation
 ///  - ChatState: chat-screen state data class
 ///  - ChatNotifier: UI state management (drift watch binding, typing, reply, deletion, send delegation)
-///  - broadcastSenderKeyToGroup(): top-level helper that pushes the local
-///    sender key + SKDM to all group members BEFORE the user types anything,
-///    so receivers are immediately ready to decrypt the first message.
+///  - ChatNotifier.retryFailedMessage(): send a failed 1:1 message again (1:1 outbox)
+///  - ChatNotifier._queueDirectAttachment(): keep, store and queue a 1:1 file / voice message
 
-import '../../../core/crypto/identity_binding_exception.dart';
-import '../../../core/crypto/identity_key_changed_exception.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
+import '../../../core/crypto/verified_identity_store.dart' show VouchSource;
 import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/crypto/file_encryptor.dart';
+import '../../../core/crypto/key_derivation.dart';
+import '../../../core/group_v2/gv2_codec.dart' show gv2IsGroupId;
+import '../../../core/messaging/direct_outbox.dart';
 import '../../../core/network/socket_manager.dart';
 import '../../../core/storage/database.dart' hide Conversation;
-import '../models/conversation.dart';
 import '../models/message.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/storage/local_file_protection.dart';
-import '../../ai/providers/ai_provider.dart';
-import '../../ai/providers/translation_provider.dart';
 import 'conversation_list_provider.dart';
+import 'gv2_chat_actions.dart';
 import 'mark_read_helper.dart';
 import 'message_repository.dart';
 
@@ -71,30 +85,13 @@ final chatProvider = StateNotifierProvider.family<
   final apiClient = ref.read(apiClientProvider);
   final messageDao = ref.read(messageDaoProvider);
 
-  // Resolve recipientSnowchatId or groupId from the conversation list
-  String? recipientSnowchatId;
-  String? groupId;
-
-  try {
-    final conversations = ref.read(conversationListProvider);
-    final conv = conversations.where((c) => c.id == conversationId).firstOrNull;
-    if (conv != null) {
-      if (conv.type == ConversationType.group) {
-        groupId = conv.groupId ?? conversationId;
-        debugPrint('[Chat] Group conversation: groupId=$groupId');
-      } else if (mySnowId != null) {
-        recipientSnowchatId = conv.otherParticipant(mySnowId);
-      }
-    }
-  } catch (_) {}
-
-  // Phase 3: All conversationIds are server CUIDs. No conv_snowXXX fallback.
-  // Do NOT assume group when conversation is missing from list — this caused
-  // 1:1 messages to be sent as group messages (silent delivery failure).
-  if (recipientSnowchatId == null && groupId == null) {
-    debugPrint('[Chat] WARNING: conversationId=$conversationId not in list yet. '
-        'Will resolve recipientId when conversation list updates.');
-  }
+  // A chat's id says what it is: a 1:1 room is keyed by the peer's snowId,
+  // a group protocol v2 group by its id (64 hex characters). Nothing waits
+  // for the conversation list, and nothing the server says changes it.
+  final isGv2 = gv2IsGroupId(conversationId);
+  final String? groupId = isGv2 ? conversationId : null;
+  final String? recipientSnowchatId =
+      KeyDerivation.isValidSnowChatId(conversationId) ? conversationId : null;
 
   final repository = MessageRepository(
     conversationId: conversationId,
@@ -116,52 +113,12 @@ final chatProvider = StateNotifierProvider.family<
     messageDao: messageDao,
     e2eeHandler: ref.read(encryptedMessageHandlerProvider),
     // Direct chat → peer snowId; group → null (no per-member receipts).
-    // Evaluated at send time so the reactively-resolved recipientId is used.
-    directPeerResolver: () =>
-        repository.groupId != null ? null : repository.recipientId,
+    directPeerResolver: () => repository.recipientId,
     expiringManager: ref.read(expiringMessageManagerProvider),
     myId: mySnowId ?? '',
   );
 
-  // Reactively resolve recipientId/groupId when conversationListProvider updates.
-  // Handles: other party creates conversation or group → message arrives →
-  // conversation appears in list → recipientId/groupId becomes available.
-  if (recipientSnowchatId == null && groupId == null) {
-    ref.listen<List<Conversation>>(conversationListProvider, (prev, next) {
-      if (repository.recipientId != null || repository.groupId != null) {
-        return; // already resolved
-      }
-      final conv = next.where((c) => c.id == conversationId).firstOrNull;
-      if (conv == null) return;
-
-      if (conv.type == ConversationType.group) {
-        final resolvedGroupId = conv.groupId ?? conversationId;
-        repository.groupId = resolvedGroupId;
-        debugPrint('[Chat] Resolved groupId=$resolvedGroupId for $conversationId');
-      } else if (mySnowId != null) {
-        final resolved = conv.otherParticipant(mySnowId);
-        if (resolved != null) {
-          repository.recipientId = resolved;
-          debugPrint('[Chat] Resolved recipientId=$resolved for $conversationId');
-        }
-      }
-    });
-  }
-
   final e2eeHandler = ref.read(encryptedMessageHandlerProvider);
-
-  // Auto-translation callback: always wired up, autoTranslateEnabled is checked at call time
-  translateCallback(String messageId, String plaintext) {
-    try {
-      final convs = ref.read(conversationListProvider);
-      final conv = convs.where((c) => c.id == conversationId).firstOrNull;
-      debugPrint('[Translate] callback: conv=${conv?.id}, autoTranslate=${conv?.autoTranslateEnabled}, text=${plaintext.substring(0, plaintext.length.clamp(0, 30))}');
-      if (conv == null || !conv.autoTranslateEnabled) return;
-      ref
-          .read(translationCacheProvider(conversationId).notifier)
-          .translate(messageId, plaintext);
-    } catch (_) {}
-  }
 
   return ChatNotifier(
     conversationId,
@@ -171,169 +128,26 @@ final chatProvider = StateNotifierProvider.family<
     e2eeHandler: e2eeHandler,
     mySnowId: mySnowId,
     secureStorage: ref.read(secureStorageProvider),
-    onTranslateRequest: translateCallback,
+    gv2: isGv2
+        ? Gv2ChatActions(
+            groupId: conversationId,
+            runtime: () => ref.read(gv2RuntimeProvider),
+            messages: messageDao,
+            attachments: ref.read(attachmentDaoProvider),
+            groups: ref.read(snowDatabaseProvider).gv2Store,
+            mySnowId: mySnowId ?? '',
+          )
+        : null,
+    outbox: isGv2 ? null : ref.read(directOutboxProvider),
     onConversationPreviewStale: (convId) => ref
         .read(conversationListProvider.notifier)
         .refreshPreviewAfterDelete(convId),
+    // The user wrote to the peer of a 1:1: they chose that account.
+    onUserWrote: (peer) => ref
+        .read(verifiedIdentityStoreProvider)
+        .vouch(peer, VouchSource.message),
   );
 });
-
-/// Phase 8.7 round 9 — pre-distribute Sender Key Distribution Messages
-/// (SKDMs) for [groupId] to every group member who needs one, WITHOUT
-/// sending an actual encrypted message.
-///
-/// Why this exists: previously the SKDM was only constructed and pushed
-/// inside [ChatNotifier._sendGroupE2EE], which fires only when the user
-/// taps "send" on a group chat. That meant a freshly-installed device
-/// stayed "isolated" from group conversations until either (a) it sent
-/// its own first message, or (b) every other member sent a message that
-/// triggered a piggybacked SKDM. Reproduction in Phase 8.7 round 9 with
-/// 5 fresh devices showed it took 2~3 minutes for all SKDMs to fully
-/// propagate as the user manually moved between devices typing test
-/// messages — exactly because each direction of (sender, receiver) needed
-/// a user-initiated send to wake up.
-///
-/// This helper performs steps 1, 2, 5, 6 of [_sendGroupE2EE] (sender key
-/// creation, SKDM capture, batch X3DH, 1:1 SKDM dispatch + tracker
-/// markDelivered) WITHOUT step 4 (Sender Key encryption) or step 7
-/// (group message socket emit). It is safe to call from socket-connect /
-/// conversation-list refresh hooks because:
-///
-/// 1. The 24-hour [SenderKeyDistributionTracker] dedup means repeat calls
-///    are no-ops once SKDM is delivered to a recipient.
-/// 2. No actual user-facing message is fan-outed.
-/// 3. Calling [GroupSessionManager.senderKeyManager.getExistingSKDM]
-///    serializes the current state without ratcheting it, so callers
-///    that follow up with [_sendGroupE2EE] still observe the same iter.
-///
-/// Caller responsibilities:
-/// - [myId] must be the resolved snowchatId of the local user (non-empty).
-/// - [members] should be the canonical group member list (use
-///   [ChatNotifier._getGroupMembers] or refetch via
-///   `apiClient.get('/groups/$groupId')`).
-/// - [e2eeHandler] must have both groupSessionManager AND sessionManager
-///   initialized (i.e. SignalSessionManager.initialize() has completed).
-///
-/// Returns the count of SKDMs successfully pushed (diagnostic only).
-Future<int> broadcastSenderKeyToGroup({
-  required String groupId,
-  required String myId,
-  required List<String> members,
-  required EncryptedMessageHandler e2eeHandler,
-  required SocketManager socketManager,
-  String diagTag = 'SKDMBroadcast',
-}) async {
-  if (myId.isEmpty || members.isEmpty) return 0;
-  final groupSessionMgr = e2eeHandler.groupSessionManager;
-  final sessionMgr = e2eeHandler.sessionManager;
-  if (groupSessionMgr == null) {
-    debugPrint('[DIAG:$diagTag] $groupId ABORT: groupSessionMgr null');
-    return 0;
-  }
-
-  // 1. Ensure the local sender key exists for this group.
-  if (!groupSessionMgr.hasSenderKey(groupId, myId)) {
-    groupSessionMgr.senderKeyManager.createSenderKey(groupId, myId);
-  }
-
-  // 2. Capture the current SKDM (does NOT advance the chain).
-  final skdmTemplate =
-      groupSessionMgr.senderKeyManager.getExistingSKDM(groupId, myId);
-  final skdmBytes = skdmTemplate.serialize();
-
-  // 3. Filter members needing SKDM via 24h tracker dedup.
-  final tracker = sessionMgr.signal.skdmTracker;
-  final rotationVersion =
-      groupSessionMgr.senderKeyManager.getRotationVersion(groupId);
-  final membersNeedingSKDM = members
-      .where((id) =>
-          id != myId && tracker.needsSKDM(groupId, id, rotationVersion))
-      .toList();
-
-  if (membersNeedingSKDM.isEmpty) {
-    debugPrint('[DIAG:$diagTag] $groupId all ${members.length} members '
-        'already have current SKDM (rotationVersion=$rotationVersion)');
-    return 0;
-  }
-  debugPrint('[DIAG:$diagTag] $groupId membersNeedingSKDM='
-      '${membersNeedingSKDM.length}/${members.length} '
-      '(${membersNeedingSKDM.join(",")}) rotationVersion=$rotationVersion');
-
-  // 4. Batch ensure 1:1 sessions exist (X3DH).
-  await sessionMgr.ensureSessionBatch(membersNeedingSKDM);
-
-  // Bug A guard: retry individually if batch did not populate the cache.
-  final stillMissing = <String>[];
-  for (final id in membersNeedingSKDM) {
-    if (!sessionMgr.hasDeviceIdFor(id)) stillMissing.add(id);
-  }
-  if (stillMissing.isNotEmpty) {
-    debugPrint('[DIAG:$diagTag] $groupId batch missed '
-        '${stillMissing.length} member(s); retrying individually');
-    for (final id in stillMissing) {
-      try {
-        await sessionMgr.ensureSession(id);
-      } on IdentityBindingInvalidException catch (idErr) {
-        // B-2 §5.7: forged / downgraded / replayed identity — terminal,
-        // never retried (the store already raised the security notice).
-        debugPrint('[DIAG:SKDM] fallback ensureSession: identity rejected (${idErr.reason.name}) — terminal');
-      } on IdentityKeyChangedException {
-        // B-2 §5.5: verified contact awaits re-verification — terminal.
-        debugPrint('[DIAG:SKDM] fallback ensureSession: peer awaits identity re-verification — terminal');
-      } catch (e) {
-        debugPrint('[DIAG:$diagTag] $groupId fallback ensureSession FAIL '
-            '$id: $e');
-      }
-    }
-  }
-
-  // 5. Dispatch SKDM as 1:1 messages.
-  final wrapper = {
-    'type': 'sender_key_distribution',
-    'text': base64Encode(skdmBytes),
-    'timestamp': DateTime.now().toIso8601String(),
-  };
-  final wrapperBytes = Uint8List.fromList(utf8.encode(jsonEncode(wrapper)));
-
-  var sentOk = 0;
-  var failed = 0;
-  for (final memberId in membersNeedingSKDM) {
-    if (!sessionMgr.hasDeviceIdFor(memberId)) {
-      failed++;
-      debugPrint('[DIAG:$diagTag] $groupId SKIP $memberId (no deviceId)');
-      continue;
-    }
-    try {
-      final deviceId = await sessionMgr.getDeviceIdForRecipient(memberId);
-      final encrypted =
-          await sessionMgr.encrypt(memberId, deviceId, wrapperBytes);
-      socketManager.sendPrivateMessage({
-        'recipientId': memberId,
-        'encryptedContent':
-            base64Encode(encrypted['ciphertext'] as Uint8List),
-        'type': 'sender_key_distribution',
-        'messageType': encrypted['messageType'] as int,
-        'groupChatId': groupId,
-      });
-      tracker.markDelivered(groupId, memberId, rotationVersion);
-      sentOk++;
-    } catch (e) {
-      failed++;
-      debugPrint('[DIAG:$diagTag] $groupId SKDM send to $memberId FAIL: $e');
-    }
-  }
-
-  // 6. Persist sender key state if we just created a new key.
-  try {
-    await groupSessionMgr.persistState();
-  } catch (e) {
-    debugPrint('[DIAG:$diagTag] $groupId persistState FAIL: $e');
-  }
-
-  debugPrint('[DIAG:$diagTag] $groupId SKDM batch summary: '
-      'ok=$sentOk failed=$failed');
-  return sentOk;
-}
 
 /// MIME whitelist for disappearing-mode attachments. Must match the picker
 /// constraint in attachment_picker_sheet (FileType.custom +
@@ -352,8 +166,10 @@ class ChatState {
   final List<Message> messages;
   final bool isLoading;
   final bool isSending;
+  /// The 1:1 peer is typing (groups have none). No name: the chat header
+  /// already shows who the peer is — the old name field carried the raw
+  /// snow-id the server relays, shown as "snow… is typing…".
   final bool isTyping;
-  final String? typingUserName;
   final int? disappearingTTL;
   final Message? replyToMessage;
 
@@ -362,7 +178,6 @@ class ChatState {
     this.isLoading = false,
     this.isSending = false,
     this.isTyping = false,
-    this.typingUserName,
     this.disappearingTTL,
     this.replyToMessage,
   });
@@ -372,8 +187,6 @@ class ChatState {
     bool? isLoading,
     bool? isSending,
     bool? isTyping,
-    String? typingUserName,
-    bool clearTypingUserName = false,
     int? disappearingTTL,
     bool clearTTL = false,
     Message? replyToMessage,
@@ -384,9 +197,6 @@ class ChatState {
       isLoading: isLoading ?? this.isLoading,
       isSending: isSending ?? this.isSending,
       isTyping: isTyping ?? this.isTyping,
-      typingUserName: clearTypingUserName
-          ? null
-          : (typingUserName ?? this.typingUserName),
       disappearingTTL:
           clearTTL ? null : (disappearingTTL ?? this.disappearingTTL),
       replyToMessage:
@@ -398,7 +208,7 @@ class ChatState {
 /// Outcome of a "Delete for Everyone" (unsend) request, so the UI can give the
 /// sender honest feedback instead of a silent (and sometimes false) success.
 enum UnsendResult {
-  /// The unsend was dispatched (1:1 sealed control sent, or group emit sent, or
+  /// The unsend was dispatched (1:1 sealed control sent, v2 unsend queued, or
   /// the message was local-only) — safe to tell the user it was unsent.
   unsent,
 
@@ -418,6 +228,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
   final SecureStorageService? _secureStorage;
   final String _myId;
 
+  /// Set for a group protocol v2 group: what this chat does goes through
+  /// it. Null for a 1:1 room.
+  final Gv2ChatActions? _gv2;
+
+  /// The 1:1 outbox (app-wide): sends this chat's outgoing messages and keeps
+  /// them until the server acks them. Null for a v2 group.
+  final DirectOutbox? _outbox;
+
   StreamSubscription<List<LocalMessage>>? _messageWatchSubscription;
   StreamSubscription<Map<String, dynamic>>? _typingSubscription;
 
@@ -429,13 +247,18 @@ class ChatNotifier extends StateNotifier<ChatState> {
   static const _typingSendInterval = Duration(seconds: 2);
   static const _typingStopDelay = Duration(seconds: 3);
 
-  /// Auto-translation request callback — wired up to translationCacheProvider in the provider factory.
-  void Function(String messageId, String plaintext)? onTranslateRequest;
+  /// How long a remote "typing…" stays on without being renewed.
+  static const _remoteTypingTimeout = Duration(seconds: 6);
+  Timer? _remoteTypingTimer;
 
   /// Invoked after a local message delete/unsend so the Chats-list preview can
   /// be recomputed. ChatNotifier has no Ref; the provider wires this to
   /// ConversationListNotifier.refreshPreviewAfterDelete(conversationId).
   void Function(String conversationId)? onConversationPreviewStale;
+
+  /// Called with the peer when the user sends a message of their own in a
+  /// 1:1 (never for what the app sends by itself).
+  final Future<void> Function(String peer)? _onUserWrote;
 
   ChatNotifier(
     this.conversationId, {
@@ -445,9 +268,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
     EncryptedMessageHandler? e2eeHandler,
     String? mySnowId,
     SecureStorageService? secureStorage,
-    this.onTranslateRequest,
+    Gv2ChatActions? gv2,
+    DirectOutbox? outbox,
     this.onConversationPreviewStale,
+    Future<void> Function(String peer)? onUserWrote,
   })  : _repo = repository,
+        _outbox = outbox,
+        _onUserWrote = onUserWrote,
+        _gv2 = gv2,
         _markReadHelper = markReadHelper,
         _socketManager = socketManager,
         _e2eeHandler = e2eeHandler,
@@ -457,7 +285,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
     // Wire up repository callbacks for immediate UI updates
     _repo.onIncomingMessage = _addIncomingMessage;
     _repo.onMessageStatusChanged = _handleStatusChange;
-    _repo.onMessageDeleted = _handleRemoteDeletion;
 
     _loadMessages();
     _repo.startSocketListeners();
@@ -466,16 +293,34 @@ class ChatNotifier extends StateNotifier<ChatState> {
     _repo.resumePendingDownloads();
   }
 
-  /// Convenience getters delegated to repository.
+  /// Convenience getters delegated to repository. [recipientId] is the
+  /// peer's snowId of a 1:1 room (its id); [groupId] the id of a v2 group.
   String? get recipientId => _repo.recipientId;
   String? get groupId => _repo.groupId;
+
+  /// The user is sending a message of their own in this 1:1: its peer is an
+  /// account they chose (the group pickers' "known").
+  void _userWroteToPeer() {
+    final peer = recipientId;
+    final onUserWrote = _onUserWrote;
+    if (peer == null || onUserWrote == null) return;
+    unawaited(
+      onUserWrote(peer).catchError((Object e) {
+        debugPrint('[Chat] vouch not stored: ${e.runtimeType}');
+      }),
+    );
+  }
   bool get isGroup => _repo.isGroup;
+
+  /// Whether this chat is a group protocol v2 group (the only kind of group).
+  bool get isGv2 => _gv2 != null;
 
   @override
   void dispose() {
     _messageWatchSubscription?.cancel();
     _typingSubscription?.cancel();
     _typingDebounceTimer?.cancel();
+    _remoteTypingTimer?.cancel();
     for (final timer in _deletionTimers.values) {
       timer.cancel();
     }
@@ -508,23 +353,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final merged = [...driftMessages, ...mergedSending];
         merged.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         state = state.copyWith(messages: merged, isLoading: false);
-
-        // Auto-translation trigger: most recent 10 incoming text messages
-        debugPrint('[ChatNotifier] translate callback null=${onTranslateRequest == null}, incoming=${merged.where((m) => m.senderSnowchatId != _myId && m.type == MessageType.text).length}');
-        if (onTranslateRequest != null) {
-          final incoming = merged
-              .where((m) =>
-                  m.senderSnowchatId != _myId &&
-                  m.type == MessageType.text &&
-                  m.plaintext.isNotEmpty)
-              .toList();
-          final recent = incoming.length > 10
-              ? incoming.sublist(incoming.length - 10)
-              : incoming;
-          for (final m in recent) {
-            onTranslateRequest!(m.id, m.plaintext);
-          }
-        }
+        // Auto-translation is driven by translationCacheProvider, which
+        // listens to this state while the chat screen is open.
       },
       onError: (e) {
         debugPrint('[ChatNotifier:$conversationId] Drift watch error: $e');
@@ -538,11 +368,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   Future<void> _loadMessages() async {
     state = state.copyWith(isLoading: true);
-
-    // Initialize group E2EE (Sender Key) if this is a group conversation
-    if (isGroup && _e2eeHandler != null) {
-      await _initializeGroupE2EE();
-    }
 
     // Load from drift DB (SSoT)
     final driftMessages = await _repo.loadFromDrift();
@@ -579,285 +404,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
   }
 
-  /// Initialize group E2EE by creating a Sender Key if one doesn't exist.
-  /// Fetches group members from server and distributes our sender key.
-  Future<void> _initializeGroupE2EE() async {
-    // Phase 6.9: hard guard against empty myId — the provider is rebuilt
-    // when currentSnowIdProvider resolves, so hitting this path means the
-    // caller raced ahead of onboarding. Defer rather than crash.
-    if (_myId.isEmpty) {
-      debugPrint('[Chat] Skip group E2EE init — myId not yet resolved '
-          '(groupId=$groupId)');
-      return;
-    }
-    try {
-      final groupSessionMgr = _e2eeHandler!.groupSessionManager;
-      if (groupSessionMgr == null) return;
-
-      // Check if we already have a sender key for this group
-      if (groupSessionMgr.hasSenderKey(groupId!, _myId)) return;
-
-      // Fetch group members from server
-      final apiClient = _repo.apiClient;
-      if (apiClient == null) return;
-
-      final response = await apiClient.get('/groups/${groupId!}');
-      final data = response.data;
-      if (data is! Map || data['members'] is! List) return;
-
-      final members = (data['members'] as List)
-          .map((m) => (m as Map)['snowchatId'] as String?)
-          .where((id) => id != null && id != _myId)
-          .cast<String>()
-          .toList();
-
-      if (members.isEmpty) return;
-
-      await groupSessionMgr.initializeGroup(groupId!, _myId, members);
-      debugPrint('[Chat] Group E2EE initialized: groupId=$groupId '
-          'myId=$_myId members=${members.length}');
-    } catch (e) {
-      debugPrint('[Chat] Group E2EE init failed (non-fatal): $e');
-    }
-  }
-
-  /// Fetch group members from server (always fresh — no caching).
-  /// Members can join/leave at any time, so stale lists cause SKDM
-  /// to not be sent to new members → decryption failure.
-  Future<List<String>> _getGroupMembers() async {
-    final apiClient = _repo.apiClient;
-    if (apiClient == null) return [];
-    try {
-      final response = await apiClient.get('/groups/${groupId!}');
-      final data = response.data;
-      if (data is! Map || data['members'] is! List) return [];
-      return (data['members'] as List)
-          .map((m) => (m as Map)['snowchatId'] as String?)
-          .where((id) => id != null && id != _myId)
-          .cast<String>()
-          .toList();
-    } catch (e) {
-      return [];
-    }
-  }
-
-  /// Signal Hybrid group E2EE: Sender Key + Pairwise Fallback.
-  ///
-  /// 1. Try Sender Key encryption (O(1), sent as group message)
-  /// 2. For members who might not have our Sender Key:
-  ///    send same message via 1:1 E2EE (pairwise fallback)
-  /// 3. Also distribute our Sender Key via 1:1 so next message uses O(1)
-  /// Signal Hybrid group E2EE (Phase A — belt-and-suspenders).
-  ///
-  /// 1. Sender Key encrypt (O(1)) → broadcast on the group channel
-  /// 2. perMemberData: per-member inline SKDM + pairwise fallback
-  /// 3. Legacy fallback: also send private_message for old clients
-  /// Phase 6: Send a group message via Sender Key.
-  ///
-  /// Architecture:
-  /// - Sender Key encryption is decoupled from 1:1 ratchet (no inline SKDM,
-  ///   no pairwise fallback). The 1:1 and Sender Key state machines never
-  ///   touch each other in the send path.
-  /// - SKDM is captured BEFORE [encryptGroupMessage] ratchets the state, then
-  ///   sent as separate 1:1 messages — this fixes the iter bug where the SKDM
-  ///   used to embed iter=N+1 while the encrypted payload had iter=N.
-  /// - Server fan-outs the group message to all members. Recipients without
-  ///   a sender key for us will request one via sender_key_request, and we
-  ///   re-send via [GlobalMessageRouter._handleSenderKeyRequest].
-  Future<void> _sendGroupE2EE(
-    String text,
-    String messageId,
-    int? ttl,
-    Message? replyTo, {
-    MessageType type = MessageType.text,
-    Map<String, dynamic>? metadata,
-  }) async {
-    // Phase 6.9: hard guard — never sign Sender Keys with an empty identity.
-    // This used to fall through and silently key the sender-key map at "",
-    // causing 100% verification failure on every receiver.
-    if (_myId.isEmpty) {
-      debugPrint('[Chat] Group send aborted — myId not yet resolved '
-          '(groupId=$groupId, messageId=$messageId)');
-      _updateMessageStatus(messageId, MessageStatus.failed);
-      return;
-    }
-
-    final groupSessionMgr = _e2eeHandler!.groupSessionManager;
-    final sessionMgr = _e2eeHandler!.sessionManager;
-    final members = await _getGroupMembers();
-
-    debugPrint('[DIAG:GroupSend] $messageId members fetched: count=${members.length} '
-        'groupId=$groupId members=${members.join(",")}');
-
-    if (groupSessionMgr == null || members.isEmpty) {
-      debugPrint('[DIAG:GroupSend] $messageId ABORT: '
-          'groupSessionMgr=${groupSessionMgr != null} membersEmpty=${members.isEmpty}');
-      _updateMessageStatus(messageId, MessageStatus.failed);
-      return;
-    }
-
-    // 1. Ensure we have a sender key for this group.
-    if (!groupSessionMgr.hasSenderKey(groupId!, _myId)) {
-      groupSessionMgr.senderKeyManager.createSenderKey(groupId!, _myId);
-    }
-
-    // 2. ===== iter bug fix =====
-    // Capture the CURRENT SKDM (chainKey + iteration) BEFORE encryption
-    // ratchets the state. This SKDM bootstraps recipients to the same
-    // iteration as the message we are about to encrypt.
-    final skdmTemplate =
-        groupSessionMgr.senderKeyManager.getExistingSKDM(groupId!, _myId);
-    final skdmBytes = skdmTemplate.serialize();
-
-    // 3. Build plaintext JSON payload.
-    final plainPayload = {
-      'text': text,
-      'type': type.name,
-      'timestamp': DateTime.now().toIso8601String(),
-      if (metadata != null) 'metadata': metadata,
-      if (ttl != null) 'ttl': ttl,
-      if (replyTo?.id != null) 'replyToId': replyTo!.id,
-      if (replyTo?.plaintext != null) 'replyToPreview': replyTo!.plaintext,
-      if (replyTo?.senderSnowchatId != null)
-        'replyToSenderId': replyTo!.senderSnowchatId,
-    };
-    final plainBytes =
-        Uint8List.fromList(utf8.encode(jsonEncode(plainPayload)));
-
-    // 4. Sender Key encryption — O(1), single ciphertext for all recipients.
-    Uint8List? groupCiphertext;
-    try {
-      groupCiphertext =
-          groupSessionMgr.sendGroupMessage(groupId!, _myId, plainBytes);
-    } catch (e) {
-      debugPrint('[Chat] Sender Key encrypt failed: $e');
-      _updateMessageStatus(messageId, MessageStatus.failed);
-      return;
-    }
-
-    // Phase 10 P0-A: Record plaintext in MessageSendLog for retry requests.
-    // If a recipient fails to decrypt, they'll send a group retry request
-    // and we re-encrypt from this log entry via 1:1 pairwise fallback.
-    sessionMgr.signal.messageSendLog.record(
-      messageId,
-      plainBytes,
-      conversationId: groupId!,
-      isGroup: true,
-    );
-
-    // 5. Decide who needs SKDM (best-effort hint — recipients will also
-    //    request via sender_key_request if they're missing it).
-    //    Phase 6.4 will replace this tracker with reactive ACK; for now we
-    //    keep it as a "send SKDM at most once until restart" optimization.
-    final tracker = sessionMgr.signal.skdmTracker;
-    final rotationVersion =
-        groupSessionMgr.senderKeyManager.getRotationVersion(groupId!);
-    final membersNeedingSKDM = members
-        .where((id) => tracker.needsSKDM(groupId!, id, rotationVersion))
-        .toList();
-
-    debugPrint('[DIAG:GroupSend] $messageId membersNeedingSKDM='
-        '${membersNeedingSKDM.length}/${members.length} '
-        '(${membersNeedingSKDM.join(",")}) rotationVersion=$rotationVersion');
-
-    if (membersNeedingSKDM.isNotEmpty) {
-      // Batch prekey fetch
-      await sessionMgr.ensureSessionBatch(membersNeedingSKDM);
-      debugPrint('[DIAG:GroupSend] $messageId ensureSessionBatch completed');
-
-      // Phase 8.7 Bug A: verify the deviceId cache was actually populated
-      // for every member. If the batch endpoint omitted some recipients
-      // (e.g. placeholder identityKey filter), retry them individually so
-      // that getDeviceIdForRecipient does not throw below.
-      final stillMissing = <String>[];
-      for (final id in membersNeedingSKDM) {
-        if (!sessionMgr.hasDeviceIdFor(id)) stillMissing.add(id);
-      }
-      if (stillMissing.isNotEmpty) {
-        debugPrint('[DIAG:GroupSend] $messageId batch missed '
-            '${stillMissing.length} member(s); retrying individually');
-        for (final id in stillMissing) {
-          try {
-            await sessionMgr.ensureSession(id);
-          } on IdentityBindingInvalidException catch (idErr) {
-            // B-2 §5.7: forged / downgraded / replayed identity — terminal,
-            // never retried (the store already raised the security notice).
-            debugPrint('[DIAG:GroupSend] individual ensureSession: identity rejected (${idErr.reason.name}) — terminal');
-          } on IdentityKeyChangedException {
-            // B-2 §5.5: verified contact awaits re-verification — terminal.
-            debugPrint('[DIAG:GroupSend] individual ensureSession: peer awaits identity re-verification — terminal');
-          } catch (e) {
-            debugPrint('[DIAG:GroupSend] $messageId individual ensureSession '
-                'fallback FAILED for $id: $e');
-          }
-        }
-      }
-
-      // 6. Send SKDM as a separate 1:1 message to each member who needs it.
-      // The wrapper format matches MessageQueue._processSKDM expectations:
-      //   { type: 'sender_key_distribution', text: base64(SKDM bytes) }
-      final wrapper = {
-        'type': 'sender_key_distribution',
-        'text': base64Encode(skdmBytes),
-        'timestamp': DateTime.now().toIso8601String(),
-      };
-      final wrapperBytes =
-          Uint8List.fromList(utf8.encode(jsonEncode(wrapper)));
-
-      var skdmSentOk = 0;
-      var skdmFailed = 0;
-      for (final memberId in membersNeedingSKDM) {
-        // Phase 8.7 Bug A: skip members whose deviceId cache is still
-        // missing after batch + individual retry. Better to drop the SKDM
-        // for one member (recipient will request via sender_key_request)
-        // than to encrypt under placeholder 'primary' and corrupt session.
-        if (!sessionMgr.hasDeviceIdFor(memberId)) {
-          skdmFailed++;
-          debugPrint('[DIAG:GroupSend] $messageId SKDM SKIPPED for $memberId '
-              '(no deviceId after retries)');
-          continue;
-        }
-        try {
-          final deviceId =
-              await sessionMgr.getDeviceIdForRecipient(memberId);
-          final encrypted =
-              await sessionMgr.encrypt(memberId, deviceId, wrapperBytes);
-          _socketManager!.sendPrivateMessage({
-            'recipientId': memberId,
-            'encryptedContent':
-                base64Encode(encrypted['ciphertext'] as Uint8List),
-            'type': 'sender_key_distribution',
-            'messageType': encrypted['messageType'] as int,
-            'groupChatId': groupId,
-          });
-          tracker.markDelivered(groupId!, memberId, rotationVersion);
-          skdmSentOk++;
-          debugPrint('[DIAG:GroupSend] $messageId SKDM sent to $memberId '
-              '(deviceId=$deviceId)');
-        } catch (e) {
-          skdmFailed++;
-          debugPrint('[DIAG:GroupSend] $messageId SKDM send to $memberId FAILED: $e');
-          // Non-fatal: recipient will request via sender_key_request.
-        }
-      }
-      debugPrint('[DIAG:GroupSend] $messageId SKDM batch summary: '
-          'ok=$skdmSentOk failed=$skdmFailed');
-    }
-
-    // 7. Send the group message — pure Sender Key payload, no perMemberData.
-    debugPrint('[DIAG:GroupSend] $messageId emitting send_group_message');
-    _socketManager!.sendGroupMessage({
-      'groupChatId': groupId,
-      'encryptedPayload': base64Encode(groupCiphertext),
-      'type': 'sender_key',
-      'clientMessageId': messageId,
-      if (ttl != null) 'expiresIn': ttl,
-    });
-
-    // 8. Persist Sender Key state to disk (chain ratcheted during step 4).
-    await groupSessionMgr.persistState();
-  }
-
   // ---------------------------------------------------------------------------
   // Repository callbacks
   // ---------------------------------------------------------------------------
@@ -876,6 +422,9 @@ class ChatNotifier extends StateNotifier<ChatState> {
   void _handleStatusChange(String messageId, MessageStatus newStatus,
       {String? serverMessageId}) async {
     if (!mounted) return;
+    // The status of a v2 group message comes from this device's outbox
+    // (Gv2Runtime.sendEvents, written to the row), never from the socket.
+    if (isGv2) return;
 
     if (newStatus == MessageStatus.sent && serverMessageId != null) {
       // Update drift FIRST: attachment messageId + message ID (atomic).
@@ -912,7 +461,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
         }).toList(),
       );
       // Apply any pending statuses that arrived during async sent processing
-      if (serverMessageId != null && _pendingStatuses.containsKey(serverMessageId)) {
+      if (_pendingStatuses.containsKey(serverMessageId)) {
         final pending = _pendingStatuses.remove(serverMessageId)!;
         // Update drift DB — watch will rebuild UI
         _repo.updateOutgoingStatusInDrift(serverMessageId, pending.name);
@@ -934,14 +483,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
   }
 
-  void _handleRemoteDeletion(String messageId) {
-    if (!mounted) return;
-    _repo.expiringManager?.cancel(messageId);
-    // Physical delete (drift + attachments + local files) — drift watch updates UI
-    _repo.deleteMessageLocally(messageId);
-    debugPrint('[ChatNotifier] Message $messageId deleted by sender');
-  }
-
   void _updateMessageStatus(String messageId, MessageStatus status) {
     state = state.copyWith(
       messages: state.messages.map((m) {
@@ -960,25 +501,42 @@ class ChatNotifier extends StateNotifier<ChatState> {
     clearReplyTo();
 
     debugPrint('[DIAG:Send] sendMessage entry: convId=$conversationId '
-        'recipientId=$recipientId groupId=$groupId isGroup=$isGroup');
+        'gv2=$isGv2');
+
+    // Group protocol v2: queued on this device (it leaves when the group can
+    // send, also after a reconnect), stored under its final id.
+    final gv2 = _gv2;
+    if (gv2 != null) {
+      final ttl = state.disappearingTTL;
+      try {
+        final id = await gv2.send(
+          text: text,
+          snippet: text,
+          ttlSeconds: ttl,
+          replyToId: replyTo?.id,
+          replyToPreview: replyTo?.plaintext,
+          replyToSenderId: replyTo?.senderSnowchatId,
+        );
+        if (ttl != null) _repo.expiringManager?.schedule(id, ttl);
+      } catch (e) {
+        debugPrint('[Chat] v2 group send refused: ${e.runtimeType}');
+        _gv2Refused(text, MessageType.text);
+      }
+      return;
+    }
 
     if (_socketManager == null) {
       debugPrint('[DIAG:Send] ABORT: socketManager null');
       return;
     }
-    if (!isGroup && recipientId == null) {
-      debugPrint('[DIAG:Send] ABORT: 1:1 but recipientId null '
-          '(convId=$conversationId — chatProvider failed to resolve)');
+    if (recipientId == null) {
+      debugPrint('[DIAG:Send] ABORT: not a 1:1 room or a v2 group '
+          '(convId=$conversationId)');
       return;
     }
-    if (isGroup && groupId == null) {
-      debugPrint('[DIAG:Send] ABORT: group but groupId null');
-      return;
-    }
-    if (!(_socketManager!.isConnected)) {
-      debugPrint('[DIAG:Send] ABORT: socket not connected');
-      return;
-    }
+    _userWroteToPeer();
+    // Connected or not: the message is stored and shown now; the 1:1 outbox
+    // sends it when it can (it used to be dropped here while offline).
 
     final messageId =
         'msg_${DateTime.now().millisecondsSinceEpoch}_${text.hashCode.abs()}';
@@ -1005,7 +563,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     // Persist to drift (including TTL for app restart recovery).
     // persistOutgoingMessage also refreshes the conversation snippet so an
     // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
-    _repo.persistOutgoingMessage(
+    await _repo.persistOutgoingMessage(
       LocalMessagesCompanion(
         id: Value(messageId),
         conversationId: Value(conversationId),
@@ -1034,107 +592,40 @@ class ChatNotifier extends StateNotifier<ChatState> {
       _repo.expiringManager?.schedule(messageId, ttl);
     }
 
-    // Send via socket — E2EE only. No plaintext fallback under any condition.
-    // SnowChat is a Pure Dart Signal Protocol E2EE messenger; if the handler
-    // is unavailable (cold-start race, provider initialization bug, etc.) we
-    // fail-fast rather than silently sending plaintext to the server. The
-    // user sees a 'failed' state and can retry once E2EE is ready.
-    if (_e2eeHandler == null) {
-      debugPrint('[Chat] E2EE handler unavailable — refusing to send '
-          '(message $messageId would have leaked plaintext)');
+    // The 1:1 outbox sends it — E2EE only (sealed when available), encrypted
+    // at the moment it leaves, kept and tried again until the server acks it
+    // (core/messaging/direct_outbox.dart). Its status comes back on the row.
+    final outbox = _outbox;
+    if (outbox == null) {
+      debugPrint('[Chat] 1:1 outbox unavailable — message $messageId not sent');
+      _repo.updateOutgoingStatusInDrift(messageId, 'failed');
       _updateMessageStatus(messageId, MessageStatus.failed);
       onUserStoppedTyping();
       return;
     }
-
-    if (isGroup) {
-      debugPrint('[DIAG:Send] $messageId routing to _sendGroupE2EE groupId=$groupId');
-      try {
-        await _sendGroupE2EE(text, messageId, ttl, replyTo);
-      } catch (e, st) {
-        debugPrint('[DIAG:Send] $messageId GROUP send EXCEPTION: $e\n$st');
-        _updateMessageStatus(messageId, MessageStatus.failed);
-      }
-    } else {
-      // 1:1 E2EE path. Sealed Sender wraps the Double Ratchet ciphertext
-      // so the server cannot read the senderId (messages row stores it as
-      // NULL with senderHash=HMAC binding for blind retry). Activation
-      // 2026-05-13 — the original April 13 disable was based on two
-      // hazards that are both resolved now:
-      //   1. Server's persistent SEALED_SENDER_PRIVATE_KEY env was missing.
-      //      Production .env now ships a 64-byte keypair; startup log
-      //      confirms "Server Ed25519 key loaded from environment".
-      //   2. A sealed→regular fallback used to double-encrypt and shred
-      //      the ratchet. That fallback was removed; the catch below
-      //      marks the message failed without re-encrypting. retry_handler
-      //      handles legitimate recovery via archiveAndResetSession on a
-      //      fresh session, not by re-encrypting on the same ratchet.
-      // Also sendSealedMessage now pre-fetches certificate + IK before
-      // encrypt() so a ratchet advance is never wasted on a throw.
-      //
-      // VoIP signaling (call_signaling.dart) has been shipping sealed
-      // envelopes through the same SealedSenderService end-to-end in
-      // production since the certificate service stabilized — this is
-      // the message-side counterpart finally going live.
-      final useSealed = _e2eeHandler!.isSealedSenderAvailable;
-      debugPrint('[DIAG:Send] $messageId routing to 1:1 E2EE '
-          '${useSealed ? "(sealed)" : "(regular DR — sealed unavailable)"} '
-          'recipientId=$recipientId');
-      try {
-        if (useSealed) {
-          await _e2eeHandler!.sendSealedMessage(
-            conversationId: conversationId,
-            recipientId: recipientId!,
-            text: text,
-            clientMessageId: messageId,
-            ttlSeconds: ttl,
-            replyToId: replyTo?.id,
-            replyToPreview: replyTo?.plaintext,
-            replyToSenderId: replyTo?.senderSnowchatId,
-            onAck: (response) {
-              if (!mounted) return;
-              debugPrint('[DIAG:Send] $messageId sealed ACK: $response');
-              if (response is Map && response['error'] != null) {
-                _updateMessageStatus(messageId, MessageStatus.failed);
-              }
-            },
-          );
-        } else {
-          await _e2eeHandler!.sendEncryptedMessage(
-            conversationId: conversationId,
-            recipientId: recipientId!,
-            text: text,
-            clientMessageId: messageId,
-            ttlSeconds: ttl,
-            replyToId: replyTo?.id,
-            replyToPreview: replyTo?.plaintext,
-            replyToSenderId: replyTo?.senderSnowchatId,
-            onAck: (response) {
-              if (!mounted) return;
-              debugPrint('[DIAG:Send] $messageId ACK: $response');
-              if (response is Map && response['error'] != null) {
-                _updateMessageStatus(messageId, MessageStatus.failed);
-              }
-            },
-          );
-        }
-        debugPrint('[DIAG:Send] $messageId 1:1 send completed');
-      } catch (e, st) {
-        debugPrint('[DIAG:Send] $messageId 1:1 send EXCEPTION: $e\n$st');
-        _updateMessageStatus(messageId, MessageStatus.failed);
-      }
-    }
-
-    // Timeout: mark as failed after 10 seconds
-    Future.delayed(const Duration(seconds: 10), () {
-      if (!mounted) return;
-      final msg = state.messages.where((m) => m.id == messageId).firstOrNull;
-      if (msg != null && msg.status == MessageStatus.sending) {
-        _updateMessageStatus(messageId, MessageStatus.failed);
-      }
-    });
+    await outbox.enqueueText(
+      messageId: messageId,
+      peer: recipientId!,
+      text: text,
+      ttlSeconds: ttl,
+      replyToId: replyTo?.id,
+      replyToPreview: replyTo?.plaintext,
+      replyToSenderId: replyTo?.senderSnowchatId,
+    );
 
     onUserStoppedTyping();
+  }
+
+  /// Send the failed 1:1 message [messageId] again (the bubble's retry). The
+  /// same message and id go out again through the 1:1 outbox; the peer stores
+  /// it once even if an earlier copy did arrive.
+  Future<void> retryFailedMessage(String messageId) async {
+    final outbox = _outbox;
+    if (outbox == null || isGv2) return;
+    final queued = await outbox.retry(messageId);
+    if (!queued) {
+      debugPrint('[Chat] $messageId cannot be sent again (nothing to send it from)');
+    }
   }
 
   // _sendPlaintext removed (2026-04-08): SnowChat is E2EE-only. No plaintext
@@ -1147,7 +638,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
     required String mimeType,
   }) async {
     if (_socketManager == null) return;
-    if (!isGroup && recipientId == null) return;
+    if (!isGv2 && recipientId == null) return;
+    if (!isGv2) _userWroteToPeer();
 
     // Tier 2A defense-in-depth: disappearing mode is restricted to MIME types
     // we have in-app viewers for — image/* (image_viewer_screen),
@@ -1186,40 +678,48 @@ class ChatNotifier extends StateNotifier<ChatState> {
       messages: [...state.messages, localMessage],
     );
 
-    // 2. E2EE path: encrypt file content + upload + send metadata via Signal Protocol
-    //    Non-E2EE path: upload raw + send metadata as plaintext
+    // 1:1: stored, shown and queued now — the 1:1 outbox uploads and sends
+    // it (also later, offline or after a restart).
+    if (!isGv2) {
+      await _queueDirectAttachment(
+        messageId: messageId,
+        sourcePath: filePath,
+        kind: MessageType.file,
+        text: fileName,
+        fileName: fileName,
+        keptName: fileName,
+        mimeType: mimeType,
+        now: now,
+        ttl: ttl,
+      );
+      return;
+    }
+
+    // 2. Group protocol v2: encrypt the file content + upload, then the group
+    //    queues the message under its final id.
     try {
       final file = File(filePath);
       final bytes = await file.readAsBytes();
       final fileSize = bytes.length;
 
-      // Encrypt file content with random key (XSalsa20-Poly1305) for E2EE,
-      // or upload raw for non-E2EE paths
-      String fileId;
-      String? fileKeyB64;
-      String? contentHash;
+      // Encrypt file content with a random key (XSalsa20-Poly1305). Always:
+      // the server stores only the encrypted blob (zero-knowledge) — there
+      // is no plaintext upload, whatever path sends the message.
+      final encResult =
+          await FileEncryptor.encryptFile(Uint8List.fromList(bytes));
+      final fileId = await _repo.fileService!.uploadEncryptedFile(
+          encResult.encryptedData, encResult.contentHash);
+      final fileKeyB64 = base64Encode(encResult.fileKey);
+      final contentHash = encResult.contentHash;
 
-      if (_e2eeHandler != null || isGroup) {
-        // Zero-Knowledge: server stores only encrypted blob
-        final encResult = await FileEncryptor.encryptFile(Uint8List.fromList(bytes));
-        fileId = await _repo.fileService!.uploadEncryptedFile(
-            encResult.encryptedData, encResult.contentHash);
-        fileKeyB64 = base64Encode(encResult.fileKey);
-        contentHash = encResult.contentHash;
-      } else {
-        // Legacy plaintext upload (no E2EE handler available)
-        final hash = _computeHash(bytes);
-        fileId = await _repo.fileService!.uploadEncryptedFile(bytes, hash);
-      }
-
-      // 3. Build metadata (fileKey included only when E2EE encrypted)
+      // 3. Build metadata (fileKey travels inside the E2EE payload only)
       final metadata = {
         'fileId': fileId,
         'fileName': fileName,
         'mimeType': mimeType,
         'size': fileSize,
-        if (fileKeyB64 != null) 'fileKey': fileKeyB64,
-        if (contentHash != null) 'contentHash': contentHash,
+        'fileKey': fileKeyB64,
+        'contentHash': contentHash,
         'attachments': [
           {
             'fileId': fileId,
@@ -1230,112 +730,34 @@ class ChatNotifier extends StateNotifier<ChatState> {
         ],
       };
 
-      // Await drift writes BEFORE socket send — prevents race condition where
-      // the ACK arrives before attachment row exists, causing messageId mismatch.
-      // persistOutgoingMessage also refreshes the conversation snippet so an
-      // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
-      await _repo.persistOutgoingMessage(
-        LocalMessagesCompanion(
-          id: Value(messageId),
-          conversationId: Value(conversationId),
-          senderSnowchatId: Value(_myId),
-          plaintext: Value(fileName),
-          dateSent: Value(now.millisecondsSinceEpoch),
-          dateReceived: Value(now.millisecondsSinceEpoch),
-          type: const Value('file'),
-          metadata: Value(jsonEncode(metadata)),
-          read: const Value(true),
-          outgoingStatus: const Value('sending'),
-          expiresIn: Value(ttl ?? 0),
-          expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
-        ),
-        snippetText: fileName,
-        sentTimestamp: now.millisecondsSinceEpoch,
+      // Group protocol v2: the message row and its attachment row are
+      // written with the queued message, under its final id; the row shown
+      // while the file was uploading goes.
+      final gv2 = _gv2!;
+      final relativePath = await _keepOutgoingFile(
+        filePath,
+        AttachmentStorage.relativePathFor(fileId, fileName, fallbackExtension: 'jpg'),
       );
-
-      // Signal pattern: copy PLAINTEXT to permanent path for local display
-      // Store RELATIVE path — immune to iOS container UUID changes
-      final ext = fileName.contains('.') ? fileName.split('.').last : 'jpg';
-      final dir = await getApplicationDocumentsDirectory();
-      await AttachmentStorage.ensureDirectory();
-      final relativePath = 'snowchat_attachments/$fileId.$ext';
-      await File(filePath).copy('${dir.path}/$relativePath');
-      // File.copy carries source metadata — enforce the attachment class.
-      await AttachmentStorage.protectFile('${dir.path}/$relativePath');
-
-      // Await attachment insert — must complete before socket send so that
-      // updateMessageId(localId→serverCUID) in ACK handler finds the row.
-      await _repo.attachmentDao?.insertAttachment(LocalAttachmentsCompanion(
-        id: Value('att_${messageId}_0'),
-        messageId: Value(messageId),
-        displayOrder: const Value(0),
-        contentType: Value(mimeType),
-        fileName: Value(fileName),
-        fileSize: Value(fileSize),
-        remoteFileId: Value(fileId),
-        localPath: Value(relativePath),
-        transferState: const Value(0), // DONE
+      final id = await _withKeptFile(relativePath, () => gv2.send(
+        text: fileName,
+        snippet: fileName,
+        type: MessageType.file.name,
+        metadata: metadata,
+        ttlSeconds: ttl,
+        attachment: (id) => LocalAttachmentsCompanion(
+          id: Value('att_${id}_0'),
+          messageId: Value(id),
+          displayOrder: const Value(0),
+          contentType: Value(mimeType),
+          fileName: Value(fileName),
+          fileSize: Value(fileSize),
+          remoteFileId: Value(fileId),
+          localPath: Value(relativePath),
+          transferState: const Value(0), // DONE
+        ),
       ));
-
-      // E2EE only — fail-fast if handler unavailable. No plaintext fallback.
-      // The encrypted blob has already been uploaded to the server, but the
-      // recipient cannot decrypt without the fileKey, which lives only in
-      // the E2EE payload. Sending plaintext metadata would also leak the
-      // filename and mime type to the server.
-      if (_e2eeHandler == null) {
-        debugPrint('[Chat] E2EE handler unavailable — refusing to send file '
-            '(message $messageId would have leaked filename + metadata)');
-        _updateMessageStatus(messageId, MessageStatus.failed);
-        return;
-      }
-
-      if (isGroup) {
-        await _sendGroupE2EE(fileName, messageId, ttl, null,
-            type: MessageType.file, metadata: metadata);
-      } else {
-        // +286 활성된 1:1 sealed sender 가 file 에도 그대로 적용된다.
-        // metadata 는 fileId / fileKey / contentHash 등 attachment 복호화
-        // 정보 + filename 같은 PII 가 포함되므로, regular DR path 면 server
-        // 가 sender + filename + mime 모두 보지만 sealed path 면 senderId
-        // 만 NULL 로 마스킹된다. (filename + mime 은 여전히 sealed envelope
-        // 안에 있어서 server 는 못 봄.) attachmentWatchProvider 측 receive
-        // path 는 sealed 든 regular 든 동일하게 작동.
-        final useSealed = _e2eeHandler!.isSealedSenderAvailable;
-        debugPrint('[Chat] file 1:1 routing '
-            '${useSealed ? "(sealed)" : "(regular DR)"} '
-            'msgId=$messageId fileId=$fileId');
-        try {
-          if (useSealed) {
-            await _e2eeHandler!.sendSealedMessage(
-              conversationId: conversationId,
-              recipientId: recipientId!,
-              text: fileName,
-              clientMessageId: messageId,
-              type: MessageType.file,
-              metadata: metadata,
-              ttlSeconds: ttl,
-            );
-          } else {
-            await _e2eeHandler!.sendEncryptedMessage(
-              conversationId: conversationId,
-              recipientId: recipientId!,
-              text: fileName,
-              clientMessageId: messageId,
-              type: MessageType.file,
-              metadata: metadata,
-              ttlSeconds: ttl,
-            );
-          }
-        } catch (e) {
-          debugPrint('[Chat] E2EE file send failed: $e');
-          _updateMessageStatus(messageId, MessageStatus.failed);
-        }
-      }
-
-      // Schedule expiration deletion
-      if (ttl != null) {
-        _repo.expiringManager?.schedule(messageId, ttl);
-      }
+      _dropInMemory(messageId);
+      if (ttl != null) _repo.expiringManager?.schedule(id, ttl);
     } catch (e) {
       debugPrint('[ChatNotifier] File upload failed: $e');
       _updateMessageStatus(messageId, MessageStatus.failed);
@@ -1357,7 +779,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
     // bubble failing on a 28-byte corrupt m4a (separate VoiceRecorder
     // guard); the cross-device half was the missing encryption.
     if (_socketManager == null) return;
-    if (!isGroup && recipientId == null) return;
+    if (!isGv2 && recipientId == null) return;
+    if (!isGv2) _userWroteToPeer();
     if (_repo.fileService == null) {
       debugPrint('[Chat] fileService unavailable — voice send aborted');
       return;
@@ -1402,6 +825,25 @@ class ChatNotifier extends StateNotifier<ChatState> {
       isSending: false,
     );
 
+    // 1:1: stored, shown and queued now — the 1:1 outbox uploads and sends
+    // it (also later, offline or after a restart).
+    if (!isGv2) {
+      await _queueDirectAttachment(
+        messageId: messageId,
+        sourcePath: audioPath,
+        kind: MessageType.voice,
+        text: 'Voice message',
+        fileName: fileName,
+        keptName: 'voice.wav',
+        mimeType: mimeType,
+        now: now,
+        ttl: ttl,
+        durationSeconds: durationSeconds,
+      );
+      _scheduleDeletionIfNeeded(localMessage);
+      return;
+    }
+
     try {
       // 1. Encrypt audio + upload ciphertext (Zero-Knowledge).
       final file = File(audioPath);
@@ -1439,111 +881,189 @@ class ChatNotifier extends StateNotifier<ChatState> {
         ],
       };
 
-      // 3. Persist drift row with full metadata + TTL columns. The drift
-      // watch stream will round-trip this back into in-memory state; if we
-      // omit any of {metadata, expiresIn, expireStarted} the in-memory
-      // copy gets clobbered with nulls a frame after rendering (the +281 /
-      // +282 regression line).
-      // persistOutgoingMessage also refreshes the conversation snippet so an
-      // outgoing-last chat doesn't hydrate as "No messages yet" after restart.
-      await _repo.persistOutgoingMessage(
-        LocalMessagesCompanion(
-          id: Value(messageId),
-          conversationId: Value(conversationId),
-          senderSnowchatId: Value(_myId),
-          plaintext: const Value('Voice message'),
-          dateSent: Value(now.millisecondsSinceEpoch),
-          dateReceived: Value(now.millisecondsSinceEpoch),
-          type: const Value('voice'),
-          metadata: Value(jsonEncode(metadata)),
-          read: const Value(true),
-          outgoingStatus: const Value('sending'),
-          expiresIn: Value(ttl ?? 0),
-          expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
-        ),
-        snippetText: 'Voice message',
-        sentTimestamp: now.millisecondsSinceEpoch,
+      // Group protocol v2: as for a file (sendFileMessage).
+      final gv2 = _gv2!;
+      final relativePath = await _keepOutgoingFile(
+        audioPath,
+        AttachmentStorage.relativePathFor(fileId, 'voice.wav'),
       );
-
-      // 4. Copy plaintext m4a to the permanent attachment path so the
-      // sender-side voice bubble (and any later watch-stream rebuild) can
-      // play it without re-downloading from the server. Relative path keeps
-      // it immune to iOS container UUID rotation.
-      final dir = await getApplicationDocumentsDirectory();
-      await AttachmentStorage.ensureDirectory();
-      final relativePath = 'snowchat_attachments/$fileId.wav';
-      await file.copy('${dir.path}/$relativePath');
-      // File.copy carries source metadata — enforce the attachment class.
-      await AttachmentStorage.protectFile('${dir.path}/$relativePath');
-
-      // 5. Attachment row — voice bubble watches this via attachmentWatchProvider
-      // (same provider the file / image bubbles use), so both sender and
-      // recipient resolve `localPath` through one path.
-      await _repo.attachmentDao?.insertAttachment(LocalAttachmentsCompanion(
-        id: Value('att_${messageId}_0'),
-        messageId: Value(messageId),
-        displayOrder: const Value(0),
-        contentType: Value(mimeType),
-        fileName: Value(fileName),
-        fileSize: Value(fileSize),
-        remoteFileId: Value(fileId),
-        localPath: Value(relativePath),
-        transferState: const Value(0), // DONE
+      final id = await _withKeptFile(relativePath, () => gv2.send(
+        text: 'Voice message',
+        snippet: 'Voice message',
+        type: MessageType.voice.name,
+        metadata: metadata,
+        ttlSeconds: ttl,
+        attachment: (id) => LocalAttachmentsCompanion(
+          id: Value('att_${id}_0'),
+          messageId: Value(id),
+          displayOrder: const Value(0),
+          contentType: Value(mimeType),
+          fileName: Value(fileName),
+          fileSize: Value(fileSize),
+          remoteFileId: Value(fileId),
+          localPath: Value(relativePath),
+          transferState: const Value(0), // DONE
+        ),
       ));
-
-      // 6. E2EE send (1:1 Double Ratchet or group Sender Key). Mirrors
-      // sendFileMessage's fork — sealed sender 활성 가능한 1:1 path 에서는
-      // sendSealedMessage 로 가서 server 가 senderId 를 모르게 된다.
-      if (isGroup) {
-        await _sendGroupE2EE('Voice message', messageId, ttl, null,
-            type: MessageType.voice, metadata: metadata);
-      } else {
-        final useSealed = _e2eeHandler!.isSealedSenderAvailable;
-        debugPrint('[Chat] voice 1:1 routing '
-            '${useSealed ? "(sealed)" : "(regular DR)"} '
-            'msgId=$messageId fileId=$fileId');
-        try {
-          if (useSealed) {
-            await _e2eeHandler!.sendSealedMessage(
-              conversationId: conversationId,
-              recipientId: recipientId!,
-              text: 'Voice message',
-              clientMessageId: messageId,
-              type: MessageType.voice,
-              metadata: metadata,
-              ttlSeconds: ttl,
-            );
-          } else {
-            await _e2eeHandler!.sendEncryptedMessage(
-              conversationId: conversationId,
-              recipientId: recipientId!,
-              text: 'Voice message',
-              clientMessageId: messageId,
-              type: MessageType.voice,
-              metadata: metadata,
-              ttlSeconds: ttl,
-            );
-          }
-        } catch (e) {
-          debugPrint('[Chat] E2EE voice send failed: $e');
-          _updateMessageStatus(messageId, MessageStatus.failed);
-          return;
-        }
-      }
-
-      if (ttl != null) {
-        _repo.expiringManager?.schedule(messageId, ttl);
-      }
-      _scheduleDeletionIfNeeded(localMessage);
+      _dropInMemory(messageId);
+      if (ttl != null) _repo.expiringManager?.schedule(id, ttl);
     } catch (e, st) {
       debugPrint('[Chat] voice send exception: $e\n$st');
       _updateMessageStatus(messageId, MessageStatus.failed);
     }
   }
 
-  /// Compute SHA-256 hash of bytes for upload integrity.
-  static String _computeHash(Uint8List bytes) {
-    return sha256.convert(bytes).toString();
+  /// A 1:1 file or voice message [messageId] (already shown in memory):
+  /// keep the plaintext at its permanent place (under a local id — the
+  /// server's file id comes with the upload), store the message as `sending`
+  /// with its attachment row, and hand it to the 1:1 outbox, which uploads
+  /// and sends it. Upload and send no longer depend on this screen or on the
+  /// network at this moment.
+  Future<void> _queueDirectAttachment({
+    required String messageId,
+    required String sourcePath,
+    required MessageType kind,
+    required String text,
+    required String fileName,
+    required String keptName,
+    required String mimeType,
+    required DateTime now,
+    required int? ttl,
+    int? durationSeconds,
+  }) async {
+    final outbox = _outbox;
+    final peer = recipientId;
+    if (outbox == null || peer == null) {
+      debugPrint('[Chat] 1:1 outbox unavailable — attachment $messageId not sent');
+      _updateMessageStatus(messageId, MessageStatus.failed);
+      return;
+    }
+    try {
+      final size = await File(sourcePath).length();
+      final relativePath = await _keepOutgoingFile(
+        sourcePath,
+        AttachmentStorage.relativePathFor(const Uuid().v4(), keptName,
+            fallbackExtension: 'jpg'),
+      );
+      // What the bubble needs until the upload adds the file id and key.
+      final shown = <String, dynamic>{
+        'fileName': fileName,
+        'mimeType': mimeType,
+        'size': size,
+        'duration': ?durationSeconds,
+      };
+      await _repo.persistOutgoingMessage(
+        LocalMessagesCompanion(
+          id: Value(messageId),
+          conversationId: Value(conversationId),
+          senderSnowchatId: Value(_myId),
+          plaintext: Value(text),
+          dateSent: Value(now.millisecondsSinceEpoch),
+          dateReceived: Value(now.millisecondsSinceEpoch),
+          type: Value(kind.name),
+          metadata: Value(jsonEncode(shown)),
+          read: const Value(true),
+          outgoingStatus: const Value('sending'),
+          expiresIn: Value(ttl ?? 0),
+          expireStarted: Value(ttl != null ? now.millisecondsSinceEpoch : 0),
+        ),
+        snippetText: text,
+        sentTimestamp: now.millisecondsSinceEpoch,
+      );
+      // The attachment row shows the kept copy now (the bubbles watch it);
+      // the outbox adds the server file id once uploaded.
+      await _repo.attachmentDao?.insertAttachment(LocalAttachmentsCompanion(
+        id: Value('att_${messageId}_0'),
+        messageId: Value(messageId),
+        displayOrder: const Value(0),
+        contentType: Value(mimeType),
+        fileName: Value(fileName),
+        fileSize: Value(size),
+        localPath: Value(relativePath),
+        transferState: const Value(0), // DONE — the plaintext is here
+      ));
+      await outbox.enqueueAttachment(
+        messageId: messageId,
+        peer: peer,
+        kind: kind,
+        text: text,
+        relativePath: relativePath,
+        fileName: fileName,
+        mimeType: mimeType,
+        size: size,
+        durationSeconds: durationSeconds,
+        ttlSeconds: ttl,
+      );
+      if (ttl != null) _repo.expiringManager?.schedule(messageId, ttl);
+    } catch (e) {
+      debugPrint('[Chat] attachment $messageId not queued: ${e.runtimeType}');
+      _updateMessageStatus(messageId, MessageStatus.failed);
+    }
+  }
+
+  /// Copy the plaintext of an outgoing attachment to its permanent place
+  /// [relativePath] (from AttachmentStorage.relativePathFor) for local
+  /// display. Returns it — relative to the app documents directory, immune
+  /// to iOS container UUID changes.
+  Future<String> _keepOutgoingFile(String sourcePath, String relativePath) async {
+    final dir = await getApplicationDocumentsDirectory();
+    await AttachmentStorage.ensureDirectory();
+    await File(sourcePath).copy('${dir.path}/$relativePath');
+    // File.copy carries source metadata — enforce the attachment class.
+    await AttachmentStorage.protectFile('${dir.path}/$relativePath');
+    return relativePath;
+  }
+
+  /// Send through the group what refers to the file kept at
+  /// [relativePath]. When the group does not take it, nothing refers to the
+  /// copy, and it goes (it is the plaintext of what was not sent).
+  Future<String> _withKeptFile(
+    String relativePath,
+    Future<String> Function() send,
+  ) async {
+    try {
+      return await send();
+    } catch (_) {
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        final copy = File('${dir.path}/$relativePath');
+        if (await copy.exists()) await copy.delete();
+      } catch (_) {
+        // An orphan file: gone with the attachments of a reinstall.
+      }
+      rethrow;
+    }
+  }
+
+  /// Remove a message that lives in memory only (the row shown while an
+  /// attachment uploads) once its stored row took its place.
+  void _dropInMemory(String messageId) {
+    if (!mounted) return;
+    state = state.copyWith(
+      messages: state.messages.where((m) => m.id != messageId).toList(),
+    );
+  }
+
+  /// A v2 group did not take what this account wrote (it is not in the
+  /// group any more, or the group is frozen): the text is shown as failed.
+  /// In memory only — nothing was queued or stored.
+  void _gv2Refused(String text, MessageType type) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        Message(
+          id: 'msg_${now.millisecondsSinceEpoch}_${text.hashCode.abs()}',
+          conversationId: conversationId,
+          senderSnowchatId: _myId,
+          plaintext: text,
+          timestamp: now,
+          type: type,
+          status: MessageStatus.failed,
+        ),
+      ],
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1560,36 +1080,48 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   void _listenToTyping() {
     _typingSubscription = _socketManager?.onTyping.listen((data) {
-      final stopped = data['stopped'] as bool? ?? false;
-      // 1:1 (metadata-min Batch 2): the server sends the typer's snow-id —
-      // match it against THIS chat's peer (rooms are peer-keyed now, so the
-      // old conversationId match no longer works for 1:1).
+      // 1:1 only — a v2 group has no typing indicator (design §12). The
+      // server sends the typer's snow-id (metadata-min Batch 2); it counts
+      // only when it is this chat's peer.
       final fromSnow = data['fromSnowchatId'] as String?;
-      if (fromSnow != null) {
-        if (fromSnow != recipientId) return;
-        setTyping(!stopped, userName: stopped ? null : fromSnow);
-        return;
-      }
-      // Group: match by the shared room id (groupId).
-      final typingConvId = data['conversationId'] as String?;
-      if (typingConvId != conversationId) return;
-      final typingUserId = data['userId'] as String?;
-      setTyping(!stopped, userName: stopped ? null : typingUserId);
+      final peer = recipientId;
+      if (fromSnow == null || peer == null || fromSnow != peer) return;
+      final stopped = data['stopped'] as bool? ?? false;
+      _applyRemoteTyping(!stopped);
     });
   }
 
+  /// Show / hide the peer's "typing…" indicator.
+  ///
+  /// A shown indicator clears itself after [_remoteTypingTimeout] unless a
+  /// newer typing event renews it. The stop event is not guaranteed to arrive
+  /// (the typer disconnected, the server dropped or reordered it), and without
+  /// this timeout the indicator stayed on forever in those cases. A typer who
+  /// keeps typing re-sends typing_start every [_typingSendInterval], well
+  /// inside the timeout.
+  void _applyRemoteTyping(bool typing) {
+    _remoteTypingTimer?.cancel();
+    _remoteTypingTimer = null;
+    if (!mounted) return;
+    setTyping(typing);
+    if (typing) {
+      _remoteTypingTimer = Timer(_remoteTypingTimeout, () {
+        if (mounted) setTyping(false);
+      });
+    }
+  }
+
   void onUserTyping() {
+    // 1:1 only: the server is told nothing about a v2 group.
+    final peer = recipientId;
+    if (peer == null) return;
     final sm = _socketManager;
     if (sm == null || !sm.isConnected) return;
 
     final now = DateTime.now();
     if (_lastTypingSent == null ||
         now.difference(_lastTypingSent!) >= _typingSendInterval) {
-      if (isGroup) {
-        sm.sendTyping(conversationId: conversationId);
-      } else {
-        sm.sendTyping(recipientSnowchatId: recipientId);
-      }
+      sm.sendTyping(recipientSnowchatId: peer);
       _lastTypingSent = now;
     }
 
@@ -1602,19 +1134,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
   void onUserStoppedTyping() {
     _typingDebounceTimer?.cancel();
     _lastTypingSent = null;
-    if (isGroup) {
-      _socketManager?.stopTyping(conversationId: conversationId);
-    } else {
-      _socketManager?.stopTyping(recipientSnowchatId: recipientId);
-    }
+    final peer = recipientId;
+    if (peer == null) return;
+    _socketManager?.stopTyping(recipientSnowchatId: peer);
   }
 
-  void setTyping(bool typing, {String? userName}) {
-    if (typing) {
-      state = state.copyWith(isTyping: true, typingUserName: userName);
-    } else {
-      state = state.copyWith(isTyping: false, clearTypingUserName: true);
-    }
+  void setTyping(bool typing) {
+    state = state.copyWith(isTyping: typing);
   }
 
   // ---------------------------------------------------------------------------
@@ -1687,12 +1213,23 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   /// Delete a message for everyone (sender only).
-  /// 1:1 → sealed E2EE unsend (server never sees it is a delete). Group →
-  /// server-mediated fan-out (per-recipient row ids have no shared client id).
+  /// 1:1 → sealed E2EE unsend (server never sees it is a delete). v2 group →
+  /// an unsend signed with this account's Sender Key.
   /// For unsent messages (local ID), only deletes locally.
   Future<UnsendResult> deleteMessageForEveryone(String messageId) async {
     final message = state.messages.where((m) => m.id == messageId).firstOrNull;
     if (message == null || !message.isMine(_myId)) return UnsendResult.failed;
+
+    // Group protocol v2: an unsend signed with this account's Sender Key —
+    // the members remove their copy (design §12). The own copy goes only
+    // when the unsend was queued.
+    final gv2 = _gv2;
+    if (gv2 != null) {
+      if (!message.isWithinUnsendWindow) return UnsendResult.failed;
+      if (!await gv2.unsend(messageId)) return UnsendResult.failed;
+      await deleteMessageForMe(messageId);
+      return UnsendResult.unsent;
+    }
 
     // Local-only (never left the device) → just remove our copy; nothing to
     // propagate, so this is a clean success.
@@ -1702,7 +1239,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
 
     final peer = _repo.recipientId;
-    if (_repo.groupId == null && peer != null && _e2eeHandler != null) {
+    if (peer != null && _e2eeHandler != null) {
       // 1:1 → sealed unsend. The server no longer mediates 1:1 deletes, so the
       // window is enforced here (same as the context-menu gate). Only remove our
       // OWN copy once the unsend was actually dispatched — otherwise the peer
@@ -1712,7 +1249,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       if (!message.isWithinUnsendWindow) return UnsendResult.failed;
       bool dispatched;
       try {
-        dispatched = await _e2eeHandler!
+        dispatched = await _e2eeHandler
             .sendSealedUnsend(recipientId: peer, deleteIds: [messageId]);
       } catch (e) {
         debugPrint('[Chat] sealed unsend failed: $e');
@@ -1723,13 +1260,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
       return UnsendResult.unsent;
     }
 
-    // Genuine group → server-mediated fan-out (fire-and-forget; within-window is
-    // enforced by the menu gate + the server's own 5-min check).
-    if (_repo.groupId != null) {
-      _socketManager?.emit('delete_message', {'messageId': messageId});
-      await deleteMessageForMe(messageId);
-      return UnsendResult.unsent;
-    }
     // 1:1 whose peer / e2ee handler couldn't be resolved → we cannot propagate
     // the unsend, so keep the message and report failure rather than silently
     // deleting our copy (which would falsely imply it was removed everywhere).
@@ -1737,10 +1267,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   /// Vuln 3 (Stage 3): Local-only Clear Chat.
-  /// Used by regular group members who lack admin permission to clear for
-  /// everyone (the server returns 403 in that case). Deletes messages +
-  /// attachments locally without any network call. The conversation row
-  /// stays in the list.
+  /// Deletes messages + attachments locally without any network call (used
+  /// when the server clear failed, or a v2 group member who is neither owner
+  /// nor admin clears only this device). The conversation row stays in the
+  /// list.
   Future<void> clearChatLocally() async {
     for (final m in state.messages) {
       _deletionTimers[m.id]?.cancel();
@@ -1766,57 +1296,46 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// Caller (chat_screen `_confirmClearChat`) must wrap this in try/catch.
   /// If the user explicitly wants a local-only clear, they should call
   /// [clearChatLocally] instead — it never touches the server.
-  /// Resolve the server conversation id (shared CUID) for this 1:1.
-  ///
-  /// The peer-keyed room id for the server's 1:1 DELETE / Clear endpoints.
-  ///
-  /// Metadata-min Batch 2 (2026-08-07): the server dropped the Conversation
-  /// table, so those endpoints are now keyed by the PEER's snowchatId — the
-  /// same value every 1:1 room is keyed by locally (sealed/non-sealed receive
-  /// route by sender snow-id; find-or-create echoes the peer snow-id). No
-  /// server round-trip is needed: recipientId holds the peer snow-id, and a
-  /// snow-id room's own id IS the peer.
-  Future<String> _serverConversationId() async {
-    return recipientId ?? conversationId;
-  }
-
   Future<void> clearChat() async {
-    // 1. Cancel pending TTL timers
-    for (final m in state.messages) {
-      _deletionTimers[m.id]?.cancel();
-      _deletionTimers.remove(m.id);
-      _repo.expiringManager?.cancel(m.id);
+    // The disappearing-message timers are cancelled only once the clear was
+    // made: when it fails the messages stay, and must still expire.
+
+    // Group protocol v2: the members are told (they honour it from an owner
+    // or admin only); the own copy goes once that is queued. Throws when it
+    // cannot be said — nothing is removed then.
+    final gv2 = _gv2;
+    if (gv2 != null) {
+      await gv2.clearHistory();
+      _cancelAllTimers();
+      await _repo.clearMessagesLocally();
+      if (mounted) state = state.copyWith(messages: const []);
+      return;
     }
 
-    // 2. Clear on SERVER (messages only, keep conversation/group row).
-    // Failure paths: 403 (not admin), 401 (auth), network. ALL rethrow so
-    // the caller can present a SnackBar + offer the local-only alternative.
+    // 2. Clear on SERVER (1:1 messages only, keep the conversation row). The
+    // server keys a 1:1 by the peer's snowId (metadata-min Batch 2).
+    // Failure paths: 401 (auth), network. ALL rethrow so the caller can
+    // present a SnackBar + offer the local-only alternative.
     final apiClient = _repo.apiClient;
-    if (apiClient == null) {
-      throw StateError('clearChat: no API client available — '
-          'use clearChatLocally() for offline / local-only clear');
+    final peer = recipientId;
+    if (apiClient == null || peer == null) {
+      throw StateError('clearChat: no API client or no 1:1 peer — '
+          'use clearChatLocally() for a local-only clear');
     }
 
     try {
-      if (isGroup) {
-        await apiClient.delete('/groups/$groupId/messages');
-      } else {
-        await apiClient.delete(
-            '/conversations/${await _serverConversationId()}/messages');
-      }
+      await apiClient.delete('/conversations/$peer/messages');
       debugPrint('[Chat] clearChat: server clear success');
     } catch (e) {
       debugPrint('[Chat] clearChat: server clear failed ($e) — '
           'skipping local cleanup to keep cross-device state in sync');
-      // Re-arm timers for messages we did NOT clear (best-effort) so the
-      // user does not lose TTL countdown after a failed clear.
-      // NOTE: Real timers re-arm on next chat reload via _scheduleDeletionIfNeeded;
-      // the cancel above is OK because in-memory `state.messages` still holds them.
+      // The timers were not touched: the messages that stay still expire.
       rethrow;
     }
 
     // 3. Local cleanup (messages + attachments, keep conversation row).
     //    Only reached on server 2xx — guarantees both sides agree on "empty".
+    _cancelAllTimers();
     await _repo.clearMessagesLocally();
 
     // 4. Clear in-memory state
@@ -1835,46 +1354,54 @@ class ChatNotifier extends StateNotifier<ChatState> {
   Future<void> deleteChat() async {
     _cancelAllTimers();
 
+    // A v2 group's chat is removed from this device only (what is left of a
+    // group this account is no longer in): the server holds no 1:1 room for
+    // it and is told nothing. The group goes with it.
+    if (isGv2) {
+      await _gv2?.forgetGroup();
+      await _localCleanup();
+      return;
+    }
+
+    // The server keys a 1:1 by the peer's snowId (the room's id).
+    final peer = recipientId;
+    if (peer == null) {
+      await _localCleanup();
+      return;
+    }
+
     final apiClient = _repo.apiClient;
     if (apiClient != null) {
-      // Resolve the shared server CUID first: a snow-id fallback room (peer
-      // messaged us first) would 404 and leave the server + peer copies alive,
-      // breaking the "the other person will also lose this conversation" promise.
-      final serverId = await _serverConversationId();
+      final serverId = peer;
       try {
         await apiClient.delete('/conversations/$serverId');
         debugPrint('[Chat] deleteChat: server DELETE success');
         if (_secureStorage != null) {
-          await removeDeletedConvId(_secureStorage!, serverId);
+          await removeDeletedConvId(_secureStorage, serverId);
         }
       } catch (e) {
         debugPrint('[Chat] deleteChat: 1:1 server DELETE failed ($e), tombstoning');
-        // Tombstone by the server CUID — loadFromServer returns and filters
-        // against CUIDs, so a snow-id tombstone would never match and the
-        // deleted conversation would reappear on the next sync.
+        // Tombstone by the room id — loadFromServer filters against it, and
+        // _retryPendingDeletions repeats the server DELETE.
         if (_secureStorage != null) {
-          await addDeletedConvId(_secureStorage!, serverId);
+          await addDeletedConvId(_secureStorage, serverId);
         }
       }
     }
 
-    // Tell the peer over the sealed_control channel so an OFFLINE peer also
-    // loses the room. The REST delete above emits `chat_deleted` only to
-    // sockets connected at that instant and never queues it, so deleting while
-    // the peer was offline wiped our side only and left theirs intact
-    // (field-confirmed on real devices, 2026-09-04). The control is queued like
-    // any other message and applied on their next connect.
+    // Tell the peer over the sealed_control channel — the only way the peer
+    // learns of it (the server says nothing). The control is queued like any
+    // other message, so an OFFLINE peer applies it on their next connect.
     //
     // Ordering is load-bearing:
     //  - AFTER the server DELETE, because purgePairRows() wipes every sealed
     //    row for this pair — a control queued before it would delete itself.
     //  - BEFORE _localCleanup(), which wipes the peer's Signal session and
     //    would leave nothing to encrypt the envelope with.
-    final peer = _repo.recipientId;
-    if (_repo.groupId == null && peer != null && _e2eeHandler != null) {
+    if (_e2eeHandler != null) {
       try {
         final dispatched =
-            await _e2eeHandler!.sendSealedDeleteChat(recipientId: peer);
+            await _e2eeHandler.sendSealedDeleteChat(recipientId: peer);
         debugPrint('[Chat] deleteChat: sealed delete_chat dispatched=$dispatched');
       } catch (e) {
         // Best-effort, exactly like unsend: our own delete still proceeds.
@@ -1885,67 +1412,45 @@ class ChatNotifier extends StateNotifier<ChatState> {
     await _localCleanup();
   }
 
-  /// Delete Group (room demolition) — owner only.
-  /// Deletes the entire group, all messages, and kicks all members.
-  /// Server returns 403 if not the creator.
+  /// End the group (owner only) in its change log. Throws
+  /// (Gv2GroupException) when that could not be done — nothing is removed
+  /// then — and StateError for a chat that is not a group.
   Future<void> deleteGroup() async {
+    final gv2 = _requireGroup('deleteGroup');
+    await gv2.end();
+    // Only once it was made: on a failure the messages stay, and expire.
     _cancelAllTimers();
-
-    final apiClient = _repo.apiClient;
-    if (apiClient != null) {
-      try {
-        await apiClient.delete('/groups/$groupId');
-        debugPrint('[Chat] deleteGroup: server DELETE success (방 폭파)');
-      } catch (e) {
-        debugPrint('[Chat] deleteGroup: server DELETE failed ($e)');
-      }
-    }
-
     await _localCleanup();
   }
 
-  /// Leave Group — simple leave without deleting own messages.
-  /// Ownership auto-transfers to the oldest member on server side.
+  /// Leave the group without taking back this account's messages: a LEAVE
+  /// in the change log (an owner hands the group over first). Throws
+  /// (Gv2GroupException) when it could not be made — this account is then
+  /// still a member and nothing is removed — and StateError for a chat that
+  /// is not a group.
   Future<void> leaveGroup() async {
-    _cancelAllTimers();
-
-    final apiClient = _repo.apiClient;
-    if (apiClient != null) {
-      try {
-        await apiClient.post('/groups/$groupId/leave');
-        debugPrint('[Chat] leaveGroup: server LEAVE success');
-      } catch (e) {
-        debugPrint('[Chat] leaveGroup: server LEAVE failed ($e)');
-      }
-    }
-
+    final gv2 = _requireGroup('leaveGroup');
+    await gv2.leave();
+    _cancelAllTimers(); // only once it was made (see deleteGroup)
     await _localCleanup();
   }
 
-  /// Leave Group + Delete My Messages for everyone.
-  /// Uses server batch endpoint (no 5-min limit) then leaves.
+  /// Leave the group and take back this account's messages: an unsend for
+  /// each, then the LEAVE (design §12). Throws like [leaveGroup].
   Future<void> leaveAndDeleteMyMessages() async {
-    _cancelAllTimers();
-
-    final apiClient = _repo.apiClient;
-    if (apiClient != null) {
-      try {
-        // Step 1: Batch-delete own messages on server (fan-out to members)
-        await apiClient.delete('/groups/$groupId/messages/mine');
-        debugPrint('[Chat] leaveAndDelete: own messages batch-deleted');
-      } catch (e) {
-        debugPrint('[Chat] leaveAndDelete: batch delete failed ($e)');
-      }
-      try {
-        // Step 2: Leave the group
-        await apiClient.post('/groups/$groupId/leave');
-        debugPrint('[Chat] leaveAndDelete: server LEAVE success');
-      } catch (e) {
-        debugPrint('[Chat] leaveAndDelete: server LEAVE failed ($e)');
-      }
-    }
-
+    final gv2 = _requireGroup('leaveAndDeleteMyMessages');
+    await gv2.leave(deleteMyMessages: true);
+    _cancelAllTimers(); // only once it was made (see deleteGroup)
     await _localCleanup();
+  }
+
+  /// The v2 group actions of this chat; StateError when it is a 1:1 room.
+  Gv2ChatActions _requireGroup(String action) {
+    final gv2 = _gv2;
+    if (gv2 == null) {
+      throw StateError('$action: $conversationId is not a group');
+    }
+    return gv2;
   }
 
   /// Cancel all pending TTL / deletion timers for this chat.

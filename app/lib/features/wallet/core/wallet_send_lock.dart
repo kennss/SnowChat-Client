@@ -18,7 +18,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-25
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (comment: dropped the marketplace-buy example). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - WalletSendLock.acquire(walletId)
@@ -35,7 +35,7 @@ class WalletSendLock {
   final Map<String, int> _refCounts = {};
 
   /// Begin a wallet send — increment refCount. The same wallet may be
-  /// acquired twice (e.g. in-app transfer + marketplace buy in parallel) —
+  /// acquired twice (e.g. two in-app transfers in parallel) —
   /// isLocked == false only after every release.
   void acquire(String walletId) {
     _refCounts[walletId] = (_refCounts[walletId] ?? 0) + 1;

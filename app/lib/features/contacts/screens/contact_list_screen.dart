@@ -3,13 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-08-03 (F4(a): "Send Message" now write-throughs the new 1:1 conversation into drift via ConversationDao.findOrCreate before navigating, so the Sealed Sender receive path routes the first reply to the same room instead of a separate snow-id room = conversation split. Matches the addConversation write-through the other two open sites get). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (X1: block / unblock go through BlockList). Earlier 2026-11-20 ("Send Message": the room id is the contact's snowId — the server's reply only says whether a 1:1 may start, it never names the room). Earlier 2026-08-03 (F4(a): "Send Message" now write-throughs the new 1:1 conversation into drift via ConversationDao.findOrCreate before navigating, so the Sealed Sender receive path routes the first reply to the same room instead of a separate snow-id room = conversation split. Matches the addConversation write-through the other two open sites get). Earlier 2026-04-26 (header English translation)
 ///  - Converted to ConsumerStatefulWidget — auto refresh on tab entry
 ///
 /// @functions
 ///  - ContactListScreen: ConsumerStatefulWidget that displays the contact list
 
 import 'package:flutter/foundation.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -224,19 +226,19 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
                       context.push('/chat/${existing.id}');
                       return;
                     }
-                    // Not found locally → call server
+                    // Not found locally → ask the server whether a 1:1 may
+                    // start (a friend or a community co-member). Its reply
+                    // never names the room: a 1:1 room's id is the peer's
+                    // snowId.
                     final apiClient = ref.read(apiClientProvider);
-                    final response = await apiClient.post(
+                    await apiClient.post(
                       ApiEndpoints.conversationFindOrCreate,
                       data: {'recipientSnowchatId': contact.snowChatId},
                     );
-                    final convId = (response.data as Map)['id'] as String;
-                    // F4(a) (2026-08-03): persist the room into drift so the
-                    // Sealed Sender receive path (findDirectByParticipant)
-                    // routes the first reply to THIS room instead of a separate
-                    // snow-id fallback room (conversation split). Mirrors the
-                    // addConversation write-through the other two open sites get
-                    // (this screen navigates by CUID without addConversation).
+                    final convId = contact.snowChatId;
+                    // F4(a) (2026-08-03): persist the room into drift — the
+                    // list is rebuilt from drift, so a room only in memory
+                    // would vanish on the next reload.
                     final myId = ref.read(currentSnowIdProvider) ?? '';
                     await convDao.findOrCreate(
                       id: convId,
@@ -272,14 +274,15 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
                   ),
                 ),
                 onTap: () {
+                  // On this device at once, the server next (BlockList).
                   if (contact.isBlocked) {
-                    ref
+                    unawaited(ref
                         .read(contactProvider.notifier)
-                        .unblockContact(contact.snowChatId);
+                        .unblockContact(contact.snowChatId));
                   } else {
-                    ref
+                    unawaited(ref
                         .read(contactProvider.notifier)
-                        .blockContact(contact.snowChatId);
+                        .blockContact(contact.snowChatId));
                   }
                   Navigator.pop(context);
                 },

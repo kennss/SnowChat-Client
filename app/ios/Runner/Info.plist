@@ -77,7 +77,7 @@
 	<key>NSContactsUsageDescription</key>
 	<string>SnowChat AI uses contacts to help find people. All data stays on-device.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Authenticate to confirm wallet actions and NFT listings.</string>
+	<string>Authenticate to confirm wallet actions.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>SnowChat AI uses location to answer location-based questions. All data stays on-device.</string>
 	<key>NSMicrophoneUsageDescription</key>

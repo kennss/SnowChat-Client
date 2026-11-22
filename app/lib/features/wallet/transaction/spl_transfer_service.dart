@@ -4,12 +4,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-03
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (sender-balance pre-check: removed marketplace-listing hints from comments and error messages). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - SplTransferService: SPL token transfer service
 ///  - transferToken(): SPL transfer (auto-create ATA if missing, v0 + priority fee)
-///  - _verifySenderBalance(): sender-ATA balance pre-check (escrow / Token-2022 diagnostics)
+///  - _verifySenderBalance(): sender-ATA balance pre-check (Token-2022 diagnostics)
 
 import 'dart:convert';
 
@@ -89,9 +89,8 @@ class SplTransferService {
       tokenProgramType: tokenProgram,
     );
 
-    // Pre-transfer balance check — if the ATA is empty due to escrow listing
-    // / already-transferred / etc., surface an explicit error instead of an
-    // RPC simulation error
+    // Pre-transfer balance check — if the ATA is empty (already transferred,
+    // etc.), surface an explicit error instead of an RPC simulation error
     await _verifySenderBalance(senderAta.toBase58(), amount);
 
     final needsAta = await _needsAtaCreation(recipientAta.toBase58());
@@ -177,8 +176,8 @@ class SplTransferService {
   }
 
   /// Pre-check sender ATA balance — surface an explicit error when the
-  /// balance is insufficient (market listing/escrow transfer, already
-  /// transferred, Token-2022 ATA mismatch, etc.).
+  /// balance is insufficient (already transferred, Token-2022 ATA mismatch,
+  /// etc.).
   Future<void> _verifySenderBalance(String ataAddress, BigInt required) async {
     try {
       final result = await _solanaClient.rpcClient.getTokenAccountBalance(
@@ -188,17 +187,17 @@ class SplTransferService {
       if (balance < required) {
         throw SplTransferException(
           'Token account balance insufficient ($balance < $required). '
-          'The token may be listed on marketplace, already transferred, '
-          'or held by a different token program (Token-2022).',
+          'The token may already have been transferred '
+          'or be held by a different token program (Token-2022).',
         );
       }
     } on SplTransferException {
       rethrow;
     } catch (e) {
-      // ATA missing or RPC error → likely not held / listed
+      // ATA missing or RPC error → likely not held
       throw SplTransferException(
         'Token account not found or inaccessible. '
-        'The token may be locked in an active marketplace listing.',
+        'The token may no longer be held by this wallet.',
       );
     }
   }

@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-08-03 (F7: wrap the text bubble Container in Flexible so a
+/// @lastUpdated 2026-11-21 (onRetry: a failed message of this user shows "Not sent — tap to retry"
+///              under the bubble — the 1:1 outbox sends it again). Earlier 2026-08-03 (F7: wrap the text bubble Container in Flexible so a
 ///              fixed 280px bubble + the time/status column + 4px spacing no
 ///              longer overflows a narrow (320dp) row by ~22px; the loose fit
 ///              keeps the bubble hugging its content up to bubbleMaxWidth on
@@ -57,6 +58,10 @@ class MessageBubble extends StatelessWidget {
   /// through any locally loaded data.
   final String? replyToSenderDisplayName;
 
+  /// A failed message of this user: send it again (the 1:1 outbox). Shown
+  /// as "Not sent — tap to retry" under the bubble; null: no retry offered.
+  final VoidCallback? onRetry;
+
   const MessageBubble({
     super.key,
     required this.message,
@@ -68,6 +73,7 @@ class MessageBubble extends StatelessWidget {
     this.translatedText,
     this.isTranslating = false,
     this.replyToSenderDisplayName,
+    this.onRetry,
   });
 
   /// Whether this file message contains an image based on mimeType or fileName extension.
@@ -83,6 +89,45 @@ class MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bubble = _buildBubble(context);
+    final retry = onRetry;
+    if (!isMine || message.status != MessageStatus.failed || retry == null) {
+      return bubble;
+    }
+    // A failed message of this user, of any kind: the retry sits under it
+    // (the voice / file bubbles take taps for themselves).
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        bubble,
+        Semantics(
+          button: true,
+          label: 'Not sent. Tap to retry',
+          child: InkWell(
+            onTap: retry,
+            borderRadius: BorderRadius.circular(8),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.refresh_rounded, size: 14, color: SnowColors.error),
+                  SizedBox(width: 4),
+                  Text(
+                    'Not sent — tap to retry',
+                    style: TextStyle(color: SnowColors.error, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBubble(BuildContext context) {
     // Delegate to VoiceMessageBubble for voice messages
     if (message.type == MessageType.voice) {
       return GestureDetector(

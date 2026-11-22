@@ -29,7 +29,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-25
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (comment: dropped the marketplace-default mention). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - WalletIndexNotifier.build / setDefault / addEntry / removeEntry /
@@ -240,7 +240,7 @@ final activeWalletControllerProvider = Provider<ActiveWalletController>(
 );
 
 // ---------------------------------------------------------------------------
-// Default wallet (receive QR / friend transfer / marketplace default)
+// Default wallet (receive QR / friend transfer)
 // ---------------------------------------------------------------------------
 
 /// Watches only index.defaultId — auto-refreshes on index change. Mutate

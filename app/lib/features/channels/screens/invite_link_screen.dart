@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-05-11 (share_plus 13.x API migration — iOS 26 iPhone silent fail
+/// @lastUpdated 2026-11-20 (the community's id is named channelId, not groupId). Earlier 2026-05-11 (share_plus 13.x API migration — iOS 26 iPhone silent fail
 ///              when sharePositionOrigin missing. Previously: 2026-04-26.)
 ///
 /// @functions
@@ -21,12 +21,12 @@ import '../../../shared/constants/sizes.dart';
 import '../providers/channel_provider.dart';
 
 class InviteLinkScreen extends ConsumerStatefulWidget {
-  final String groupId;
+  final String channelId;
   final String channelName;
 
   const InviteLinkScreen({
     super.key,
-    required this.groupId,
+    required this.channelId,
     required this.channelName,
   });
 
@@ -49,7 +49,7 @@ class _InviteLinkScreenState extends ConsumerState<InviteLinkScreen> {
   Future<void> _generateLink() async {
     setState(() => _isLoading = true);
     final result = await ref.read(channelActionsProvider).createInviteLink(
-          widget.groupId,
+          widget.channelId,
           expiresInHours: _expiresInHours,
           maxUses: _maxUses,
         );
@@ -60,7 +60,7 @@ class _InviteLinkScreenState extends ConsumerState<InviteLinkScreen> {
   }
 
   Future<void> _deactivate() async {
-    await ref.read(channelActionsProvider).deactivateInviteLink(widget.groupId);
+    await ref.read(channelActionsProvider).deactivateInviteLink(widget.channelId);
     setState(() => _inviteData = null);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -7,7 +7,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-11
-/// @lastUpdated 2026-11-11
+/// @lastUpdated 2026-11-21 (the readability probe key is IdentityManager.snowIdStorageKey). Earlier 2026-11-11
 ///
 /// @functions
 ///  - _FakeStorage: SecureStorageService fake with lock / failure injection
@@ -15,7 +15,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:snowchat/core/crypto/verified_identity_store.dart';
+import 'package:snowchat/core/crypto/identity_manager.dart';
 import 'package:snowchat/core/storage/database_key_manager.dart';
 import 'package:snowchat/core/storage/secure_storage.dart';
 
@@ -96,7 +96,7 @@ void main() {
     test('known-present key proves readability without a probe write',
         () async {
       final storage = _FakeStorage()
-        ..data[VerifiedIdentityStore.unlockProbeKey] = 'snow0123';
+        ..data[IdentityManager.snowIdStorageKey] = 'snow0123';
       final r = await DatabaseKeyManager(storage)
           .resolve(allowCreate: true, onBeforeCreate: () async {});
       expect(r.created, isTrue);

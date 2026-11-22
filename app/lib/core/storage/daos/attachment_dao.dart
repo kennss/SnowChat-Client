@@ -3,12 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-04-03)
+/// @lastUpdated 2026-11-21 (markUploaded(): the 1:1 outbox sets the server file id of an
+///              attachment it uploaded after the message was shown). Earlier 2026-04-26 (header
+///              English translation; previous: 2026-04-03)
 ///
 /// @functions
 ///  - AttachmentDao: attachments DAO
 ///  - watchForMessage(): per-message reactive attachment stream
 ///  - insertAttachment(): insert a single attachment
+///  - markUploaded(): an outgoing attachment's server file id, once uploaded
 ///  - insertAttachments(): batch insert multiple attachments
 ///  - finalizeDownload(): download completed -> DONE + localPath
 ///  - markStarted(): download started
@@ -49,6 +52,12 @@ class AttachmentDao extends DatabaseAccessor<SnowDatabase>
           ]))
         .get();
   }
+
+  /// The outgoing attachment [attachmentId] is on the server now as
+  /// [remoteFileId] (the 1:1 outbox uploaded it after the message was shown).
+  Future<void> markUploaded(String attachmentId, String remoteFileId) =>
+      (update(localAttachments)..where((a) => a.id.equals(attachmentId)))
+          .write(LocalAttachmentsCompanion(remoteFileId: Value(remoteFileId)));
 
   /// Insert a single attachment.
   Future<void> insertAttachment(LocalAttachmentsCompanion attachment) {

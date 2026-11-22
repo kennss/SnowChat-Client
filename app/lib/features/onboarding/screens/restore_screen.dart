@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-11 (Removed per-screen ScreenProtector wiring — now
+/// @lastUpdated 2026-11-22 (asks PasscodeStore whether a passcode is set). Earlier 2026-05-11 (Removed per-screen ScreenProtector wiring — now
 ///              applied app-wide in main.dart. Earlier 2026-04-26 header +
 ///              inline English translation.)
 ///
@@ -104,10 +104,9 @@ class _RestoreScreenState extends ConsumerState<RestoreScreen> {
         // Force the setup-profile screen instead of /chat — otherwise the
         // user reaches the main app with no PIN lock at all and every
         // subsequent process restart bypasses the lock screen.
-        final secureStorage = ref.read(secureStorageProvider);
         final pinSw = Stopwatch()..start();
-        final hasPin = await secureStorage.hasPin();
-        debugPrint('[Perf] ▶️ secureStorage.hasPin: '
+        final hasPin = await ref.read(passcodeStoreProvider).has();
+        debugPrint('[Perf] ▶️ passcode has: '
             '${pinSw.elapsedMilliseconds}ms');
         if (!mounted) return;
         if (!hasPin) {

@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-11 (at-rest protection level 1: _performReset closes + deletes the encrypted drift DB and its SQLCipher key BEFORE the secure-storage wipe — files first, key last). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
+/// @lastUpdated 2026-11-22 (Security: Change Passcode, Auto-Lock (default 1 min); biometric unlock
+///              wording). Earlier 2026-11-20 (group protocol v2 has no build flag: the retention tile shows where groups can run, and account deletion always goes through deleteAccountWithProof). Earlier 2026-11-20 (group protocol v2: "Offline group messages" — how long the server keeps group messages for this account; a progress dialog while the account leaves its groups and is deleted; account deletion with group protocol v2 on: leave every v2 group first, then delete with the account key's deletion proof — core/network/account_deletion.dart). Earlier 2026-11-12 (account deletion: removed the marketplace-listing warning copy). Earlier 2026-11-11 (at-rest protection level 1: _performReset closes + deletes the encrypted drift DB and its SQLCipher key BEFORE the secure-storage wipe — files first, key last). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
 ///              chevron) and pushes /settings/profile → ProfileEditScreen to
 ///              edit the nickname. Previously 2026-05-11: Privacy section: added read-only status tile
 ///              "Screenshot blocked — always on" at top. App-wide capture
@@ -16,21 +17,25 @@
 ///  - SettingsScreen: settings ConsumerWidget
 ///  - _showLanguagePicker(): translation target-language picker bottom sheet
 
+import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/call/call_permission_helper.dart';
+import '../../../core/network/account_deletion.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/snow_id_display.dart';
 import '../../../app/providers.dart';
 import '../../../app/app_config.dart';
+import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../../app/restart_widget.dart';
 import '../../../utils/version.dart';
 import '../../ai/service/supported_languages.dart';
+import '../providers/gv2_retention_provider.dart';
 import '../settings_provider.dart';
 import 'network_settings_screen.dart';
 
@@ -170,15 +175,31 @@ class SettingsScreen extends ConsumerWidget {
                   'Show incoming calls full-screen when your phone is locked',
               onTap: () => CallPermissionHelper.promptFromSettings(context),
             ),
+          // Group protocol v2: how long the server keeps group messages for
+          // this account while it is offline (design §12). Hidden where
+          // groups cannot run (no server keys pinned).
+          if (gv2GroupsAvailable) _buildRetentionTile(context, ref),
 
           const Divider(),
 
           // Security
           _buildSectionHeader('Security'),
+          _buildNavTile(
+            icon: Icons.password_rounded,
+            title: 'Change Passcode',
+            subtitle: 'Digits or letters — the code that unlocks the app',
+            onTap: () => context.push('/settings/passcode'),
+          ),
+          _buildNavTile(
+            icon: Icons.timer_outlined,
+            title: 'Auto-Lock',
+            subtitle: _autoLockLabel(settings.autoLockSeconds),
+            onTap: () => _pickAutoLock(context, ref, settings.autoLockSeconds),
+          ),
           _buildSwitchTile(
             icon: Icons.fingerprint_rounded,
-            title: 'Biometric Lock',
-            subtitle: 'Require Face ID / fingerprint to open',
+            title: 'Biometric Unlock',
+            subtitle: 'Unlock with Face ID / Touch ID / fingerprint first',
             value: settings.biometricLockEnabled,
             onChanged: (v) =>
                 ref.read(settingsProvider.notifier).setBiometricLock(v),
@@ -284,6 +305,45 @@ class SettingsScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  static String _autoLockLabel(int seconds) => switch (seconds) {
+        0 => 'Lock as soon as you leave the app',
+        < 3600 => 'Lock after ${seconds ~/ 60} min in the background',
+        _ => 'Lock after ${seconds ~/ 3600} h in the background',
+      };
+
+  Future<void> _pickAutoLock(
+      BuildContext context, WidgetRef ref, int current) async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: SnowColors.surface,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final seconds in kAutoLockChoices)
+              ListTile(
+                title: Text(
+                  seconds == 0
+                      ? 'Immediately'
+                      : seconds < 3600
+                          ? 'After ${seconds ~/ 60} min'
+                          : 'After ${seconds ~/ 3600} h',
+                  style: const TextStyle(color: SnowColors.textPrimary),
+                ),
+                trailing: seconds == current
+                    ? const Icon(Icons.check_rounded, color: SnowColors.primary)
+                    : null,
+                onTap: () => Navigator.of(ctx).pop(seconds),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) {
+      await ref.read(settingsProvider.notifier).setAutoLockSeconds(picked);
+    }
   }
 
   Widget _buildSectionHeader(String title) {
@@ -402,6 +462,89 @@ class SettingsScreen extends ConsumerWidget {
         color: SnowColors.textTertiary,
       ),
       onTap: onTap,
+    );
+  }
+
+  /// "Offline group messages": the period the server keeps group messages
+  /// for this account. The value is the server's; a tap offers the three
+  /// periods it accepts.
+  Widget _buildRetentionTile(BuildContext context, WidgetRef ref) {
+    final retention = ref.watch(gv2RetentionProvider);
+    final current = retention.valueOrNull;
+    return _buildNavTile(
+      icon: Icons.cloud_queue_rounded,
+      title: 'Offline group messages',
+      subtitle: retention.when(
+        data: (days) =>
+            'Kept on the server for ${gv2RetentionLabel(days)} while you are '
+            'offline',
+        loading: () => 'Loading…',
+        error: (_, _) => 'Could not be loaded. Tap to try again.',
+      ),
+      onTap: () {
+        if (current == null) {
+          ref.invalidate(gv2RetentionProvider);
+          return;
+        }
+        _showRetentionPicker(context, ref, current);
+      },
+    );
+  }
+
+  void _showRetentionPicker(BuildContext context, WidgetRef ref, int current) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: SnowColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(
+                SnowSizes.md,
+                SnowSizes.md,
+                SnowSizes.md,
+                SnowSizes.sm,
+              ),
+              child: Text(
+                'Group messages that arrive while you are offline wait on '
+                'the server this long. After that they are deleted there '
+                'and cannot be delivered.',
+                style: TextStyle(color: SnowColors.textSecondary, fontSize: 13),
+              ),
+            ),
+            for (final days in gv2RetentionChoices)
+              ListTile(
+                title: Text(
+                  gv2RetentionLabel(days),
+                  style: const TextStyle(color: SnowColors.textPrimary),
+                ),
+                trailing: days == current
+                    ? const Icon(Icons.check_rounded, color: SnowColors.primary)
+                    : null,
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  if (days == current) return;
+                  try {
+                    await ref.read(gv2RetentionProvider.notifier).choose(days);
+                  } catch (_) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('The setting could not be saved.'),
+                        backgroundColor: SnowColors.error,
+                      ),
+                    );
+                  }
+                },
+              ),
+            const SizedBox(height: SnowSizes.sm),
+          ],
+        ),
+      ),
     );
   }
 
@@ -609,9 +752,6 @@ class SettingsScreen extends ConsumerWidget {
         ),
         content: const Text(
           'This will permanently delete your identity and all data.\n\n'
-          'Active marketplace listings remain on-chain and will need '
-          'to be cancelled from this device before deletion — '
-          'otherwise the listed NFT stays locked in the on-chain PDA.\n\n'
           'Make sure you have backed up your recovery phrase. '
           'This action cannot be undone.',
           style: TextStyle(color: SnowColors.textSecondary),
@@ -638,24 +778,74 @@ class SettingsScreen extends ConsumerWidget {
 
   /// Request account delete on server, then local reset.
   Future<void> _performDeleteAccount(BuildContext context, WidgetRef ref) async {
-    // Step 1: server delete request (cancel market listings + escrow refund + data cleanup)
+    // Step 1: server delete request (data cleanup). With group protocol v2
+    // the account first leaves its groups and the request carries the
+    // account key's deletion proof (design §9.7). Leaving takes a request
+    // per group: a dialog that cannot be dismissed shows that it is going on.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    var progressShown = false;
+    if (context.mounted) {
+      progressShown = true;
+      unawaited(
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          useRootNavigator: true,
+          builder: (_) => const PopScope(
+            canPop: false,
+            child: AlertDialog(
+              backgroundColor: SnowColors.surface,
+              content: Row(
+                children: [
+                  SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: SnowColors.primary,
+                    ),
+                  ),
+                  SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Deleting your account…',
+                      style: TextStyle(color: SnowColors.textPrimary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     try {
       final apiClient = ref.read(apiClientProvider);
-      await apiClient.delete('/users/me');
+      final groups = ref.read(gv2RuntimeProvider);
+      await deleteAccountWithProof(
+        api: apiClient,
+        sign: ref.read(identityManagerProvider).signAccountDeleted,
+        leaveGroups: groups?.leaveAllGroups,
+      );
     } catch (e) {
       debugPrint('[Settings] Server account deletion failed: $e');
       // Even if server delete fails, proceed with local reset — warn the user
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Server cleanup failed. Active listings may remain.'),
+            content: Text('Server cleanup failed.'),
             duration: Duration(seconds: 3),
           ),
         );
       }
     }
 
+    if (progressShown && navigator.mounted) navigator.pop();
+
     // Step 2: local reset
+    // The reset must follow the server delete whatever became of this
+    // screen.
+    // ignore: use_build_context_synchronously
     await _performReset(context, ref);
   }
 

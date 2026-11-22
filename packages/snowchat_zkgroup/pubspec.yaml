@@ -1,0 +1,23 @@
+# dart:ffi binding over the first-party zkgroup Rust crate
+# (native/snowchat_zkgroup), built from source by a build hook. No Flutter
+# plugin, no platform channel: the Dart / Flutter tool bundles the code asset
+# on every platform.
+#
+# hooks / code_assets are held at 1.x on purpose: that is what the app already
+# resolves (through objective_c), so this package changes no other dependency
+# of the app.
+name: snowchat_zkgroup
+description: "Client-side zkgroup for SnowChat group protocol v2 (dart:ffi over a first-party Rust crate)."
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  code_assets: ^1.0.0
+  ffi: ^2.1.0
+  hooks: ^1.0.0
+
+dev_dependencies:
+  test: ^1.25.0

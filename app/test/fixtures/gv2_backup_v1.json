@@ -1,0 +1,24 @@
+{
+  "accountSeed": "3e5c8421993f0c882ac080cbb115cd76f990f7a401ecd8d657cc8287ddba09ca",
+  "key": "24bf7b5943c54c8223ea3fecb0cfbc0549697e7fe58520f22767bbe447cfa888",
+  "nonce": "472db242dd8f532f84e6e4422f72030c07bc56e0cded1a4f",
+  "entries": [
+    {
+      "groupId": "b4aff7a0576893a51e34cb06a7335ccf7916c8766a61e8e17fac4fa3768ab4e0",
+      "masterKey": "64ebf83d3601dff078e5d5429aee35a51d54bf4657893c231f98f61ca981baa6",
+      "revision": 16909060,
+      "chain": "2bbc0dca2a9e10319ee61966521df9ce15f3c03823ff314f64aebdd96921ed1c",
+      "stateHash": "42f1824d1ab0cb2f96c15667f85b0cda38f4daca3390dbf8ee70b65154f0c784"
+    },
+    {
+      "groupId": "a41b12ea9ff30133532c4ad32040a24e7534c9d68342f7c499ba3aafb63f21c7",
+      "masterKey": "65b56f544c5ddef6ebcbd83f4e393891343515d230be2df1a97eb0b60c4edf21",
+      "revision": 0,
+      "chain": "43556bb33d9b0d75bb317a61e0fb4561ba997c057c9602b8b3a185ad75603836",
+      "stateHash": "c575e7d45364b97ad49088e254b452a72130eb7efa74905d236bfc26053f84e9"
+    }
+  ],
+  "blobLength": 4137,
+  "blobHead": "01472db242dd8f532f84e6e4422f72030c07bc56e0cded1a4febd1682a4ae7319b574c5f356545e44fef76e8a8879764f36090b16491f0e33b3c882ef12c534c6f9208b974c499d449819df37346bd4dad91d12126be5d33cd35a62288f3a609",
+  "blobSha256": "3dd912de18d98df5844fb66cca6dbd36f90b2b8f357627e1e082ac5bb7d417d1"
+}

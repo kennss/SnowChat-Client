@@ -10,7 +10,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-03
-/// @lastUpdated 2026-04-26 (header + inline English translation; Multi-Wallet Phase 1.5 clearCache + Phase 2B-1 multi-wallet cache/load)
+/// @lastUpdated 2026-11-12 (comments: dropped marketplace signing mentions). Earlier 2026-04-26 (header + inline English translation; Multi-Wallet Phase 1.5 clearCache + Phase 2B-1 multi-wallet cache/load)
 ///
 /// @functions
 ///  - KeypairManager: wallet keypair management class
@@ -59,8 +59,8 @@ class KeypairManager {
   /// idle. Per-id evict goes through `evictWallet(walletId)`.
   final Map<String, Ed25519HDKeyPair> _multiCache = {};
 
-  /// Phase 5 critical fix — current active wallet entry. All send / buy /
-  /// marketplace signing uses this entry's keypair.
+  /// Phase 5 critical fix — current active wallet entry. All send signing
+  /// uses this entry's keypair.
   ///
   /// When unset, `loadWallet()` falls back to the legacy single-wallet path
   /// (= primary). `WalletNotifier.switchActive` calls `setActive(entry)`
@@ -134,9 +134,9 @@ class KeypairManager {
   }
 
   /// Set the Multi-Wallet active entry — called by
-  /// `WalletNotifier.switchActive` / `initialize`. All subsequent send / buy
-  /// / marketplace signing uses this entry's keypair. Passing null falls
-  /// back to the legacy single-wallet path.
+  /// `WalletNotifier.switchActive` / `initialize`. All subsequent send
+  /// signing uses this entry's keypair. Passing null falls back to the
+  /// legacy single-wallet path.
   void setActive(WalletEntry? entry) {
     _activeEntry = entry;
   }

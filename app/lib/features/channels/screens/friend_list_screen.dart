@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-09
-/// @lastUpdated 2026-08-05 (empty-state copy → "by their nickname" to match the nick-first add-friend flow). Earlier 2026-05-06 (friend tile tap UX rework — direct tap now
+/// @lastUpdated 2026-11-21 (a blocked friend shows "Blocked" instead of its presence; Voice Call to
+///              it asks to unblock first — confirmUnblockIfBlocked). Earlier 2026-11-21 (acceptFriendRequest takes the request (its sender is vouched for)). Earlier 2026-08-05 (empty-state copy → "by their nickname" to match the nick-first add-friend flow). Earlier 2026-05-06 (friend tile tap UX rework — direct tap now
 ///              opens (or resumes) the 1:1 chat instead of routing through
 ///              NewChatScreen, matching the Telegram/Signal pattern.
 ///              Long-press still opens the options bottom sheet, now with
@@ -28,6 +29,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
+import '../../contacts/blocked_peer_prompt.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
@@ -157,7 +159,15 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
 
   Widget _buildFriendTile(FriendInfo friend) {
     final presenceService = ref.watch(presenceServiceProvider);
-    final isOnline = presenceService.isOnline(friend.snowchatId);
+    // An account this user blocked shows as such (this device's list), not
+    // with its presence.
+    final isBlocked = ref
+            .watch(blockedAccountsProvider)
+            .valueOrNull
+            ?.contains(friend.snowchatId) ??
+        false;
+    final isOnline =
+        !isBlocked && presenceService.isOnline(friend.snowchatId);
 
     return InkWell(
       onTap: () => openDirectChatWith(
@@ -214,11 +224,13 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    isOnline ? 'Online' : 'Offline',
+                    isBlocked ? 'Blocked' : (isOnline ? 'Online' : 'Offline'),
                     style: TextStyle(
-                      color: isOnline
-                          ? SnowColors.success
-                          : SnowColors.textTertiary,
+                      color: isBlocked
+                          ? SnowColors.error
+                          : isOnline
+                              ? SnowColors.success
+                              : SnowColors.textTertiary,
                       fontSize: 12,
                     ),
                   ),
@@ -311,7 +323,7 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
                 ),
                 // Accept button — channelId is the requester's PERSONAL channel
                 TextButton(
-                  onPressed: () => _acceptFriendRequest(request.id),
+                  onPressed: () => _acceptFriendRequest(request),
                   style: TextButton.styleFrom(
                     backgroundColor: SnowColors.primary.withAlpha(25),
                     foregroundColor: SnowColors.primary,
@@ -424,7 +436,7 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
                   style: TextStyle(color: SnowColors.textPrimary)),
               onTap: () {
                 Navigator.pop(context);
-                _placeVoiceCall(friend);
+                unawaited(_placeVoiceCall(friend));
               },
             ),
             // Remove friend
@@ -453,7 +465,17 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
   /// fallback for the remote display name). The /call route push is
   /// handled by app.dart's `ref.listen<CallState>` on the outgoing
   /// transition, so we do not navigate manually here.
-  void _placeVoiceCall(FriendInfo friend) {
+  Future<void> _placeVoiceCall(FriendInfo friend) async {
+    // An account this user blocked: offer to unblock first.
+    if (!await confirmUnblockIfBlocked(
+      context: context,
+      ref: ref,
+      snowId: friend.snowchatId,
+      displayName: friend.displayName,
+    )) {
+      return;
+    }
+    if (!mounted) return;
     final notifier = ref.read(callProvider.notifier);
     final alwaysRelay = ref.read(settingsProvider).callAlwaysRelay;
     final myDisplayName = ref.read(currentDisplayNameProvider);
@@ -473,9 +495,9 @@ class _FriendListScreenState extends ConsumerState<FriendListScreen> {
     }));
   }
 
-  Future<void> _acceptFriendRequest(String channelId) async {
+  Future<void> _acceptFriendRequest(PendingChannel request) async {
     final success =
-        await ref.read(friendActionsProvider).acceptFriendRequest(channelId);
+        await ref.read(friendActionsProvider).acceptFriendRequest(request);
     if (!mounted) return;
 
     if (success) {

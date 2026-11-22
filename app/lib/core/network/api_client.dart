@@ -11,7 +11,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-03 (Phase 11 — onTokenRefresh callback removed; pre-flight + 401 retry both go through TokenManager.ensureFresh)
+/// @lastUpdated 2026-11-22 (/auth/server-key left the auth-exempt set — the app pins the Sealed key and never calls it). Earlier 2026-11-12 (the logging interceptor printed every request and response body and header in ALL build modes — tokens included; replaced by a debug-only method/path/status trace). Earlier 2026-05-03 (Phase 11 — onTokenRefresh callback removed; pre-flight + 401 retry both go through TokenManager.ensureFresh)
 ///
 /// @functions
 ///  - ApiClient: Dio-based HTTP client class with TokenManager integration
@@ -48,7 +48,6 @@ class ApiClient {
     '/auth/challenge',
     '/auth/verify',
     '/auth/refresh',
-    '/auth/server-key',
   };
 
   ApiClient({String? baseUrl}) {
@@ -64,15 +63,25 @@ class ApiClient {
       ),
     );
 
-    // Logging interceptor (debug only)
-    _dio.interceptors.add(LogInterceptor(
-      requestBody: true,
-      responseBody: true,
-      logPrint: (obj) {
-        // ignore: avoid_print
-        print('[API] $obj');
-      },
-    ));
+    // Request trace for debug builds only: method, path and status. Headers
+    // and bodies are never written anywhere — they carry bearer / refresh
+    // tokens, prekey bundles, sender certificates and queue envelopes, and a
+    // release build's console output is readable from the device log.
+    if (kDebugMode) {
+      _dio.interceptors.add(InterceptorsWrapper(
+        onResponse: (response, handler) {
+          debugPrint('[API] ${response.requestOptions.method} '
+              '${response.requestOptions.path} → ${response.statusCode}');
+          handler.next(response);
+        },
+        onError: (error, handler) {
+          debugPrint('[API] ${error.requestOptions.method} '
+              '${error.requestOptions.path} → '
+              '${error.response?.statusCode ?? error.type.name}');
+          handler.next(error);
+        },
+      ));
+    }
 
     // Phase 11: pre-flight + 401 retry, both via TokenManager.ensureFresh.
     // The interceptor uses `extra['_retried']` to clamp retries to a single

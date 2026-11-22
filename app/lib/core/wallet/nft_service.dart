@@ -4,14 +4,13 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed fetchAssetByMint() and the listing / creator-address parsing that only the NFT marketplace used). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - NFTService: NFT query service class
 ///  - NFTService.getCollections(): DAS API first, fallback to server API/RPC
 ///  - NFTService.getAllNFTs(): query all NFTs as a flat list
 ///  - NFTService.getNFTByMint(): single NFT detail via DAS API (owner path)
-///  - NFTService.fetchAssetByMint(): single DAS getAsset query (for marketplace listing enrichment)
 ///  - NFTService.getNFTCount(): query total NFT count
 
 /// NFT collection query service with DAS API, server API, and RPC fallback.
@@ -31,7 +30,7 @@ import '../network/api_client.dart';
 import 'nft_image_utils.dart';
 import 'solana_client.dart';
 
-/// Service for querying NFT holdings, details, and marketplace.
+/// Service for querying NFT holdings and details.
 class NFTService {
   NFTService({
     required this.solanaClient,
@@ -145,57 +144,6 @@ class NFTService {
     return null;
   }
 
-  /// Fetch a single asset's DAS metadata (name / image / collection) for
-  /// a given mint. Marketplace listing enrichment uses this — the seller
-  /// no longer owns the token while it sits in a ListState PDA, so the
-  /// owner-based DAS `getAssetsByOwner` path does NOT return it.
-  ///
-  /// Priority: server DAS proxy (`GET /nft/asset/:id`) → direct DAS
-  /// `getAsset` JSON-RPC with `dasRpcUrl`. Returns null when both
-  /// channels are unavailable or the asset is missing.
-  Future<NFTAsset?> fetchAssetByMint(String mintAddress) async {
-    if (mintAddress.isEmpty) return null;
-    // 1st: server DAS proxy (Helius key lives on the server only)
-    if (apiClient != null) {
-      try {
-        final response = await apiClient!.get('/nft/asset/$mintAddress');
-        if (response.statusCode == 200 && response.data != null) {
-          final item = response.data as Map<String, dynamic>;
-          return _parseDasAsset(item);
-        }
-      } on DioException catch (e) {
-        debugPrint('[NFT] server DAS proxy asset/$mintAddress failed: $e');
-      }
-    }
-    // 2nd: direct DAS (only if the Helius key is injected into the app)
-    if (dasRpcUrl != null && dasRpcUrl!.isNotEmpty) {
-      try {
-        final body = jsonEncode({
-          'jsonrpc': '2.0',
-          'id': 'snowchat-asset-$mintAddress',
-          'method': 'getAsset',
-          'params': {'id': mintAddress},
-        });
-        final response = await _http
-            .post(
-              Uri.parse(dasRpcUrl!),
-              headers: {'Content-Type': 'application/json'},
-              body: body,
-            )
-            .timeout(_dasTimeout);
-        if (response.statusCode != 200) return null;
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        final result = json['result'];
-        if (result is Map<String, dynamic>) {
-          return _parseDasAsset(result);
-        }
-      } catch (e) {
-        debugPrint('[NFT] direct DAS getAsset($mintAddress) failed: $e');
-      }
-    }
-    return null;
-  }
-
   /// Get total NFT count for [walletAddress].
   Future<int> getNFTCount(String walletAddress) async {
     final collections = await getCollections(walletAddress);
@@ -237,10 +185,6 @@ class NFTService {
       collectionMint: n['collectionMint'] as String?,
       description: n['description'] as String?,
       externalUrl: n['externalUrl'] as String?,
-      isListed: n['isListed'] as bool? ?? false,
-      listingPriceLamports: n['listingPriceLamports'] != null
-          ? BigInt.from(n['listingPriceLamports'] as num)
-          : null,
       attributes: attributesData
           .map<NFTAttribute>((a) {
             final attr = a as Map<String, dynamic>;
@@ -440,20 +384,7 @@ class NFTService {
     final compression = item['compression'] as Map<String, dynamic>?;
     final isCompressed = compression?['compressed'] as bool? ?? false;
 
-    // Extract creator addresses in order — buy_legacy `transfer_creators_fee`
-    // requires remaining_accounts in the same order as metadata.creators[].
-    // The DAS response exposes them as the top-level `creators` field next to
-    // royalty.primary_sale_happened.
-    final creatorList = item['creators'] as List? ?? [];
-    final creatorAddresses = <String>[];
-    for (final c in creatorList) {
-      if (c is Map) {
-        final addr = c['address'] as String?;
-        if (addr != null && addr.isNotEmpty) creatorAddresses.add(addr);
-      }
-    }
-
-    debugPrint('[NFT] parsed: name=${metadata['name']}, imageUrl=$imageUrl, iface=$iface, creators=${creatorAddresses.length}');
+    debugPrint('[NFT] parsed: name=${metadata['name']}, imageUrl=$imageUrl, iface=$iface');
     return NFTAsset(
       mint: id,
       name: (metadata['name'] as String?) ?? 'Unknown NFT',
@@ -468,7 +399,6 @@ class NFTService {
           content['animation_url'] as String?,
       attributes: attributes,
       isCompressed: isCompressed,
-      creatorAddresses: creatorAddresses,
     );
   }
 

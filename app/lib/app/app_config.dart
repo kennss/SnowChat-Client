@@ -1,47 +1,35 @@
 /// @file        app_config.dart
 /// @description App build-time configuration — feature flags, environment variables.
-///              Disable wallet module via `--dart-define=ENABLE_WALLET=false`.
+///              The wallet module is off unless a build asks for it with
+///              `--dart-define=ENABLE_WALLET=true`.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-10
-/// @lastUpdated 2026-11-11 (allowUnboundIdentity — identity bindings are mandatory unless a
-///              pre-beta build opts out). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (enableWallet defaults to false: only the release scripts passed
+///              ENABLE_WALLET=false, so every other build — by hand, from Xcode, the device
+///              test builds — shipped the wallet. A build that wants it opts in). Earlier
+///              2026-11-20 (enableGroupsV2 removed — group protocol v2 always runs where this
+///              build pins the server keys, gv2_trusted_keys.dart; allowUnboundIdentity removed —
+///              identity bindings are always required, IdentityAdmission.refuseUnbound). Earlier 2026-11-13
+///              (enableGroupsV2 flag). Earlier 2026-11-11 (allowUnboundIdentity — identity bindings are
+///              mandatory unless a pre-beta build opts out). Earlier 2026-04-26 (header
+///              English translation)
 ///
 /// @functions
 ///  - AppConfig.enableWallet: whether wallet/NFT modules are enabled
-///  - AppConfig.allowUnboundIdentity: whether peers without an identity binding are accepted
 library;
 
 abstract class AppConfig {
-  /// Whether the wallet + NFT modules are enabled.
+  /// Whether the wallet + NFT modules are enabled. OFF → their routes, tabs
+  /// and providers are all removed.
   ///
-  /// Disable via `flutter build apk --dart-define=ENABLE_WALLET=false`.
-  /// On Enterprise/Air-Gap builds: OFF → routes/tabs/Providers all removed.
-  /// Default is true (Personal/Community builds).
+  /// Off by default: a build that should have them passes
+  /// `--dart-define=ENABLE_WALLET=true` (the release scripts take
+  /// `ENABLE_WALLET=true ./scripts/build_release.sh`). The default used to be
+  /// true with the release scripts passing false, so any other build — by
+  /// hand, from Xcode — came out with the wallet on.
   static const enableWallet = bool.fromEnvironment(
     'ENABLE_WALLET',
-    defaultValue: true,
-  );
-
-  /// Whether a peer whose Signal identity keys carry NO account-key binding
-  /// (B-2 Identity Binding v1) may still be accepted under the legacy
-  /// Signal-style TOFU policy.
-  ///
-  /// Default is false: every peer must present a valid binding, otherwise the
-  /// session is refused (IdentityBindingFailure.bindingRequired). This is the
-  /// only setting that closes the downgrade path where a compromised server
-  /// strips the binding of a peer we have never seen bound — the absence of
-  /// old clients alone does not.
-  ///
-  /// Only the internal alpha (build numbers below 1000) sets this to true, so
-  /// that +305 alpha testers can keep talking to peers still on +304. The
-  /// release scripts derive it from the pubspec build number; beta starts at
-  /// build 1000 on a reset server where no unbound client exists. A plain
-  /// `flutter run` without the define gets the safe default (mandatory), so
-  /// dev interop with a pre-305 build needs
-  /// `--dart-define=ALLOW_UNBOUND_IDENTITY=true`.
-  static const allowUnboundIdentity = bool.fromEnvironment(
-    'ALLOW_UNBOUND_IDENTITY',
     defaultValue: false,
   );
 }

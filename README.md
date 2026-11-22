@@ -8,7 +8,7 @@
 
 E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B306-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B306/snowchat-arm64-v8a.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1001-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1001/snowchat-arm64-v8a.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
@@ -32,7 +32,7 @@ Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked,
 
 ### Android
 
-**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+306)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B306/snowchat-arm64-v8a.apk)**
+**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+1001)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1001/snowchat-arm64-v8a.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 
@@ -83,14 +83,14 @@ Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketpl
 ## Features
 
 ### 🔐 E2EE Messaging — Pure Dart Signal Protocol
-- Direct Dart implementation of X3DH + Double Ratchet (1:1) + Sender Key Hybrid (group).
-- No `libsignal` binary, no Platform Channel — pure Dart, three internal audits.
+- Direct Dart implementation of X3DH + Double Ratchet + Sealed Sender (1:1) and Sender Key (groups, group protocol v2).
+- Messaging protocols are pure Dart, no Platform Channel. One native exception: the first-party Rust crate [`native/snowchat_zkgroup`](native/snowchat_zkgroup) — libsignal's `zkgroup` anonymous credentials for groups, and the Argon2id key derivation of the app passcode.
 - Disappearing messages, read receipts, typing indicators, WhatsApp-style reply quotes.
 - Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library purpose-built in-house for SnowChat, now released as a reusable library for any Flutter project.
 
 ### 🏘 Communities — Discord, but encrypted and on-chain
 - Persistent community channels — each channel is an E2EE group, server only ever sees ciphertext.
-- Sender Key Hybrid + pairwise fallback distribution — Signal's actual group protocol, not custom crypto. Out-of-order delivery, multi-generation key rotation, retry safety net all included.
+- Group protocol v2 — membership changes only through a log signed by members and verified on every device; the server stores members as zkgroup ciphertexts and group sends name neither the sender nor the group.
 - One-tap channel invite links (`snowchat://invite/<code>`) — iOS Universal Links + Android App Links, no QR friction.
 - On-chain treasury baked in — every community is bound to a verified Metaplex collection that automatically receives the 50% marketplace-fee split on every trade. The treasury is on-chain and auditable; there is no multi-sig "trust us" layer.
 - No bot framework, no third-party server, no token to compromise — community membership lives in your wallet, channel content lives in your device. The Discord token-phishing vector that drained BAYC / MonkeyDAO / OpenSea is structurally absent.
@@ -153,12 +153,17 @@ The backend (Node.js · Express · Socket.IO · Prisma · PostgreSQL · Redis) i
 - Dart 3.x
 - Xcode 15+ (for iOS builds)
 - Android Studio / Android SDK 33+ (for Android builds)
+- Rust via `rustup` and `protoc` — the build hook of `packages/snowchat_zkgroup` compiles `native/snowchat_zkgroup` from source for every target
 
 ### Setup
 
 ```bash
 git clone https://github.com/kennss/SnowChat-Client.git
-cd SnowChat-Client/app
+cd SnowChat-Client
+# CallKit / ConnectionService fork the app depends on by path
+git clone https://github.com/kennss/flutter_callkit_incoming.git external/flutter_callkit_incoming
+git -C external/flutter_callkit_incoming checkout 4b15e14
+cd app
 
 flutter pub get
 dart run build_runner build --delete-conflicting-outputs
@@ -198,7 +203,7 @@ flutter build apk --release --dart-define=SERVER_ENV=prod
 - ✅ Wallet V2 Phase 1 — 1:1 chat asset transfers (SOL / SPL / NFT, drift persistence, in-flight recovery)
 - ✅ Wallet V2 Phase 2 — Tensor-fork marketplace + 50% community-fee split (devnet deployed)
 - ✅ E2EE messenger — Pure Dart Signal Protocol, three internal audits
-- ✅ Encrypted community channels — Sender Key Hybrid groups + Metaplex collection binding (Discord replacement)
+- ✅ Encrypted groups — group protocol v2 (signed membership log, zkgroup-hidden membership, sealed group sends)
 - ✅ Multi-Wallet V1 — BIP-39 + SLIP-0010, Phantom-compatible derivation
 - ✅ VoIP — WebRTC + CallKit / ConnectionService (Phase 8.2 A~D, G, H)
 - ✅ On-device AI — Gemma 4 E2B + agentic Tool Use

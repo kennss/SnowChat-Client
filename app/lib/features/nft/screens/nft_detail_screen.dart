@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the marketplace "Listed" badge and the "List for Sale" button; Send is the only action). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - NFTDetailScreen: screen widget that shows NFT details
@@ -142,73 +142,25 @@ class NFTDetailScreen extends StatelessWidget {
                   _infoSection(),
                   const SizedBox(height: 24),
 
-                  // Actions — "Listed" badge if listed, otherwise Send/List buttons
-                  if (nft.isListed)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      decoration: BoxDecoration(
-                        color: _C.primary.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _C.primary.withValues(alpha: 0.3)),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.storefront_rounded, color: _C.primary, size: 18),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Listed on Marketplace'
-                            '${nft.formattedListingPrice != null ? ' — ${nft.formattedListingPrice}' : ''}',
-                            style: TextStyle(
-                              color: _C.primary,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () => context.push('/nft/send', extra: nft),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _C.primary,
-                              foregroundColor: const Color(0xFF000000),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text(
-                              'Send',
-                              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-                            ),
-                          ),
+                  // Actions.
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => context.push('/nft/send', extra: nft),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _C.primary,
+                        foregroundColor: const Color(0xFF000000),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => context.push('/marketplace/create'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: _C.primary,
-                              side: BorderSide(color: _C.primary.withValues(alpha: 0.3)),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            child: const Text(
-                              'List for Sale',
-                              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-                            ),
-                          ),
-                        ),
-                      ],
+                      ),
+                      child: const Text(
+                        'Send',
+                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                      ),
                     ),
+                  ),
                   const SizedBox(height: 32),
                 ],
               ),

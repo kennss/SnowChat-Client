@@ -1,25 +1,21 @@
 /// @file        identity_change_banner.dart
-/// @description Inline chat-screen banner shown when the local TOFU pin
-///              store has caught a new Ed25519 identity key for the peer.
-///              Two severity levels:
-///                - Critical (red): the user had previously marked the
-///                  prior key as verified — possible MITM, must re-verify.
-///                - Warning (amber): a re-pin without prior verification —
-///                  e.g. the contact reinstalled the app — re-verification
-///                  recommended but not urgent.
+/// @description Inline chat-screen banner shown after an identity binding of
+///              the peer was rejected or missing (latched by the identity-
+///              change handler in IdentityVerificationDao) and until the user
+///              verifies again. Always critical (red): someone may be trying
+///              to impersonate the contact.
 ///
 ///              Actions:
 ///                - Verify  → /safety/:peerSnowId
 ///                - Dismiss → in-memory dismissal for this screen instance
-///                            (the underlying DAO row stays mismatched
-///                            until the user explicitly marks verified)
+///                            (the latch stays until the user marks verified)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-18
-/// @lastUpdated 2026-04-18
+/// @lastUpdated 2026-11-21 (one meaning left — a rejected or missing identity binding: no amber "safety number changed" variant, which only the removed legacy TOFU policy produced)
 ///
 /// @functions
-///  - IdentityChangeBanner: critical/warning chat banner widget
+///  - IdentityChangeBanner: identity-rejection chat banner widget
 library;
 
 import 'package:flutter/material.dart';
@@ -28,10 +24,6 @@ import '../../../shared/constants/colors.dart';
 
 class IdentityChangeBanner extends StatelessWidget {
   final String peerDisplayName;
-
-  /// True when the user had previously verified the (now-replaced) key.
-  /// Drives the red severity styling.
-  final bool wasPreviouslyVerified;
 
   /// "Verify" tap → push the verify screen.
   final VoidCallback onVerify;
@@ -42,20 +34,16 @@ class IdentityChangeBanner extends StatelessWidget {
   const IdentityChangeBanner({
     super.key,
     required this.peerDisplayName,
-    required this.wasPreviouslyVerified,
     required this.onVerify,
     required this.onDismiss,
   });
 
   @override
   Widget build(BuildContext context) {
-    final critical = wasPreviouslyVerified;
-    final accent = critical ? SnowColors.error : Colors.amber.shade800;
-    final bg = (critical ? SnowColors.error : Colors.amber)
-        .withValues(alpha: 0.14);
-    final title = critical
-        ? 'Safety number with $peerDisplayName changed — re-verify'
-        : 'Safety number with $peerDisplayName changed';
+    const accent = SnowColors.error;
+    final bg = SnowColors.error.withValues(alpha: 0.14);
+    final title = "Couldn't verify $peerDisplayName's identity — check the "
+        'safety number';
     return Material(
       color: bg,
       child: SafeArea(
@@ -65,10 +53,8 @@ class IdentityChangeBanner extends StatelessWidget {
               const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
             children: [
-              Icon(
-                critical
-                    ? Icons.warning_amber_rounded
-                    : Icons.shield_outlined,
+              const Icon(
+                Icons.warning_amber_rounded,
                 color: accent,
                 size: 22,
               ),
@@ -76,7 +62,7 @@ class IdentityChangeBanner extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: TextStyle(
+                  style: const TextStyle(
                     color: accent,
                     fontWeight: FontWeight.w600,
                     fontSize: 13,
@@ -95,7 +81,7 @@ class IdentityChangeBanner extends StatelessWidget {
               ),
               IconButton(
                 onPressed: onDismiss,
-                icon: Icon(Icons.close_rounded, color: accent),
+                icon: const Icon(Icons.close_rounded, color: accent),
                 tooltip: 'Dismiss',
                 visualDensity: VisualDensity.compact,
               ),

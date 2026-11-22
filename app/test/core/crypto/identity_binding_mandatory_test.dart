@@ -1,25 +1,23 @@
 /// @file        identity_binding_mandatory_test.dart
-/// @description Mandatory identity bindings (the default build configuration,
-///              AppConfig.allowUnboundIdentity == false — every beta and
-///              self-hosted build). A peer without a valid account-key binding
+/// @description Mandatory identity bindings (always — there is no build switch
+///              since 2026-11-20). A peer without a valid account-key binding
 ///              must be refused on both the send and the receive path, never
-///              admitted under the alpha-only TOFU policy. Bound peers keep
-///              working.
+///              admitted under a TOFU policy. Bound peers keep working.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-11
-/// @lastUpdated 2026-11-11
+/// @lastUpdated 2026-11-20 (no build switch to check any more: the refusal is unconditional)
 ///
 /// @functions
-///  - main(): default-config, send-side and receive-side mandatory tests
+///  - main(): send-side and receive-side mandatory tests
 library;
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:snowchat/app/app_config.dart';
-import 'package:snowchat/core/crypto/identity_admission.dart';
+import 'package:snowchat/core/crypto/identity_admission.dart'
+    show RemoteDeviceIdentity, RemoteIdentityDirectory;
 import 'package:snowchat/core/crypto/identity_binding_exception.dart';
 
 import 'identity_test_support.dart';
@@ -32,15 +30,6 @@ Matcher _rejectedWith(IdentityBindingFailure reason) => isA<
     .having((e) => e.reason, 'reason', reason);
 
 void main() {
-  // Make sure no other suite's override leaks in: these tests must run under
-  // the real default configuration.
-  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
-
-  test('default build configuration makes bindings mandatory', () {
-    expect(AppConfig.allowUnboundIdentity, isFalse);
-    expect(IdentityAdmission.debugAllowUnboundOverride, isNull);
-  });
-
   group('send side', () {
     late TestParty alice;
     late TestParty bob;

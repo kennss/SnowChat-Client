@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-11
-/// @lastUpdated 2026-08-03 (F3: Step 9 comment refreshed — the identity cross-check is now performed by SignalProtocolService.resolveSealedMessageType() before DR decrypt for prekey messages, binding the returned certificate identity to the X3DH-header identity; closes a Step 9 gap that was documented but never implemented pre-F3. No code change here — unseal already returns senderIdentityKey). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (SealedSenderService takes the server keys pinned in the build —
+///              trustedServerKeys, any of which may sign a certificate; no key fetched at run time
+///              — SC-06). Earlier 2026-08-03 (F3: Step 9 comment refreshed — the identity cross-check is now performed by SignalProtocolService.resolveSealedMessageType() before DR decrypt for prekey messages, binding the returned certificate identity to the X3DH-header identity; closes a Step 9 gap that was documented but never implemented pre-F3. No code change here — unseal already returns senderIdentityKey). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - SealedSenderService: Sealed Sender encryption/decryption service
@@ -182,11 +184,10 @@ class _ReplayCache {
 /// Only the recipient, who possesses the corresponding X25519 private key,
 /// can decrypt and learn who sent the message.
 class SealedSenderService {
-  /// Server's Ed25519 verify key (hardcoded in client binary).
-  ///
-  /// Used to verify SenderCertificate signatures during unseal.
-  /// This must match the server's signing key.
-  final Uint8List serverVerifyKey;
+  /// The server's Ed25519 verify keys this build trusts — pinned in the
+  /// build (sealed_trusted_keys.dart), never fetched at run time. A
+  /// SenderCertificate signed by none of them is rejected during unseal.
+  final List<Uint8List> trustedServerKeys;
 
   /// Replay detection cache.
   final _ReplayCache _replayCache = _ReplayCache();
@@ -195,8 +196,12 @@ class SealedSenderService {
   static final _rng = Random.secure();
 
   SealedSenderService({
-    required this.serverVerifyKey,
-  });
+    required List<Uint8List> trustedServerKeys,
+  }) : trustedServerKeys = List.unmodifiable(trustedServerKeys) {
+    if (trustedServerKeys.isEmpty) {
+      throw ArgumentError('no trusted server key');
+    }
+  }
 
   // -------------------------------------------------------------------------
   // seal()
@@ -419,7 +424,7 @@ class SealedSenderService {
     final SenderCertificate certificate;
     try {
       certificate = SenderCertificate.fromBytes(certBytes);
-      certificate.verify(serverVerifyKey);
+      certificate.verify(trustedServerKeys);
     } catch (_) {
       throw StateError('Sealed message rejected');
     }

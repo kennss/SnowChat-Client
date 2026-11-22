@@ -8,7 +8,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-09
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the SnowChat marketplace presentation: fund-flow note, entity-aware SOL transfer labels, NFT mint header; NFT trade types now use the generic layout with a net-SOL headline). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - TxDetailScreen: shows transaction details + action buttons (auto Enhanced/Legacy switch)
@@ -21,13 +21,10 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../nft/nft_provider.dart' show nftAssetByMintProvider;
 import '../providers/enhanced_history_provider.dart';
 import '../providers/tx_detail_provider.dart';
 import '../rpc/rpc_client_provider.dart' show solanaNetworkProvider;
 import '../rpc/rpc_config.dart' show SolanaNetwork;
-import '../tensor/tensor_providers.dart'
-    show snowchatVaultAddressProvider, listStateAddressProvider;
 import '../transaction/enhanced_transaction.dart';
 import '../transaction/transaction_parser.dart';
 import '../wallet_provider.dart';
@@ -123,7 +120,7 @@ class TxDetailScreen extends ConsumerWidget {
 // Enhanced Detail Body (Helius)
 // ---------------------------------------------------------------------------
 
-class _EnhancedDetailBody extends ConsumerWidget {
+class _EnhancedDetailBody extends StatelessWidget {
   const _EnhancedDetailBody({
     required this.tx,
     required this.ownerAddress,
@@ -135,14 +132,9 @@ class _EnhancedDetailBody extends ConsumerWidget {
   final SolanaNetwork network;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final isSend = tx.isSend(ownerAddress);
     final cp = tx.counterparty(ownerAddress);
-    // Phase X-3 cleanup: marketplace 의 counterparty (PDA / vault) 는
-    // 의미가 없으니 NFT mint 로 대체.
-    final isMarketplace = tx.type == EnhancedTxType.nftSale ||
-        tx.type == EnhancedTxType.nftListing ||
-        tx.type == EnhancedTxType.nftCancelListing;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -154,11 +146,7 @@ class _EnhancedDetailBody extends ConsumerWidget {
           const SizedBox(height: 20),
 
           // Description (Helius natural-language description)
-          // Marketplace 는 Helius 의 description 이 부정확 (PDA 주소 표시
-          // 등) — 우리 fund-flow note 가 더 정확하니 marketplace 면 skip.
-          if (!isMarketplace &&
-              tx.description != null &&
-              tx.description!.isNotEmpty) ...[
+          if (tx.description != null && tx.description!.isNotEmpty) ...[
             Text(
               tx.description!,
               style: const TextStyle(color: _C.textSecondary, fontSize: 14, height: 1.4),
@@ -179,14 +167,8 @@ class _EnhancedDetailBody extends ConsumerWidget {
             const SizedBox(height: 4),
           ],
 
-          // Counterparty — marketplace 면 NFT mint, 아니면 일반 주소.
-          if (isMarketplace && tx.marketplaceNftMint != null) ...[
-            Text(
-              'NFT: ${_shorten(tx.marketplaceNftMint!)}',
-              style: const TextStyle(color: _C.textSecondary, fontSize: 14),
-            ),
-            const SizedBox(height: 20),
-          ] else if (!isMarketplace && cp != null) ...[
+          // Counterparty
+          if (cp != null) ...[
             Text(
               '${isSend ? 'To' : 'From'} ${_shorten(cp)}',
               style: const TextStyle(color: _C.textSecondary, fontSize: 14),
@@ -222,8 +204,7 @@ class _EnhancedDetailBody extends ConsumerWidget {
                   label: 'Time',
                   value: DateFormat('MMM d, y  h:mm a').format(tx.dateTime),
                 ),
-                // Marketplace 는 counterparty (PDA) 의미 없음 — skip.
-                if (!isMarketplace && cp != null)
+                if (cp != null)
                   _DetailRow(
                     label: isSend ? 'Recipient' : 'Sender',
                     value: _shorten(cp),
@@ -233,56 +214,7 @@ class _EnhancedDetailBody extends ConsumerWidget {
             ),
           ),
 
-          // Phase X-3: marketplace fund flow note (helps explain why
-          // "net" differs from the listing price — PDA rent refund,
-          // marketplace fee, royalty, network fee all combine).
-          if (tx.type == EnhancedTxType.nftSale ||
-              tx.type == EnhancedTxType.nftListing ||
-              tx.type == EnhancedTxType.nftCancelListing) ...[
-            const SizedBox(height: 16),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: _C.primary.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: _C.primary.withValues(alpha: 0.25),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.info_outline,
-                          size: 16, color: _C.primary),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Why does the net differ from the price?',
-                        style: TextStyle(
-                          color: _C.primary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    _marketplaceFlowExplain(),
-                    style: const TextStyle(
-                      color: _C.textSecondary,
-                      fontSize: 12,
-                      height: 1.45,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-
-          // Native transfers (Phase X-3 entity-aware label for marketplace).
+          // Native transfers
           if (tx.nativeTransfers.isNotEmpty) ...[
             const SizedBox(height: 16),
             const Text(
@@ -290,10 +222,34 @@ class _EnhancedDetailBody extends ConsumerWidget {
               style: TextStyle(color: _C.textPrimary, fontSize: 14, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
-            _SolTransfersList(
-              tx: tx,
-              ownerAddress: ownerAddress,
-              isMarketplace: isMarketplace,
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _C.surface,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: tx.nativeTransfers.map((nt) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${_shorten(nt.fromUserAccount)} -> ${_shorten(nt.toUserAccount)}',
+                            style: const TextStyle(color: _C.textSecondary, fontSize: 12),
+                          ),
+                        ),
+                        Text(
+                          '${_formatSol(nt.amount)} SOL',
+                          style: const TextStyle(color: _C.textPrimary, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
           ],
 
@@ -397,8 +353,8 @@ class _EnhancedDetailBody extends ConsumerWidget {
   }
 
   String _primaryAmountText(bool isSend) {
-    // Phase X-3: marketplace 는 owner net SOL change 사용 (첫 transfer
-    // 만 보면 잘못된 amount).
+    // NFT trades spread SOL over several legs (price, royalty, fees), so
+    // show the owner's net SOL change instead of the first matching leg.
     if (tx.type == EnhancedTxType.nftSale ||
         tx.type == EnhancedTxType.nftListing ||
         tx.type == EnhancedTxType.nftCancelListing) {
@@ -423,39 +379,6 @@ class _EnhancedDetailBody extends ConsumerWidget {
       }
     }
     return tx.type.displayLabel;
-  }
-
-  /// Phase X-3 — explain marketplace tx fund movements so users don't
-  /// wonder "why did I receive 1.002 SOL when the listing was 1 SOL?".
-  /// Uses observed net to phrase context-aware text (sell vs buy vs
-  /// list vs cancel).
-  String _marketplaceFlowExplain() {
-    final net = tx.netSolForOwner(ownerAddress);
-    switch (tx.type) {
-      case EnhancedTxType.nftListing:
-        return 'Listing reserves rent for the on-chain PDA + ATA + pays '
-            'a network fee. The PDA rent (~0.002 SOL) is returned '
-            'automatically when the NFT sells or you cancel.';
-      case EnhancedTxType.nftCancelListing:
-        return 'Cancelling closes the PDA and refunds its rent (~0.002 '
-            'SOL) back to you, minus the small network fee paid to '
-            'broadcast this transaction.';
-      case EnhancedTxType.nftSale:
-        if (net > BigInt.zero) {
-          // Seller view
-          return 'Sale total = NFT price (received from buyer) + the PDA '
-              'rent you originally deposited at listing time '
-              '(~0.002 SOL is returned now that the PDA closes). '
-              'Marketplace fee + creator royalty are paid by the buyer, '
-              'not deducted from you.';
-        }
-        // Buyer view
-        return 'Purchase total = NFT price (to seller) + creator royalty '
-            '+ marketplace fee (to SnowChat) + network fee. The exact '
-            'breakdown is visible in "SOL Transfers" below.';
-      default:
-        return '';
-    }
   }
 
   void _copy(BuildContext context, String text, String label) {
@@ -487,117 +410,6 @@ class _EnhancedDetailBody extends ConsumerWidget {
     final sol = lamports ~/ BigInt.from(1000000000);
     final frac = (lamports % BigInt.from(1000000000)).abs().toString().padLeft(9, '0');
     return '$sol.${frac.substring(0, 6)}';
-  }
-}
-
-/// Phase X-3 entity-aware SOL transfer list. For marketplace tx, each
-/// row gets a meaning label (Marketplace fee / PDA rent / Royalty /
-/// Sale price / You / Other). Non-marketplace tx falls back to the
-/// raw "from -> to" view.
-class _SolTransfersList extends ConsumerWidget {
-  const _SolTransfersList({
-    required this.tx,
-    required this.ownerAddress,
-    required this.isMarketplace,
-  });
-
-  final EnhancedTransaction tx;
-  final String ownerAddress;
-  final bool isMarketplace;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    String? vault;
-    String? listState;
-    Set<String> creators = const {};
-
-    if (isMarketplace) {
-      vault = ref.watch(snowchatVaultAddressProvider).valueOrNull;
-      final mint = tx.marketplaceNftMint;
-      if (mint != null) {
-        listState = ref.watch(listStateAddressProvider(mint)).valueOrNull;
-        final asset = ref.watch(nftAssetByMintProvider(mint)).valueOrNull;
-        if (asset != null && asset.creatorAddresses.isNotEmpty) {
-          creators = asset.creatorAddresses.toSet();
-        }
-      }
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: _C.surface,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: tx.nativeTransfers.map((nt) {
-          final label = isMarketplace
-              ? _classify(nt, vault, listState, creators)
-              : null;
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${_EnhancedDetailBody._shorten(nt.fromUserAccount)} '
-                        '-> ${_EnhancedDetailBody._shorten(nt.toUserAccount)}',
-                        style: const TextStyle(
-                          color: _C.textSecondary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      '${_EnhancedDetailBody._formatSol(nt.amount)} SOL',
-                      style: const TextStyle(
-                        color: _C.textPrimary,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-                if (label != null) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      color: _C.primary,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  String _classify(
-    NativeTransfer nt,
-    String? vault,
-    String? listState,
-    Set<String> creators,
-  ) {
-    if (vault != null && nt.toUserAccount == vault) {
-      return 'Marketplace fee';
-    }
-    if (listState != null) {
-      if (nt.fromUserAccount == listState) return 'PDA rent refund';
-      if (nt.toUserAccount == listState) return 'PDA rent deposit';
-    }
-    if (creators.contains(nt.toUserAccount)) return 'Royalty';
-    if (creators.contains(nt.fromUserAccount)) return 'Royalty (refund)';
-    if (nt.toUserAccount == ownerAddress) return 'You receive';
-    if (nt.fromUserAccount == ownerAddress) return 'You pay';
-    return 'Other';
   }
 }
 

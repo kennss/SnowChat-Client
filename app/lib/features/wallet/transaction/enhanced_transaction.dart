@@ -1,7 +1,4 @@
 /// @file        enhanced_transaction.dart
-/// @lastUpdated 2026-04-26 (Phase X-2: extract NFT mint + price from
-///                          marketplace ix data/accounts so list/buy rows
-///                          can render "Listed Nomos #7 at 1 SOL" etc.)
 /// @description Helius Enhanced Transaction model. Parses the server-proxy
 ///              `/wallet/enhanced-history` response into rich tx types like
 ///              TRANSFER, SWAP, NFT_SALE. Replaces the existing
@@ -9,7 +6,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-08
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the SnowChat marketplace program classifier and the NFT mint / price fields it filled; NFT trade types keep the net-SOL direction rule). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - EnhancedTransaction.fromJson(): Helius JSON → model
@@ -19,9 +16,6 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:solana/base58.dart';
-
-import '../tensor/tensor_marketplace_constants.dart';
 
 /// Helius Enhanced Transaction type enum.
 /// Maps the main values of the `type` field returned by the Helius API.
@@ -148,22 +142,10 @@ class EnhancedTransaction {
     required this.nativeTransfers,
     required this.tokenTransfers,
     this.transactionError,
-    this.marketplaceNftMint,
-    this.marketplaceLamports,
   });
 
   final String signature;
   final EnhancedTxType type;
-
-  /// Phase X-2: extracted NFT mint (Base58) for SnowChat marketplace tx.
-  /// Set only when type ∈ {nftSale, nftListing, nftCancelListing} AND the
-  /// classifier matched our fork program. UI uses this to fetch DAS name
-  /// and render "Listed <NFT name> at <price> SOL".
-  final String? marketplaceNftMint;
-
-  /// Phase X-2: extracted price in lamports (BigInt). Present for
-  /// list_legacy / buy_legacy. delist_legacy has no amount → null.
-  final BigInt? marketplaceLamports;
 
   /// Transaction source: SYSTEM_PROGRAM, MAGIC_EDEN, JUPITER, etc.
   final String? source;
@@ -209,23 +191,18 @@ class EnhancedTransaction {
   /// Decide send/receive direction relative to the given owner address.
   /// For TRANSFER type, decided from nativeTransfers.
   ///
-  /// Phase X-3: marketplace tx (nftSale / nftListing / nftCancelListing)
-  /// uses the net SOL sign instead of from-match. Buyer is the
-  /// SystemProgram.transfer payer (from = buyer many times) but receives
-  /// the NFT — simple from-match wrongly flips the direction.
+  /// NFT trade types (nftSale / nftListing / nftCancelListing) use the
+  /// owner's net SOL sign instead of from-match: a trade spreads SOL over
+  /// several legs (price, royalty, fees) while the NFT moves the other
+  /// way, so from-match on a single leg misreads the direction.
   bool isSend(String ownerAddress) {
     if (type == EnhancedTxType.swap) return false;
 
-    // Marketplace: net SOL sign decides (sent if net negative).
+    // NFT trade: net SOL sign decides (sent if net negative).
     if (type == EnhancedTxType.nftSale ||
         type == EnhancedTxType.nftListing ||
         type == EnhancedTxType.nftCancelListing) {
-      var net = BigInt.zero;
-      for (final nt in nativeTransfers) {
-        if (nt.toUserAccount == ownerAddress) net += nt.amount;
-        if (nt.fromUserAccount == ownerAddress) net -= nt.amount;
-      }
-      return net < BigInt.zero;
+      return netSolForOwner(ownerAddress) < BigInt.zero;
     }
 
     // From native transfers
@@ -244,7 +221,6 @@ class EnhancedTransaction {
   }
 
   /// Owner-net SOL change in lamports (positive = received).
-  /// Used by detail screens to render breakdown.
   BigInt netSolForOwner(String ownerAddress) {
     var net = BigInt.zero;
     for (final nt in nativeTransfers) {
@@ -290,31 +266,10 @@ class EnhancedTransaction {
             .toList() ??
         [];
 
-    // Phase X-1: Helius does not know SnowChat's Tensor fork program ID,
-    // so it returns type='UNKNOWN' or generic 'TRANSFER'. Inspect raw
-    // instructions for our program ID + Anchor discriminator and override
-    // type so existing UI mapping (icon / label / color) just works.
-    var resolvedType = EnhancedTxType.fromString(json['type'] as String?);
-    var resolvedSource = json['source'] as String?;
-    String? mpMint;
-    BigInt? mpLamports;
-    if (resolvedType == EnhancedTxType.unknown ||
-        resolvedType == EnhancedTxType.transfer ||
-        resolvedType == EnhancedTxType.transferChecked) {
-      final classified = _classifySnowchatMarketplace(json);
-      if (classified != null) {
-        resolvedType = classified.type;
-        mpMint = classified.mint;
-        mpLamports = classified.lamports;
-        // Tag source so sourceLabel renders "Snowchat Marketplace".
-        resolvedSource = 'SNOWCHAT_MARKETPLACE';
-      }
-    }
-
     return EnhancedTransaction(
       signature: json['signature'] as String? ?? '',
-      type: resolvedType,
-      source: resolvedSource,
+      type: EnhancedTxType.fromString(json['type'] as String?),
+      source: json['source'] as String?,
       description: json['description'] as String?,
       fee: BigInt.from(json['fee'] as num? ?? 0),
       feePayer: json['feePayer'] as String? ?? '',
@@ -322,138 +277,6 @@ class EnhancedTransaction {
       nativeTransfers: nativeList,
       tokenTransfers: tokenList,
       transactionError: json['transactionError'] as String?,
-      marketplaceNftMint: mpMint,
-      marketplaceLamports: mpLamports,
     );
   }
-}
-
-/// Result of marketplace classification — type + extracted NFT mint +
-/// (optional) price in lamports. Null when no SnowChat marketplace ix
-/// matched.
-class _MarketplaceClassification {
-  const _MarketplaceClassification({
-    required this.type,
-    this.mint,
-    this.lamports,
-  });
-  final EnhancedTxType type;
-  final String? mint;
-  final BigInt? lamports;
-}
-
-/// Phase X-1/X-2 helper — scan top-level + inner instructions for SnowChat
-/// marketplace fork program ID. Match the first 8 bytes (Anchor instruction
-/// discriminator) of `data` against known buy/list/delist constants. On
-/// match, also extract NFT mint (from `accounts[index]`) and price (from
-/// `data[8..16]` u64 little-endian) for use in the row label.
-///
-/// Returns null when no SnowChat marketplace ix is found — caller keeps
-/// the original type.
-///
-/// Account index per ix (from tensor_marketplace_buy.dart):
-///   - list_legacy:    accounts[4] = mint
-///   - buy_legacy:     accounts[5] = mint
-///   - delist_legacy:  accounts[4] = mint (no amount)
-_MarketplaceClassification? _classifySnowchatMarketplace(
-    Map<String, dynamic> json) {
-  final flat = <Map<String, dynamic>>[];
-  final top = json['instructions'] as List<dynamic>?;
-  if (top != null) {
-    for (final ix in top) {
-      if (ix is Map<String, dynamic>) {
-        flat.add(ix);
-        // innerInstructions can be a list of {instructions: [...]} groups.
-        final inner = ix['innerInstructions'] as List<dynamic>?;
-        if (inner != null) {
-          for (final g in inner) {
-            if (g is Map<String, dynamic>) {
-              final innerIx = g['instructions'] as List<dynamic>?;
-              if (innerIx != null) {
-                for (final i in innerIx) {
-                  if (i is Map<String, dynamic>) flat.add(i);
-                }
-              }
-            } else if (g is List) {
-              // Some payloads are raw lists of instructions.
-              for (final i in g) {
-                if (i is Map<String, dynamic>) flat.add(i);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for (final ix in flat) {
-    final programId = ix['programId'] as String?;
-    if (programId != tensorMarketplaceDevnetProgramAddress) continue;
-
-    final dataStr = ix['data'] as String?;
-    if (dataStr == null || dataStr.isEmpty) continue;
-
-    // Helius encodes instruction `data` as base58 (Solana RPC convention).
-    final List<int> bytes;
-    try {
-      bytes = base58decode(dataStr);
-    } catch (_) {
-      continue;
-    }
-    if (bytes.length < 8) continue;
-    final disc = bytes.sublist(0, 8);
-    final accounts = (ix['accounts'] as List<dynamic>?) ?? const [];
-
-    String? mintAt(int index) {
-      if (index < 0 || index >= accounts.length) return null;
-      final v = accounts[index];
-      return v is String ? v : null;
-    }
-
-    BigInt? readU64Le(int offset) {
-      if (bytes.length < offset + 8) return null;
-      var value = BigInt.zero;
-      for (var i = 0; i < 8; i++) {
-        value |= BigInt.from(bytes[offset + i]) << (8 * i);
-      }
-      return value;
-    }
-
-    if (_byteListEquals(disc, listLegacyIxDiscriminator)) {
-      return _MarketplaceClassification(
-        type: EnhancedTxType.nftListing,
-        mint: mintAt(4),
-        lamports: readU64Le(8),
-      );
-    }
-    if (_byteListEquals(disc, buyLegacyIxDiscriminator)) {
-      // buy_legacy data carries `maxAmount` (buyer's price ceiling, which
-      // SnowChat sets to listing.priceLamports × 2 for royalty/fee
-      // headroom — see marketplace_provider.dart:400). That overshoots
-      // the actual paid price, so we deliberately omit lamports here —
-      // X-3 (tx detail) will compute the real fund split from
-      // nativeTransfers.
-      return _MarketplaceClassification(
-        type: EnhancedTxType.nftSale,
-        mint: mintAt(5),
-        // lamports omitted — see comment above.
-      );
-    }
-    if (_byteListEquals(disc, delistLegacyIxDiscriminator)) {
-      return _MarketplaceClassification(
-        type: EnhancedTxType.nftCancelListing,
-        mint: mintAt(4),
-        // No price in delist — null.
-      );
-    }
-  }
-  return null;
-}
-
-bool _byteListEquals(List<int> a, List<int> b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }

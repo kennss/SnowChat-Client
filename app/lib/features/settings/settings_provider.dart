@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; Phase I §25: callRequirePin toggle added)
+/// @lastUpdated 2026-11-22 (autoLockSeconds — lock again after the app was in the background that long,
+///              default 1 min; biometricLockEnabled is persisted — it was lost on restart).
+///              Earlier 2026-04-26 (header + inline English translation; Phase I §25: callRequirePin toggle added)
 ///
 /// @functions
 ///  - SettingsState: settings-state data class
@@ -18,6 +20,8 @@
 ///  - setPreferredLanguage(): translation target-language setting (persisted to secure_storage)
 ///  - setCallAlwaysRelay(): VoIP call IP anonymization — force TURN relay (persisted)
 ///  - setCallRequirePin(): require PIN on call accept — default false (Signal UX)
+///  - setAutoLockSeconds(): auto-lock delay after the app goes to the background (default 60 s)
+///  - setBiometricLock(): biometric unlock (now persisted)
 
 import 'dart:ui' show PlatformDispatcher;
 
@@ -42,6 +46,10 @@ class SettingsState {
   /// unlock + auto-resume right after PIN unlock.
   final bool callRequirePin;
 
+  /// How long the app may stay in the background before it locks again,
+  /// in seconds (0 = at once). Cold start always locks.
+  final int autoLockSeconds;
+
   const SettingsState({
     this.notificationsEnabled = true,
     this.biometricLockEnabled = false,
@@ -52,6 +60,7 @@ class SettingsState {
     required this.preferredLanguage,
     this.callAlwaysRelay = false,
     this.callRequirePin = false,
+    this.autoLockSeconds = kDefaultAutoLockSeconds,
   });
 
   SettingsState copyWith({
@@ -64,6 +73,7 @@ class SettingsState {
     String? preferredLanguage,
     bool? callAlwaysRelay,
     bool? callRequirePin,
+    int? autoLockSeconds,
   }) {
     return SettingsState(
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
@@ -76,9 +86,17 @@ class SettingsState {
       preferredLanguage: preferredLanguage ?? this.preferredLanguage,
       callAlwaysRelay: callAlwaysRelay ?? this.callAlwaysRelay,
       callRequirePin: callRequirePin ?? this.callRequirePin,
+      autoLockSeconds: autoLockSeconds ?? this.autoLockSeconds,
     );
   }
 }
+
+/// Auto-lock default: one minute in the background (design decision
+/// 2026-11-22 — a messenger opened often, still locked when left).
+const int kDefaultAutoLockSeconds = 60;
+
+/// Auto-lock choices offered in settings (seconds): at once, 1, 5, 15, 60 min.
+const List<int> kAutoLockChoices = [0, 60, 300, 900, 3600];
 
 class SettingsNotifier extends StateNotifier<SettingsState> {
   final SecureStorageService _storage;
@@ -88,6 +106,7 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     _loadPersistedLanguage();
     _loadCallAlwaysRelay();
     _loadCallRequirePin();
+    _loadLock();
   }
 
   /// Initial language from device locale. Falls back to English for unsupported locales.
@@ -111,8 +130,27 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     state = state.copyWith(notificationsEnabled: value);
   }
 
-  void setBiometricLock(bool value) {
+  /// Face ID / Touch ID / fingerprint first on the lock screen. Persisted
+  /// (it used to be forgotten on restart).
+  Future<void> setBiometricLock(bool value) async {
     state = state.copyWith(biometricLockEnabled: value);
+    await _storage.storeBiometricLock(value);
+  }
+
+  /// Auto-lock delay ([kAutoLockChoices]).
+  Future<void> setAutoLockSeconds(int seconds) async {
+    state = state.copyWith(autoLockSeconds: seconds);
+    await _storage.storeAutoLockSeconds(seconds);
+  }
+
+  Future<void> _loadLock() async {
+    final biometric = await _storage.getBiometricLock();
+    final autoLock = await _storage.getAutoLockSeconds();
+    if (!mounted) return;
+    state = state.copyWith(
+      biometricLockEnabled: biometric,
+      autoLockSeconds: autoLock,
+    );
   }
 
   void setReadReceipts(bool value) {

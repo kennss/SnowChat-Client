@@ -4,7 +4,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removeWallet: dropped the preCheck hook, whose only use was the marketplace listing interlock). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - walletProvider: WalletNotifier StateNotifierProvider
@@ -1062,15 +1062,10 @@ class WalletNotifier extends StateNotifier<WalletState> {
     return id;
   }
 
-  /// removeWallet — blocks primary (C-3), blocks sendlock (A-5).
-  /// NFT/listing checks are delegated externally via the [preCheck] callback
-  /// (Phase 5 integration point). preCheck throws propagate as-is. On
+  /// removeWallet — blocks primary (C-3), blocks sendlock (A-5). On
   /// success, removes the index entry + (imported) deletes secret + evicts
   /// keypair cache.
-  Future<void> removeWallet(
-    String walletId, {
-    Future<void> Function(WalletEntry entry)? preCheck,
-  }) async {
+  Future<void> removeWallet(String walletId) async {
     final idx = _ref.read(walletIndexProvider).valueOrNull;
     if (idx == null) {
       throw const WalletIndexCorruptedException(
@@ -1089,11 +1084,6 @@ class WalletNotifier extends StateNotifier<WalletState> {
     final sendLock = _ref.read(walletSendLockProvider);
     if (sendLock.isLocked(walletId)) {
       throw const InFlightTransactionException();
-    }
-
-    // D-1 / D-2: external checks (NFT holdings / active listings)
-    if (preCheck != null) {
-      await preCheck(entry);
     }
 
     await _ref.read(walletIndexProvider.notifier).removeEntry(walletId);

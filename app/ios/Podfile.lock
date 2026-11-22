@@ -101,35 +101,9 @@ PODS:
   - flutter_webrtc (1.4.0):
     - Flutter
     - WebRTC-SDK (= 144.7559.01)
-  - google_mlkit_commons (0.11.1):
-    - Flutter
-    - MLKitVision (~> 10.0.0)
-  - google_mlkit_language_id (0.13.1):
-    - Flutter
-    - google_mlkit_commons
-    - GoogleMLKit/LanguageID (~> 9.0.0)
-  - google_mlkit_translation (0.13.1):
-    - Flutter
-    - google_mlkit_commons
-    - GoogleMLKit/Translate (~> 9.0.0)
   - GoogleDataTransport (10.1.0):
     - nanopb (~> 3.30910.0)
     - PromisesObjC (~> 2.4)
-  - GoogleMLKit/LanguageID (9.0.0):
-    - GoogleMLKit/MLKitCore
-    - MLKitLanguageID (~> 9.0.0)
-  - GoogleMLKit/MLKitCore (9.0.0):
-    - MLKitCommon (~> 14.0.0)
-  - GoogleMLKit/Translate (9.0.0):
-    - GoogleMLKit/MLKitCore
-    - MLKitTranslate (~> 8.0.0)
-  - GoogleToolboxForMac/Defines (4.2.1)
-  - GoogleToolboxForMac/Logger (4.2.1):
-    - GoogleToolboxForMac/Defines (= 4.2.1)
-  - "GoogleToolboxForMac/NSData+zlib (4.2.1)":
-    - GoogleToolboxForMac/Defines (= 4.2.1)
-  - GoogleToolboxForMac/StringEncoding (4.2.1):
-    - GoogleToolboxForMac/Defines (= 4.2.1)
   - GoogleUtilities/AppDelegateSwizzler (8.1.0):
     - GoogleUtilities/Environment
     - GoogleUtilities/Logger
@@ -154,7 +128,6 @@ PODS:
   - GoogleUtilities/UserDefaults (8.1.0):
     - GoogleUtilities/Logger
     - GoogleUtilities/Privacy
-  - GTMSessionFetcher/Core (3.5.0)
   - image_picker_ios (0.0.1):
     - Flutter
   - libwebp (1.5.0):
@@ -175,31 +148,6 @@ PODS:
   - Mantle (2.2.0):
     - Mantle/extobjc (= 2.2.0)
   - Mantle/extobjc (2.2.0)
-  - MLImage (1.0.0-beta8)
-  - MLKitCommon (14.0.0):
-    - GoogleDataTransport (~> 10.0)
-    - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
-    - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
-    - GoogleUtilities/Logger (~> 8.0)
-    - GoogleUtilities/UserDefaults (~> 8.0)
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-  - MLKitLanguageID (9.0.0):
-    - MLKitNaturalLanguage (~> 10.0)
-  - MLKitNaturalLanguage (10.0.0):
-    - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
-    - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
-    - GoogleToolboxForMac/StringEncoding (< 5.0, >= 4.2.1)
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-    - MLKitCommon (~> 14.0)
-  - MLKitTranslate (8.0.0):
-    - MLKitNaturalLanguage (~> 10.0)
-    - SSZipArchive (< 3.0, >= 2.5.5)
-  - MLKitVision (10.0.0):
-    - GoogleToolboxForMac/Logger (< 5.0, >= 4.2.1)
-    - "GoogleToolboxForMac/NSData+zlib (< 5.0, >= 4.2.1)"
-    - GTMSessionFetcher/Core (< 4.0, >= 3.3.2)
-    - MLImage (= 1.0.0-beta8)
-    - MLKitCommon (~> 14.0)
   - mobile_scanner (7.0.0):
     - Flutter
     - FlutterMacOS
@@ -245,7 +193,6 @@ PODS:
   - sqlcipher_flutter_libs (0.0.1):
     - Flutter
     - SQLCipher (~> 4.10.0)
-  - SSZipArchive (2.6.0)
   - SwiftyGif (5.4.5)
   - url_launcher_ios (0.0.1):
     - Flutter
@@ -272,9 +219,6 @@ DEPENDENCIES:
   - flutter_local_notifications (from `.symlinks/plugins/flutter_local_notifications/ios`)
   - flutter_secure_storage (from `.symlinks/plugins/flutter_secure_storage/ios`)
   - flutter_webrtc (from `.symlinks/plugins/flutter_webrtc/ios`)
-  - google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)
-  - google_mlkit_language_id (from `.symlinks/plugins/google_mlkit_language_id/ios`)
-  - google_mlkit_translation (from `.symlinks/plugins/google_mlkit_translation/ios`)
   - image_picker_ios (from `.symlinks/plugins/image_picker_ios/ios`)
   - local_auth_darwin (from `.symlinks/plugins/local_auth_darwin/darwin`)
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
@@ -302,25 +246,15 @@ SPEC REPOS:
     - FirebaseInstallations
     - FirebaseMessaging
     - GoogleDataTransport
-    - GoogleMLKit
-    - GoogleToolboxForMac
     - GoogleUtilities
-    - GTMSessionFetcher
     - libwebp
     - Mantle
-    - MLImage
-    - MLKitCommon
-    - MLKitLanguageID
-    - MLKitNaturalLanguage
-    - MLKitTranslate
-    - MLKitVision
     - nanopb
     - PromisesObjC
     - ScreenProtectorKit
     - SDWebImage
     - SDWebImageWebPCoder
     - SQLCipher
-    - SSZipArchive
     - SwiftyGif
     - WebRTC-SDK
 
@@ -361,12 +295,6 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/flutter_secure_storage/ios"
   flutter_webrtc:
     :path: ".symlinks/plugins/flutter_webrtc/ios"
-  google_mlkit_commons:
-    :path: ".symlinks/plugins/google_mlkit_commons/ios"
-  google_mlkit_language_id:
-    :path: ".symlinks/plugins/google_mlkit_language_id/ios"
-  google_mlkit_translation:
-    :path: ".symlinks/plugins/google_mlkit_translation/ios"
   image_picker_ios:
     :path: ".symlinks/plugins/image_picker_ios/ios"
   local_auth_darwin:
@@ -425,24 +353,12 @@ SPEC CHECKSUMS:
   flutter_local_notifications: df98d66e515e1ca797af436137b4459b160ad8c9
   flutter_secure_storage: d33dac7ae2ea08509be337e775f6b59f1ff45f12
   flutter_webrtc: 5aa37bfb8b834bff989a03182d1c4266a4f93377
-  google_mlkit_commons: 1e6ef6605d7281f35baf2b355e6049b9984fd624
-  google_mlkit_language_id: 7e18af31fb0c5f92f388c424cb0e1356f427ba1d
-  google_mlkit_translation: 8a0e84c632121250843e9bab526cb926a2a2a7b7
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
-  GoogleMLKit: b1eee21a41c57704fe72483b15c85cb2c0cd7444
-  GoogleToolboxForMac: d1a2cbf009c453f4d6ded37c105e2f67a32206d8
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
-  GTMSessionFetcher: 5aea5ba6bd522a239e236100971f10cb71b96ab6
   image_picker_ios: 4f2f91b01abdb52842a8e277617df877e40f905b
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
   local_auth_darwin: 63c73d6d28cc3e239be2b6aa460ea6e317cd5100
   Mantle: c5aa8794a29a022dfbbfc9799af95f477a69b62d
-  MLImage: 0de5c6c2bf9e93b80ef752e2797f0836f03b58c0
-  MLKitCommon: 47d47b50a031d00db62f1b0efe5a1d8b09a3b2e6
-  MLKitLanguageID: 7b7d115881e0e036627052e32d7771b9d7f67ee6
-  MLKitNaturalLanguage: 498154f2461f97abb00eb161eb773670ffc46250
-  MLKitTranslate: fcb283a2cbaaa595e1cf1d3fedffcea2e97a1168
-  MLKitVision: 39a5a812db83c4a0794445088e567f3631c11961
   mobile_scanner: 77265f3dc8d580810e91849d4a0811a90467ed5e
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   open_filex: 6e26e659846ec990262224a12ef1c528bb4edbe4
@@ -460,12 +376,11 @@ SPEC CHECKSUMS:
   sqflite_darwin: 5a7236e3b501866c1c9befc6771dfd73ffb8702d
   SQLCipher: eb79c64049cb002b4e9fcb30edb7979bf4706dfc
   sqlcipher_flutter_libs: d1cde2d92cd9dbf09a77e460ea19412fac319d48
-  SSZipArchive: 8a6ee5677c8e304bebc109e39cf0da91ccef22ea
   SwiftyGif: 706c60cf65fa2bc5ee0313beece843c8eb8194d4
   url_launcher_ios: bb13df5870e8c4234ca12609d04010a21be43dfa
   vibration: 8e4d81c3e73ab229a9fb5ab2692f789c4a46d74d
   WebRTC-SDK: ab9b5319e458c2bfebdc92b3600740da35d5630d
 
-PODFILE CHECKSUM: 9057cc46063207450dd577aa00726c1ad308a4be
+PODFILE CHECKSUM: b87027fc8fd2215fffd49c8f7b1d6452fa871065
 
 COCOAPODS: 1.16.2

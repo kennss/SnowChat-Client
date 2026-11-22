@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; fix: removed ref.read in dispose — WalletLiveService cache pattern)
+/// @lastUpdated 2026-11-12 (removed the Market action that opened the NFT marketplace). Earlier 2026-04-26 (header + inline English translation; fix: removed ref.read in dispose — WalletLiveService cache pattern)
 ///
 /// @functions
 ///  - WalletHomeScreen: main wallet-home screen widget (ConsumerStatefulWidget)
@@ -164,7 +164,6 @@ class _WalletHomeScreenState extends ConsumerState<WalletHomeScreen>
                   onSwap: () {
                     // TODO: Swap screen (Phase 6.2).
                   },
-                  onMarket: () => context.push('/marketplace'),
                 ),
               ),
 

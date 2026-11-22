@@ -1,0 +1,13 @@
+# Same toolchain libsignal pins (rust-toolchain at the pinned revision).
+# `targets` lets rustup install every mobile target on a fresh machine the
+# first time the Flutter build hook invokes cargo from this directory.
+[toolchain]
+channel = "1.98.1"
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "x86_64-apple-ios",
+]

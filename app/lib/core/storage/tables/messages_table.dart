@@ -4,7 +4,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-08 (schema v10 — replyToPreview + replyToSenderId
+/// @lastUpdated 2026-11-21 (schema v17 — peerClientId: on a received 1:1 message, the sender's
+///              own id for it (`cid` in the E2EE payload); unique per sender
+///              (idx_messages_peer_client), so a message the sender's outbox sent again
+///              after a lost ack is stored once). Earlier 2026-05-08 (schema v10 — replyToPreview + replyToSenderId
 ///              columns added. The two fields were already populated in
 ///              the in-memory Message model and round-tripped through the
 ///              E2EE payload, but the drift insert paths only saved
@@ -16,7 +19,7 @@
 ///              2026-04-01 schema v2 baseline.)
 ///
 /// @functions
-///  - LocalMessages: Drift local messages table class (23 columns)
+///  - LocalMessages: Drift local messages table class (24 columns)
 
 import 'package:drift/drift.dart';
 
@@ -31,6 +34,11 @@ import 'package:drift/drift.dart';
 ///  - `expiresAt` (DateTime) → `expiresIn` + `expireStarted` (Int)
 ///  - Added `read` (Bool) — the critical column for unread badge support
 ///  - Added receipt tracking, notification, remote delete, mention, reply columns
+@TableIndex(
+  name: 'idx_messages_peer_client',
+  columns: {#senderSnowchatId, #peerClientId},
+  unique: true,
+)
 class LocalMessages extends Table {
   // === Basic identity ===
   TextColumn get id => text()();
@@ -93,6 +101,16 @@ class LocalMessages extends Table {
 
   // === Group chat sender display name ===
   TextColumn get senderDisplayName => text().nullable()();
+
+  // === Duplicate guard (schema v17) ===
+  // A received 1:1 message: the sender's own id for it (`cid` in the E2EE
+  // payload — its local message id). The sender's outbox sends a message
+  // again when the server's ack did not come back, so the same message can
+  // arrive twice under two server ids; (senderSnowchatId, peerClientId) is
+  // unique and the second copy is not stored. Null for everything else
+  // (own messages, group messages, older senders) — SQLite never treats two
+  // NULLs as equal, so those rows are not constrained.
+  TextColumn get peerClientId => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {id};

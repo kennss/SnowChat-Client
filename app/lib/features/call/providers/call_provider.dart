@@ -5,7 +5,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-05-06 (Fix B revised — _onServiceEvent ended branch now
+/// @lastUpdated 2026-11-21 (V3: iOS in-app incoming screen when no CallKit window came up —
+///              CallState.inAppIncoming after inAppIncomingGrace (3 s) in the foreground, re-armed
+///              on resume; a late CallKit window takes over a call still ringing in-app; one that
+///              comes after the call was handled in-app is closed and its events ignored
+///              (_strayCallKitIds) so its end event cannot end the live call). Earlier 2026-05-06 (Fix B revised — _onServiceEvent ended branch now
 ///              recognizes endedReason=='cold_fallback' from CallService and
 ///              inserts the missed-call message using event.remoteSnowchatId
 ///              instead of state.remoteSnowchatId. Cold fallback fires when
@@ -238,6 +242,7 @@ class CallState {
     this.alwaysRelay = false,
     this.sas,
     this.endedReason,
+    this.inAppIncoming = false,
   });
 
   const CallState.idle() : this();
@@ -262,6 +267,12 @@ class CallState {
   /// Set only in `ended` state: `ended` | `declined` | `busy` | `timeout` | `failed` | `permission_denied` | `offline`.
   final String? endedReason;
 
+  /// iOS, `incoming` only: no CallKit window came up for this call while the
+  /// app is in the foreground (the VoIP push did not arrive), so the in-app
+  /// IncomingCallScreen is the incoming UI. Cleared when a late CallKit window
+  /// takes over. Never set together with a CallKit window (no dual UI, v211).
+  final bool inAppIncoming;
+
   CallState copyWith({
     CallStatus? status,
     String? callId,
@@ -273,6 +284,7 @@ class CallState {
     bool? alwaysRelay,
     String? sas,
     String? endedReason,
+    bool? inAppIncoming,
   }) {
     return CallState(
       status: status ?? this.status,
@@ -285,6 +297,7 @@ class CallState {
       alwaysRelay: alwaysRelay ?? this.alwaysRelay,
       sas: sas ?? this.sas,
       endedReason: endedReason ?? this.endedReason,
+      inAppIncoming: inAppIncoming ?? this.inAppIncoming,
     );
   }
 }
@@ -335,10 +348,31 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
       // Idempotent vs the synchronous path in `_onServiceEvent(incoming)`.
       _incomingShownSub = ckm.incomingShown.listen((nonce) {
         final cid = state.callId;
+        // V3: a CallKit window that came up after this call was already
+        // answered (or ended) on the in-app screen belongs to nothing. It is
+        // closed and its events are ignored — binding it as an alias would
+        // let its "ended" event end the live call.
+        if (cid != null &&
+            cid == _inAppCallId &&
+            state.status != CallStatus.incoming) {
+          _strayCallKitIds.add(nonce);
+          diagLog('inAppIncoming', 'stray CallKit window closed');
+          unawaited(ckm.endCall(nonce));
+          return;
+        }
         if (cid != null && cid != nonce && !_aliasMap.isAliasMatch(nonce, cid)) {
           _aliasMap.register(nonce, cid);
           debugPrint('[DIAG:CallNotifier] late-bound alias on incomingShown: '
               'nonce=$nonce ↔ callId=$cid');
+        }
+        // V3: a late CallKit window for a call still ringing on the in-app
+        // screen takes over — the in-app screen closes (_CallRouteHost).
+        _inAppIncomingTimer?.cancel();
+        _inAppIncomingTimer = null;
+        if (state.status == CallStatus.incoming && state.inAppIncoming) {
+          _inAppCallId = null;
+          state = state.copyWith(inAppIncoming: false);
+          diagLog('inAppIncoming', 'handed over to a late CallKit window');
         }
       });
       // Phase 8.2 v2.2 — recover any ACCEPT / ACTIVATED events that the plugin
@@ -419,6 +453,14 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   @override
   void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
     if (lifecycle != AppLifecycleState.resumed) return;
+    // V3: a call that started ringing while the app was in the background
+    // (no push, so no CallKit) gets the in-app screen once the app is open.
+    final ringing = state.callId;
+    if (state.status == CallStatus.incoming &&
+        !state.inAppIncoming &&
+        ringing != null) {
+      _armInAppIncoming(ringing);
+    }
     final ref = _ref;
     if (ref == null) return;
     // Phase 8.2 v2.2 — every BG→FG resume, ask the plugin to replay any
@@ -621,6 +663,59 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   StreamSubscription<CallKitEvent>? _callKitSub;
   StreamSubscription<void>? _audioActivatedSub;
   StreamSubscription<String>? _incomingShownSub;
+
+  // V3 (2026-11-21) — iOS in-app incoming screen when no CallKit window came
+  // up (VoIP push not delivered). Design:
+  // Documentation/TO-DO/2026-11-21-voip-ring-end-design.md §3 V3.
+  /// How long a ringing call waits for a CallKit window before the in-app
+  /// screen is shown.
+  static const Duration inAppIncomingGrace = Duration(seconds: 3);
+
+  /// A CallKit window shown this long before the call reached `incoming`
+  /// still counts as its window: the PushKit path can raise CallKit before
+  /// the socket invite is decrypted.
+  static const Duration _callKitShownLead = Duration(seconds: 10);
+
+  Timer? _inAppIncomingTimer;
+  DateTime? _incomingStartedAt;
+
+  /// The call whose incoming UI is the in-app screen (until idle). A CallKit
+  /// window that shows up for it after it left `incoming` is stray.
+  String? _inAppCallId;
+
+  /// CallKit window ids closed as stray; their events are ignored.
+  final Set<String> _strayCallKitIds = {};
+
+  // defaultTargetPlatform (not dart:io Platform) so tests can run the iOS
+  // branch; in an app build it is the real platform.
+  bool get _isIOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  /// Start the grace timer for [callId] (iOS, app in the foreground). When it
+  /// ends with the call still ringing and no CallKit window shown for it, the
+  /// in-app screen becomes the incoming UI.
+  void _armInAppIncoming(String callId) {
+    if (!_isIOS) return;
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    _inAppIncomingTimer?.cancel();
+    _inAppIncomingTimer = Timer(inAppIncomingGrace, () {
+      _inAppIncomingTimer = null;
+      if (!mounted) return;
+      if (state.status != CallStatus.incoming || state.callId != callId) return;
+      if (state.inAppIncoming) return;
+      final started = _incomingStartedAt;
+      final shownAt = _callKitManager?.lastShownIncomingAt;
+      if (started != null &&
+          shownAt != null &&
+          !shownAt.isBefore(started.subtract(_callKitShownLead))) {
+        return; // CallKit owns this call's incoming UI
+      }
+      _inAppCallId = callId;
+      state = state.copyWith(inAppIncoming: true);
+      diagLog('inAppIncoming', 'no CallKit window — in-app incoming screen');
+    });
+  }
   // _elapsedTimer / _activeSince removed (2026-04-19) — replaced by callStartedAt.
 
   /// V1.0.1: per-peer 60s rate limit on missed-call system messages
@@ -747,6 +842,11 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   // ---------------------------------------------------------------------------
 
   void _onServiceEvent(CallServiceEvent event) {
+    // V3: the grace timer belongs to a ringing call only.
+    if (event.status != CallServiceStatus.incoming) {
+      _inAppIncomingTimer?.cancel();
+      _inAppIncomingTimer = null;
+    }
     // [DIAG-VOIP-2026-04-19] tracks CallService → CallNotifier transitions. Remove after diagnosis.
     debugPrint('[DIAG:CallNotifier] _onServiceEvent serviceStatus=${event.status} '
         'callId=${event.callId} prevState=${state.status}');
@@ -776,6 +876,13 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
           // stored in CallService._remoteDisplayName, then passed via event.remoteDisplayName.
           remoteDisplayName: event.remoteDisplayName,
         );
+        // V3: wait briefly for a CallKit window; without one the in-app
+        // screen is the incoming UI (iOS, foreground).
+        _incomingStartedAt = DateTime.now();
+        _inAppCallId = null;
+        _strayCallKitIds.clear();
+        final ringingId = event.callId;
+        if (ringingId != null) _armInAppIncoming(ringingId);
         // Phase 8.2 v2.3 — auto-register alias when CallKit incoming UI was
         // already raised by the native PushKit path. PushKit shows CallKit
         // with id=nonce; the envelope-decrypted callId is different. Without
@@ -993,6 +1100,12 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   /// user has always-relay turned on in settings, the main acceptCall
   /// preserves it via OR.
   void _onCallKitEvent(CallKitEvent event) {
+    // V3: events of a stray CallKit window (see _incomingShownSub) — closing
+    // it fires its own end event — never touch the current call.
+    if (_strayCallKitIds.contains(event.callId)) {
+      diagLog('inAppIncoming', 'stray CallKit event ignored');
+      return;
+    }
     // [DIAG-VOIP-2026-05-05 cold-launch trace] release-survive logging via
     // diagLog (MethodChannel → Log.d). Plain debugPrint stripped in release.
     final shortId = event.callId.length >= 8
@@ -1724,6 +1837,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
     _callKitSub?.cancel();
     _audioActivatedSub?.cancel();
     _incomingShownSub?.cancel();
+    _inAppIncomingTimer?.cancel();
     if (_ref != null) {
       WidgetsBinding.instance.removeObserver(this);
     }

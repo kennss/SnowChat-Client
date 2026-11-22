@@ -6,13 +6,13 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-08-03
-/// @lastUpdated 2026-08-03
+/// @lastUpdated 2026-11-20 (comment: a group's name comes from its change log, no GMK or channel room). Earlier 2026-08-03
 ///
 /// @functions
 ///  - resolveSenderName(ref, snowId, {roomId, envelopeName}): best-effort name
 ///    via envelope → group roster → contacts → friends → truncated snow-id.
 ///  - groupDisplayNameFallback(ref, roomId, {mySnowId}): roster-derived group
-///    title ("Dave, Carol") when the real GMK/channel name isn't available.
+///    title ("Dave, Carol") when the group's name isn't known yet.
 ///  - truncateSnowId(snowId): short "snow1234...cdef" form (last-resort label).
 library;
 
@@ -65,10 +65,8 @@ String resolveSenderName(
   return truncateSnowId(snowId);
 }
 
-/// Fallback title for a group / channel room when the real name is unavailable
-/// — the E2EE group name needs the GMK (which may not have been delivered yet)
-/// and a channel room's name needs the channel loaded; either can be missing,
-/// leaving a bare "Group". The roster is always available, so derive a name from
+/// Fallback title for a group when its name is not known on this device yet,
+/// which would leave a bare "Group". The roster is always available, so derive a name from
 /// the other members ("Dave, Carol" / "Dave, Carol +2"), the standard messenger
 /// treatment for an unnamed group. Returns null only when no other member is
 /// known yet (caller keeps its own last-resort label).

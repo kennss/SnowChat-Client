@@ -14,7 +14,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-19
-/// @lastUpdated 2026-05-03 (v205: startOutgoing IOSParams pin
+/// @lastUpdated 2026-11-21 (lastShownIncomingAt: when the last CallKit incoming window was shown —
+///              CallNotifier's V3 in-app incoming fallback asks whether CallKit is up for the
+///              ringing call). Earlier 2026-05-03 (v205: startOutgoing IOSParams pin
 ///              audioSessionPreferredSampleRate=48_000 + IOBufferDuration=0.005
 ///              to match WebRTC's expected rate and the accept-path
 ///              CXAnswerCallAction setup. Defaulted to 44.1 kHz pre-v205 which
@@ -135,6 +137,16 @@ class CallKitManager {
   String? _lastShownIncomingId;
   DateTime? _lastShownIncomingAt;
   static const _incomingIdTtl = Duration(seconds: 60);
+
+  /// When the last CallKit incoming window was shown (`Event.actionCallIncoming`),
+  /// or null if none / TTL expired. CallNotifier uses it to tell whether the
+  /// system UI is up for the call that is ringing now (V3 in-app fallback).
+  DateTime? get lastShownIncomingAt {
+    final at = _lastShownIncomingAt;
+    if (at == null) return null;
+    if (DateTime.now().difference(at) > _incomingIdTtl) return null;
+    return at;
+  }
 
   /// Last `id` seen on `Event.actionCallIncoming`, or null if none / TTL expired.
   String? get lastShownIncomingId {

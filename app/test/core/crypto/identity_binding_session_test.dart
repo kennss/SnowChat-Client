@@ -2,17 +2,17 @@
 /// @description B-2 Identity Binding v1 end-to-end over the REAL Signal layer
 ///              (X3DH + Double Ratchet, pinenacl): send-side admission inside
 ///              SignalProtocolService.createSession, receive-side verification
-///              of the binding embedded in type-2 messages, the Signal-style
-///              legacy policy (unverified → continue + notice, verified →
-///              block until re-verify), multi-device selection, §5.6 session
-///              purge, and Safety Number v2 symmetry.
+///              of the binding embedded in type-2 messages, the refusal of a
+///              peer without a binding (bindings are mandatory), multi-device
+///              selection, §5.6 session purge, and Safety Number v2 symmetry.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-10
+/// @lastUpdated 2026-11-20 (bindings always mandatory: the legacy TOFU cases became refusals — an
+///              unbound bundle / binding-less sender is refused and nothing is recorded)
 ///
 /// @functions
-///  - main(): createSession / receive / legacy / selection / safety tests
+///  - main(): createSession / receive / unbound / selection / safety tests
 library;
 
 import 'dart:convert';
@@ -22,7 +22,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:snowchat/core/crypto/identity_admission.dart';
 import 'package:snowchat/core/crypto/identity_binding.dart';
 import 'package:snowchat/core/crypto/identity_binding_exception.dart';
-import 'package:snowchat/core/crypto/identity_key_changed_exception.dart';
 import 'package:snowchat/core/crypto/safety_number.dart';
 import 'package:snowchat/core/crypto/signal_protocol_service.dart';
 import 'package:snowchat/core/crypto/verified_identity_store.dart';
@@ -49,12 +48,6 @@ List<IdentityStoreEvent> _collect(VerifiedIdentityStore store) {
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
 void main() {
-  // These suites exercise the alpha-only legacy (unbound / TOFU) policy, which
-  // the default build configuration disables. Mandatory-binding behaviour is
-  // covered separately in identity_binding_mandatory_test.dart.
-  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = true);
-  tearDownAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
-
   group('send side — createSession admission', () {
     late TestParty alice;
     late TestParty bob;
@@ -214,18 +207,21 @@ void main() {
       expect(await alice.signal.hasSession(bobNew.snowId, _devB2), isTrue);
     });
 
-    test('legacy → bound promotion with different keys → interception '
-        'warning', () async {
-      final events = _collect(alice.store);
+    test('an unbound attacker bundle under a never-bound snowId is refused '
+        'and leaves nothing; the real bound keys are then admitted', () async {
       final mitm = await TestParty.create(seedByte: 9, deviceId: _devB);
-      // Transition period: the server hands out an unbound attacker bundle
-      // under Bob's snowId (accepted as legacy TOFU)…
-      await alice.signal.createSession(
-        recipientId: bob.snowId,
-        deviceId: _devB,
-        preKeyBundle: mitm.bundle(),
+      // The server hands out an unbound attacker bundle under Bob's snowId.
+      await expectLater(
+        alice.signal.createSession(
+          recipientId: bob.snowId,
+          deviceId: _devB,
+          preKeyBundle: mitm.bundle(),
+        ),
+        throwsA(_bindingRejected(IdentityBindingFailure.bindingRequired)),
       );
-      // …then Bob upgrades and presents his real, bound keys.
+      expect(await alice.signal.hasSession(bob.snowId, _devB), isFalse);
+      expect(await alice.store.get(bob.snowId), isNull);
+      // Bob's real, bound keys.
       await alice.signal.createSession(
         recipientId: bob.snowId,
         deviceId: _devB,
@@ -233,75 +229,36 @@ void main() {
             binding: bob.bindingFor(epoch: 1000),
             accountPublicKey: bob.accountPub),
       );
-      await _flush();
-      expect(events.map((e) => e.kind),
-          contains(IdentityEventKind.interceptionSuspected));
       expect((await alice.store.get(bob.snowId))!.identityKey, bob.identityKey);
     });
   });
 
-  group('legacy policy (§5.5, Signal style)', () {
+  group('without a binding (bindings are mandatory)', () {
     late TestParty alice;
 
     setUp(() async {
       alice = await TestParty.create(seedByte: 1, deviceId: _devA);
     });
 
-    test('unverified key change → updated, notice, session continues',
-        () async {
+    test('a peer that presents no binding is refused at first contact and '
+        'again later: bindingRequired, no session, nothing recorded', () async {
       final events = _collect(alice.store);
       final old = await TestParty.create(seedByte: 4, deviceId: _devB);
       final reinstalled = await TestParty.create(seedByte: 4, deviceId: _devB2);
-      await alice.signal.createSession(
-          recipientId: old.snowId, deviceId: _devB, preKeyBundle: old.bundle());
-      await alice.signal.createSession(
-          recipientId: old.snowId,
-          deviceId: _devB2,
-          preKeyBundle: reinstalled.bundle());
+      for (final (party, device) in [(old, _devB), (reinstalled, _devB2)]) {
+        await expectLater(
+          alice.signal.createSession(
+              recipientId: old.snowId,
+              deviceId: device,
+              preKeyBundle: party.bundle()),
+          throwsA(_bindingRejected(IdentityBindingFailure.bindingRequired)),
+        );
+        expect(await alice.signal.hasSession(old.snowId, device), isFalse);
+      }
+      expect(await alice.store.get(old.snowId), isNull);
       await _flush();
-      expect(events.single.kind, IdentityEventKind.legacyKeyChanged);
-      expect((await alice.store.get(old.snowId))!.identityKey,
-          reinstalled.identityKey);
-      expect(await alice.signal.hasSession(old.snowId, _devB2), isTrue);
-    });
-
-    test('verified key change → blocked until re-verify; re-verify unblocks',
-        () async {
-      alice.store.verifiedLookup = (_) async => true;
-      final events = _collect(alice.store);
-      final old = await TestParty.create(seedByte: 5, deviceId: _devB);
-      final reinstalled = await TestParty.create(seedByte: 5, deviceId: _devB2);
-      await alice.signal.createSession(
-          recipientId: old.snowId, deviceId: _devB, preKeyBundle: old.bundle());
-
-      await expectLater(
-        alice.signal.createSession(
-            recipientId: old.snowId,
-            deviceId: _devB2,
-            preKeyBundle: reinstalled.bundle()),
-        throwsA(isA<IdentityKeyChangedException>()),
-      );
-      await _flush();
-      expect(events.single.kind, IdentityEventKind.legacyKeyChangeBlocked);
-      expect((await alice.store.get(old.snowId))!.hasPendingChange, isTrue);
-
-      // Still blocked even though the DAO flag would now read unverified.
-      alice.store.verifiedLookup = (_) async => false;
-      await expectLater(
-        alice.signal.createSession(
-            recipientId: old.snowId,
-            deviceId: _devB2,
-            preKeyBundle: reinstalled.bundle(opkIndex: 1)),
-        throwsA(isA<IdentityKeyChangedException>()),
-      );
-
-      // Verify screen: user re-verifies → pending keys adopted.
-      expect(await alice.store.acceptPendingChange(old.snowId), isTrue);
-      await alice.signal.createSession(
-          recipientId: old.snowId,
-          deviceId: _devB2,
-          preKeyBundle: reinstalled.bundle(opkIndex: 2));
-      expect(await alice.signal.hasSession(old.snowId, _devB2), isTrue);
+      expect(events.map((e) => e.kind),
+          everyElement(IdentityEventKind.bindingRejected));
     });
   });
 
@@ -399,13 +356,13 @@ void main() {
       );
     });
 
-    test('binding-less sender (old client) → directory fallback, legacy accept',
-        () async {
+    test('binding-less sender whose directory holds no binding either → '
+        'refused, nothing recorded', () async {
       final enc = await aliceFirstMessage('legacy hi', embed: false);
       final json = jsonDecode(utf8.decode(enc['ciphertext'] as Uint8List));
       expect(json['identityBinding'], isNull);
       var lookups = 0;
-      final pt = await bob.signal.decryptMessage(
+      final decrypt = bob.signal.decryptMessage(
         senderId: alice.snowId,
         deviceId: _devA,
         ciphertext: enc['ciphertext'] as Uint8List,
@@ -428,12 +385,11 @@ void main() {
           );
         },
       );
-      expect(utf8.decode(pt), 'legacy hi');
+      await expectLater(
+          decrypt,
+          throwsA(_bindingRejected(IdentityBindingFailure.bindingRequired)));
       expect(lookups, 1);
-      final rec = await bob.store.get(alice.snowId);
-      expect(rec!.bound, isFalse);
-      expect(rec.identityKey, alice.identityKey);
-      expect(rec.accountPublicKey, alice.accountPub);
+      expect(await bob.store.get(alice.snowId), isNull);
     });
 
     test('binding-less message from a latched sender → downgrade rejected',

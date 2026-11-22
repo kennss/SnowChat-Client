@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-19)
+/// @lastUpdated 2026-11-20 (v1 groups removed: no channelId — communities have no rooms; groupId is a group protocol v2 group id). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-19)
 ///
 /// @functions
 ///  - ConversationType: conversation type enum (direct, group)
@@ -17,12 +17,7 @@ enum ConversationType { direct, group }
 class Conversation {
   final String id;
   final ConversationType type;
-  final String? groupId; // Server group ID (for ConversationType.group)
-  /// Parent channel ID (only set when this group is a channel room).
-  /// `null` means this is an independent user-created group chat that
-  /// should appear in the standalone "Group Chats" section, not nested
-  /// under a channel.
-  final String? channelId;
+  final String? groupId; // Group protocol v2 group id (for ConversationType.group)
   final String? title;
   final List<String> participantIds;
   final String? lastMessageText;
@@ -41,7 +36,6 @@ class Conversation {
     required this.id,
     this.type = ConversationType.direct,
     this.groupId,
-    this.channelId,
     this.title,
     required this.participantIds,
     this.lastMessageText,
@@ -78,7 +72,6 @@ class Conversation {
 
   Conversation copyWith({
     String? groupId,
-    String? channelId,
     String? title,
     String? lastMessageText,
     DateTime? lastMessageTime,
@@ -93,7 +86,6 @@ class Conversation {
       id: id,
       type: type,
       groupId: groupId ?? this.groupId,
-      channelId: channelId ?? this.channelId,
       title: title ?? this.title,
       participantIds: participantIds,
       lastMessageText: lastMessageText ?? this.lastMessageText,

@@ -1,18 +1,17 @@
 /// @file        message_send_log.dart
-/// @description Outgoing message log for retransmission — stores recent message plaintexts (encrypted at rest) to respond to retry requests on decrypt failure (supports both 1:1 and group)
+/// @description Outgoing message log for retransmission — stores recent 1:1 message plaintexts (encrypted at rest) to respond to retry requests on decrypt failure
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-04
-/// @lastUpdated 2026-04-26 (header English translation; Phase 10 P0-A: API redesign — conversationId+isGroup, maxAge 24h, maxEntries 500, 1:1 support)
+/// @lastUpdated 2026-11-20 (1:1 only — v1 groups removed: no isGroup flag, no legacy groupId field on load). Earlier 2026-04-26 (header English translation; Phase 10 P0-A: API redesign — conversationId+isGroup, maxAge 24h, maxEntries 500, 1:1 support)
 ///
 /// @functions
 ///  - MessageSendLog: Outgoing message log (LRU, encrypted, TTL)
-///  - record(): Record a message (unified API for 1:1 + group)
+///  - record(): Record a sent 1:1 message
 ///  - lookup(): Look up a message
 ///  - conversationIdFor(): Get the conversationId for a message
-///  - isGroupMessage(): Check whether a message is a group message
 ///  - toJson(): Serialize for persistence
-///  - fromJson(): Restore persisted state (backward compatible with old groupId field)
+///  - fromJson(): Restore persisted state
 
 import 'dart:collection';
 import 'dart:convert';
@@ -20,7 +19,7 @@ import 'dart:typed_data';
 
 /// Stores recently sent message plaintexts for retry requests.
 ///
-/// When a recipient fails to decrypt a message (1:1 or group), they send a
+/// When a recipient fails to decrypt a 1:1 message, they send a
 /// retry request back to the original sender. The sender looks up the
 /// plaintext in this log and re-sends it via 1:1 E2EE.
 ///
@@ -41,14 +40,11 @@ class MessageSendLog {
 
   /// Record a sent message for potential retry.
   ///
-  /// [conversationId] is the conversation/group ID. For 1:1 this is the
-  /// conversationId; for groups this is the groupId.
-  /// [isGroup] distinguishes group from direct messages.
+  /// [conversationId] is the 1:1 conversation of the message.
   void record(
     String messageId,
     Uint8List plaintext, {
     required String conversationId,
-    bool isGroup = false,
   }) {
     // LRU eviction
     if (_log.length >= maxEntries) {
@@ -57,7 +53,6 @@ class MessageSendLog {
     _log[messageId] = _LogEntry(
       plaintext: plaintext,
       conversationId: conversationId,
-      isGroup: isGroup,
       timestamp: DateTime.now(),
     );
   }
@@ -97,11 +92,6 @@ class MessageSendLog {
     return _log[messageId]?.conversationId;
   }
 
-  /// Check if a logged message is a group message.
-  bool isGroupMessage(String messageId) {
-    return _log[messageId]?.isGroup ?? false;
-  }
-
   /// Serialize for session store persistence.
   Map<String, dynamic> toJson() {
     _prune(); // Clean expired before saving
@@ -110,7 +100,6 @@ class MessageSendLog {
       result[entry.key] = {
         'plaintext': base64Encode(entry.value.plaintext),
         'conversationId': entry.value.conversationId,
-        'isGroup': entry.value.isGroup,
         'timestamp': entry.value.timestamp.millisecondsSinceEpoch,
       };
     }
@@ -118,9 +107,6 @@ class MessageSendLog {
   }
 
   /// Restore from session store.
-  ///
-  /// Backward compatible: old entries with `groupId` field are gracefully
-  /// migrated to the new `conversationId` + `isGroup` schema.
   factory MessageSendLog.fromJson(Map<String, dynamic> json) {
     final LinkedHashMap<String, _LogEntry> log = LinkedHashMap();
     for (final entry in json.entries) {
@@ -129,17 +115,9 @@ class MessageSendLog {
           data['timestamp'] as int);
       // Skip expired entries on load
       if (DateTime.now().difference(timestamp) <= maxAge) {
-        // Backward compat: old format had 'groupId' instead of 'conversationId'
-        final conversationId = (data['conversationId'] ?? data['groupId'])
-            as String? ?? '';
-        // Old format always had groupId (was group-only), so treat as group
-        // if the field came from the legacy 'groupId' key.
-        final isGroup = data['isGroup'] as bool? ??
-            (data.containsKey('groupId') && !data.containsKey('conversationId'));
         log[entry.key] = _LogEntry(
           plaintext: base64Decode(data['plaintext'] as String),
-          conversationId: conversationId,
-          isGroup: isGroup,
+          conversationId: data['conversationId'] as String,
           timestamp: timestamp,
         );
       }
@@ -157,13 +135,11 @@ class MessageSendLog {
 class _LogEntry {
   final Uint8List plaintext;
   final String conversationId;
-  final bool isGroup;
   final DateTime timestamp;
 
   _LogEntry({
     required this.plaintext,
     required this.conversationId,
-    required this.isGroup,
     required this.timestamp,
   });
 }

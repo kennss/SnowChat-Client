@@ -3,7 +3,16 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the + menu's Send Asset is offered only when AppConfig.enableWallet — it pushes TransferRequestScreen directly, so the router guard never covered it). Earlier 2026-08-05 (channel room default title fallback "Channel"→"Community"). Earlier 2026-08-03 (group message sender label resolves the name via roster/contacts/friends instead of a raw snow-id (resolveSenderName); the group/channel HEADER falls back to roster member names ("Dave, Carol") when the real name is unavailable (GMK not delivered / channel not loaded) instead of showing a bare "Group"; removed the local _truncateSnowId (folded into shared truncateSnowId)). Earlier 2026-07-15 (sealed read receipt: MarkReadHelper wired with e2eeHandler + directPeerResolver (direct → peer snowId, group → null) so reads travel E2EE). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase F: + menu -> Send Asset option (1:1 only) -> TransferRequestScreen)
+/// @lastUpdated 2026-11-21 (a failed 1:1 message offers "tap to retry" — MessageBubble.onRetry →
+///              ChatNotifier.retryFailedMessage). Earlier 2026-11-21 (header subtitle shows "typing..." without a name — it showed the
+///              peer's snow-id). Earlier 2026-11-21 (X1: blocking goes through BlockList; P5.6: the input follows what the group takes — Gv2GroupView.canWrite — so an account invited again after a removal writes nothing until it accepts; one leave dialog with the info screen; a leave or end runs once and takes the chat from the list also when the screen closed meanwhile; a v2 group is never shown as "no longer a member" — with its "Remove chat" — while this device cannot read its groups or the read failed: it says groups are not running yet and locks the input; Leave only when it can be made). Earlier 2026-11-21 (the identity banner is the rejection one only (no severity flag)). Earlier 2026-11-21 (the chat closes when the list reports the peer deleted it — the sealed control, not a socket event). Earlier 2026-11-20 (v1 groups removed: a group chat is a v2 group (its id), no community rooms — no room title, no channel owner / kick listeners; a peer's 1:1 deletion closes the chat with its own wording; group members for friend requests come from this device only). Earlier same day (a v2 group shows when the server's keys are not the ones this app trusts. Leaving the chat no longer touches a disposed Chats list — a reset or restart took it down with the app. Group protocol v2: a v2 group's chat shows where the group stands —
+///              waiting for confirmation, changes held back, update needed, frozen, no longer
+///              a member — locks the input where nothing can be written, offers "Remove chat"
+///              for a group this account is not in, and says why a leave / end / clear could
+///              not be made; its members come from this device).
+///              Earlier 2026-11-11 (screen-level subscription keeps translationCacheProvider alive
+///              while the room is open — an empty room previously lost the first
+///              incoming translation). Earlier 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the + menu's Send Asset is offered only when AppConfig.enableWallet — it pushes TransferRequestScreen directly, so the router guard never covered it). Earlier 2026-08-05 (channel room default title fallback "Channel"→"Community"). Earlier 2026-08-03 (group message sender label resolves the name via roster/contacts/friends instead of a raw snow-id (resolveSenderName); the group/channel HEADER falls back to roster member names ("Dave, Carol") when the real name is unavailable (GMK not delivered / channel not loaded) instead of showing a bare "Group"; removed the local _truncateSnowId (folded into shared truncateSnowId)). Earlier 2026-07-15 (sealed read receipt: MarkReadHelper wired with e2eeHandler + directPeerResolver (direct → peer snowId, group → null) so reads travel E2EE). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-20 Wallet V2 Phase F: + menu -> Send Asset option (1:1 only) -> TransferRequestScreen)
 ///
 /// @functions
 ///  - ChatScreen: chat-screen ConsumerStatefulWidget
@@ -21,11 +30,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../app/app_config.dart';
+import '../../../core/group_v2/gv2_codec.dart';
+import '../../channels/providers/channel_provider.dart' show friendActionsProvider;
 import '../../../core/network/link_preview_service.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
-import '../../channels/providers/channel_provider.dart';
 import '../../call/screens/voip_policy_dialog.dart';
 import '../../contacts/contact_provider.dart';
 import '../../../shared/widgets/snowflake_background.dart';
@@ -52,6 +62,8 @@ import '../../ai/service/conversation_summarizer.dart';
 import '../../ai/service/supported_languages.dart';
 import '../widgets/summary_sheet.dart';
 import '../../group/providers/group_detail_provider.dart';
+import '../../group/providers/gv2_group_provider.dart';
+import '../../group/widgets/gv2_leave_dialog.dart';
 import '../../settings/settings_provider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -66,9 +78,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _scrollController = ScrollController();
   late final MarkReadHelper _markReadHelper;
-  StreamSubscription<Map<String, dynamic>>? _groupDeletedSub;
-  StreamSubscription<Map<String, dynamic>>? _channelKickedSub;
-  StreamSubscription<Map<String, dynamic>>? _channelOwnerChangedSub;
+  StreamSubscription<String>? _chatDeletedSub;
 
   /// P0-2: in-memory dismissal of the IdentityChangeBanner. Reset every
   /// time the user navigates back into the chat screen (StatefulWidget
@@ -133,56 +143,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // only runs at first entry. Without this, missed messages (sent while
       // user was in another app or chat) are never fetched.
       ref.read(chatProvider(widget.conversationId).notifier).refresh();
-    });
-
-    final sm = ref.read(socketManagerProvider);
-
-    // Reload group detail when channel ownership changes (badge update)
-    _channelOwnerChangedSub = sm.onChannelOwnerChanged.listen((data) {
-      final convs = ref.read(conversationListProvider);
-      final conv = convs.where((c) => c.id == widget.conversationId).firstOrNull;
-      if (conv?.channelId != null) {
-        final groupId = conv?.groupId ?? widget.conversationId;
-        ref.read(groupDetailProvider(groupId).notifier).loadGroup();
+      // Group protocol v2: look up the members' display names (at most once
+      // a day per member; nothing happens for any other chat).
+      if (gv2IsGroupId(widget.conversationId)) {
+        ref
+            .read(gv2RuntimeProvider)
+            ?.groups
+            .refreshNames(widget.conversationId);
       }
     });
 
-    // Auto-pop when group is deleted by owner (room demolition)
-    _groupDeletedSub = sm.onChatDeleted.listen((data) {
-      final deletedId = (data['conversationId'] ?? data['groupChatId']) as String?;
-      if (deletedId == null) return;
-      final convs = ref.read(conversationListProvider);
-      final conv = convs.where((c) => c.id == widget.conversationId).firstOrNull;
-      if (deletedId == widget.conversationId ||
-          deletedId == conv?.groupId) {
-        if (mounted) {
-          context.pop();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('This group has been deleted')),
-          );
-        }
-      }
-    });
-
-    // Auto-pop when I am kicked from the community whose room I'm viewing.
-    // The server emits channel_member_left{youWereRemoved:true} directly to the
-    // kicked user; if that community owns the current room, leave it and notify.
-    // (The community itself is dropped from the lists by ConversationListNotifier.)
-    _channelKickedSub = sm.onChannelMemberLeft.listen((data) {
-      final youWereRemoved = data['youWereRemoved'] as bool? ?? false;
-      final channelId = data['channelId'] as String?;
-      if (!youWereRemoved || channelId == null) return;
-      final convs = ref.read(conversationListProvider);
-      final conv =
-          convs.where((c) => c.id == widget.conversationId).firstOrNull;
-      if (conv?.channelId == channelId) {
-        if (mounted) {
-          context.pop();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('You were removed from this community')),
-          );
-        }
+    // Close the chat when the peer deleted this 1:1 (the list removes the
+    // room; see ConversationListNotifier.applyPeerChatDeletion). The event
+    // names the deleter's snowId, which is this room's id.
+    _chatDeletedSub = ref
+        .read(conversationListProvider.notifier)
+        .onPeerDeletedChat
+        .listen((peer) {
+      if (peer != widget.conversationId) return;
+      if (mounted) {
+        context.pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This chat was deleted')),
+        );
       }
     });
   }
@@ -198,16 +181,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final notifier = ref.read(conversationListProvider.notifier);
     final convId = widget.conversationId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      notifier.markAsRead(convId);
+      // The list itself may be gone by then: the screen was taken down with
+      // the whole app (a reset or a restart rebuilds every provider).
+      if (notifier.mounted) notifier.markAsRead(convId);
     });
     super.deactivate();
   }
 
   @override
   void dispose() {
-    _groupDeletedSub?.cancel();
-    _channelKickedSub?.cancel();
-    _channelOwnerChangedSub?.cancel();
+    _chatDeletedSub?.cancel();
     _markReadHelper.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -376,32 +359,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Show a multi-select dialog of group members for friend requests.
   Future<void> _showGroupFriendPicker() async {
-    final groupId = ref.read(conversationListProvider)
-        .where((c) => c.id == widget.conversationId)
-        .firstOrNull
-        ?.groupId ?? widget.conversationId;
-
-    // Fetch group members from server
-    final apiClient = ref.read(apiClientProvider);
-    Map<String, dynamic> data;
-    try {
-      final res = await apiClient.get('/groups/$groupId');
-      data = Map<String, dynamic>.from(res.data as Map);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Failed to load members.'),
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
-      return;
-    }
-
-    final members = (data['members'] as List?)
-            ?.map((m) => Map<String, dynamic>.from(m as Map))
-            .where((m) => (m['snowchatId'] as String?) != _myId)
-            .toList() ??
-        [];
+    // The members of a group are the ones this device holds (the server
+    // holds no list of them).
+    final members = [
+      for (final m in ref.read(groupDetailProvider(widget.conversationId)).members)
+        if (m.snowchatId != _myId)
+          <String, dynamic>{'snowchatId': m.snowchatId, 'displayName': m.displayName},
+    ];
 
     if (members.isEmpty || !mounted) return;
 
@@ -555,92 +519,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  /// Leave Group dialog.
-  /// - Owner: warns about ownership transfer, single "Leave" button.
-  /// - Non-owner: two choices — "Leave" or "Leave and delete my messages".
-  void _confirmLeaveGroup({required bool isCreator}) {
-    final description = isCreator
-        ? 'Ownership will be transferred to the next oldest member. '
-          'You will leave this group.'
-        : 'You can leave the group, or leave and delete all your '
-          'messages for everyone.';
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: SnowColors.surface,
-        title: const Text(
-          'Leave group',
-          style: TextStyle(color: SnowColors.textPrimary),
-        ),
-        content: Text(
-          description,
-          style: const TextStyle(color: SnowColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: SnowColors.textSecondary),
-            ),
-          ),
-          // Non-owner only: "Leave and delete my messages"
-          if (!isCreator)
-            TextButton(
-              onPressed: () {
-                Navigator.of(ctx).pop();
-                _executeLeaveAndDelete();
-              },
-              child: const Text(
-                'Leave and delete',
-                style: TextStyle(color: SnowColors.error),
-              ),
-            ),
-          // Both owner and non-owner: simple "Leave"
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              _executeLeave();
-            },
-            child: const Text(
-              'Leave',
-              style: TextStyle(color: SnowColors.error),
-            ),
-          ),
-        ],
-      ),
+  /// Leave the group: the dialog the info screen shows too (a frozen group
+  /// is only removed from this device; an owner hands the group on).
+  Future<void> _confirmLeaveGroup() async {
+    final group =
+        ref.read(gv2GroupViewProvider(widget.conversationId)).valueOrNull;
+    if (group == null) return;
+    final choice = await askGv2Leave(context, group);
+    if (choice == null || !mounted) return;
+    _runGroupChange(
+      (chat) => choice == Gv2LeaveChoice.leaveAndDelete
+          ? chat.leaveAndDeleteMyMessages()
+          : chat.leaveGroup(),
     );
   }
 
-  /// Execute simple leave (no message deletion).
-  void _executeLeave() {
+  /// A leave or an end of this group is under way: a second tap does
+  /// nothing (it ran a second change that failed after the first one was
+  /// made, and said so).
+  bool _groupChangeRunning = false;
+
+  /// Make a change that takes this account out of the group. When it was
+  /// made the chat goes from the list — also when this screen was closed
+  /// meanwhile — and the screen closes; when not, the reason is shown.
+  void _runGroupChange(Future<void> Function(ChatNotifier chat) change) {
+    if (_groupChangeRunning) return;
+    _groupChangeRunning = true;
+    final chat = ref.read(chatProvider(widget.conversationId).notifier);
+    final list = ref.read(conversationListProvider.notifier);
+    final id = widget.conversationId;
     Future.microtask(() async {
-      if (!mounted) return;
-      await ref
-          .read(chatProvider(widget.conversationId).notifier)
-          .leaveGroup();
-      if (!mounted) return;
-      ref
-          .read(conversationListProvider.notifier)
-          .removeConversation(widget.conversationId);
+      try {
+        await change(chat);
+      } catch (e) {
+        _showGroupFailure(e);
+        return;
+      } finally {
+        _groupChangeRunning = false;
+      }
+      try {
+        list.removeConversation(id);
+      } catch (_) {
+        // The list was taken down meanwhile (a reset): nothing to update.
+      }
       if (mounted) context.pop();
     });
   }
 
-  /// Execute leave + batch-delete own messages for everyone.
-  void _executeLeaveAndDelete() {
-    Future.microtask(() async {
-      if (!mounted) return;
-      await ref
-          .read(chatProvider(widget.conversationId).notifier)
-          .leaveAndDeleteMyMessages();
-      if (!mounted) return;
-      ref
-          .read(conversationListProvider.notifier)
-          .removeConversation(widget.conversationId);
-      if (mounted) context.pop();
-    });
+  /// A change of a group protocol v2 group could not be made (the v1 paths
+  /// never throw here): say why; this account is still in the group and
+  /// nothing was removed.
+  void _showGroupFailure(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: SnowColors.error,
+        duration: const Duration(seconds: 4),
+        content: Text(gv2FailureText(error)),
+      ),
+    );
   }
 
   /// Phase 11 + Vuln 3 (Stage 3): Clear Chat dialog.
@@ -704,6 +641,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       .clearPreview(widget.conversationId);
                 } catch (e) {
                   if (!mounted) return;
+                  if (gv2IsGroupId(widget.conversationId)) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        backgroundColor: SnowColors.error,
+                        duration: Duration(seconds: 4),
+                        content: Text(
+                          'The group could not be told to clear the chat. '
+                          'Nothing was removed.',
+                        ),
+                      ),
+                    );
+                    return;
+                  }
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       backgroundColor: SnowColors.error,
@@ -738,6 +688,129 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return 'offline';
     }
     return 'network';
+  }
+
+  /// Remove what is left of a group protocol v2 group this account is no
+  /// longer in: this device's copy only.
+  void _confirmRemoveGroup() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: SnowColors.surface,
+        title: const Text(
+          'Remove chat',
+          style: TextStyle(color: SnowColors.textPrimary),
+        ),
+        content: const Text(
+          'The messages and media of this group will be removed from this '
+          'device.',
+          style: TextStyle(color: SnowColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: SnowColors.textSecondary),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Future.microtask(() async {
+                if (!mounted) return;
+                await ref
+                    .read(chatProvider(widget.conversationId).notifier)
+                    .deleteChat();
+                if (!mounted) return;
+                ref
+                    .read(conversationListProvider.notifier)
+                    .removeConversation(widget.conversationId);
+                if (mounted) context.pop();
+              });
+            },
+            child: const Text(
+              'Remove',
+              style: TextStyle(color: SnowColors.error),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// What a group protocol v2 group's standing means for this chat, as a
+  /// strip under the app bar; null when there is nothing to say.
+  Widget? _gv2StandingBanner(Gv2Standing? standing) {
+    final (IconData icon, Color color, String text)? what = switch (standing) {
+      Gv2Standing.awaitingConfirm => (
+          Icons.hourglass_top_rounded,
+          SnowColors.textSecondary,
+          'Waiting for a member to confirm this device. What you write is '
+              'sent once that happens.',
+        ),
+      Gv2Standing.withheld => (
+          Icons.sync_problem_rounded,
+          Colors.amber.shade800,
+          'The server is holding back changes of this group. What you write '
+              'is sent once this device has them.',
+        ),
+      Gv2Standing.serverKeysDiffer => (
+          Icons.key_off_rounded,
+          SnowColors.error,
+          'The server is not using the keys this app trusts. Groups are '
+              'paused; what you write is sent once that is fixed.',
+        ),
+      Gv2Standing.updateRequired => (
+          Icons.system_update_rounded,
+          Colors.amber.shade800,
+          'This group uses something this version does not know. Update '
+              'SnowChat to go on.',
+        ),
+      Gv2Standing.frozen => (
+          Icons.gpp_bad_rounded,
+          SnowColors.error,
+          'The server showed two different histories of this group. It is '
+              'read-only now. Leave the group to remove it.',
+        ),
+      Gv2Standing.gone => (
+          Icons.logout_rounded,
+          SnowColors.textSecondary,
+          'You are no longer in this group.',
+        ),
+      Gv2Standing.notReady => (
+          Icons.cloud_off_rounded,
+          SnowColors.textSecondary,
+          'Groups are not running on this device yet. They start once it '
+              'can reach the server.',
+        ),
+      Gv2Standing.invited => (
+          Icons.mail_outline_rounded,
+          SnowColors.textSecondary,
+          'You are invited to this group. Accept the invite in Chats to '
+              'write here.',
+        ),
+      _ => null,
+    };
+    if (what == null) return null;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      color: what.$2.withValues(alpha: 0.12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(what.$1, size: 16, color: what.$2),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              what.$3,
+              style: TextStyle(color: what.$2, fontSize: 12, height: 1.3),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Delete Chat — 1:1 only.
@@ -836,17 +909,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           TextButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              Future.microtask(() async {
-                if (!mounted) return;
-                await ref
-                    .read(chatProvider(widget.conversationId).notifier)
-                    .deleteGroup();
-                if (!mounted) return;
-                ref
-                    .read(conversationListProvider.notifier)
-                    .removeConversation(widget.conversationId);
-                if (mounted) context.pop();
-              });
+              _runGroupChange((chat) => chat.deleteGroup());
             },
             child: const Text(
               'Delete',
@@ -890,8 +953,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               Navigator.of(ctx).pop();
               Future.microtask(() async {
                 if (!mounted) return;
-                // 1. Block on the server (idempotent)
-                ref.read(contactProvider.notifier).blockContact(snowchatId);
+                // 1. Block: on this device at once (what the account sends
+                //    is dropped from now on), the server next (BlockList).
+                unawaited(
+                  ref.read(contactProvider.notifier).blockContact(snowchatId),
+                );
                 // 2. Local chat cleanup
                 await ref
                     .read(chatProvider(widget.conversationId).notifier)
@@ -923,21 +989,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (mounted) {
       notifier.setDisappearingTimer(selected);
     }
-  }
-
-  /// Resolve channel room title: default room → channel name, system → "System", else room name.
-  String _resolveChannelRoomTitle(WidgetRef ref, String roomId) {
-    final channels = ref.watch(myChannelsProvider).valueOrNull ?? [];
-    for (final channel in channels) {
-      for (final room in channel.rooms) {
-        if (room.id == roomId) {
-          if (room.isDefaultRoom) return channel.name ?? 'Community';
-          if (room.isSystemRoom) return 'System';
-          return room.name;
-        }
-      }
-    }
-    return 'Chat';
   }
 
   /// Resolve a snow ID into a display name for the reply-quote bubble.
@@ -989,26 +1040,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatProvider(widget.conversationId));
     debugPrint('[ChatScreen:build] conversationId=${widget.conversationId} messages=${chatState.messages.length}');
+    // Keep this room's translation cache alive for as long as the screen is
+    // open — independent of how many bubbles watch it. Without a screen-level
+    // subscription an empty room had no listener, the autoDispose cache was
+    // disposed on the next frame and the first incoming translation was lost.
+    ref.listen(translationCacheProvider(widget.conversationId), (_, __) {});
     final conversations = ref.watch(conversationListProvider);
     final conversation = conversations
         .where((c) => c.id == widget.conversationId)
         .firstOrNull;
 
-    final isChannelRoom = (conversation?.channelId != null) ||
-        (conversation == null &&
-            _resolveChannelRoomTitle(ref, widget.conversationId) != 'Chat');
-    final isGroupChat =
-        conversation?.type == ConversationType.group || isChannelRoom;
+    // A group protocol v2 group is known by its id (its row may not be in
+    // the list yet). Its standing — what this account may do there — comes
+    // from this device's copy of the group.
+    final isGv2 = gv2IsGroupId(widget.conversationId);
+    final gv2Async =
+        isGv2 ? ref.watch(gv2GroupViewProvider(widget.conversationId)) : null;
+    final gv2View = gv2Async?.valueOrNull;
+    final gv2OnDevice = ref.watch(gv2GroupsOnDeviceProvider);
+    // A group this device holds no row of — on a device that can read its
+    // groups — is one this account is not in. A device that cannot read
+    // them (or a read that failed) never says so: that would offer to
+    // remove the chat of a group the user is still in.
+    final Gv2Standing? gv2Standing;
+    if (!isGv2 || gv2Async == null || gv2Async.isLoading) {
+      gv2Standing = null;
+    } else if (gv2Async.hasError || !gv2OnDevice) {
+      gv2Standing = Gv2Standing.notReady;
+    } else {
+      gv2Standing = gv2View?.standing ?? Gv2Standing.gone;
+    }
+    final gv2Gone = gv2Standing == Gv2Standing.gone;
+    // What the group takes (Gv2GroupView.canWrite: a member, groups running,
+    // not frozen). Invited again after a removal, or still being created:
+    // nothing yet — a send was refused only after the list showed it.
+    final gv2CanWrite = gv2View?.canWrite ?? false;
+    // The only kind of group.
+    final isGroup = isGv2;
 
-    // Resolve title: channel rooms use channel/room name, not encrypted group title.
     String title;
-    if (isChannelRoom) {
-      title = _resolveChannelRoomTitle(ref, widget.conversationId);
-      if (title == 'Chat') title = conversation?.title ?? 'Group';
-    } else if (conversation != null) {
-      title = isGroupChat
+    if (conversation != null) {
+      title = isGroup
           ? (conversation.title ?? 'Group')
           : (conversation.displayName(_myId) ?? 'Chat');
+    } else if (isGv2) {
+      title = gv2View?.title ?? 'Group';
     } else {
       // New conversation not yet in list — resolve recipient name from provider
       final recipientId = ref.watch(chatProvider(widget.conversationId).notifier).recipientId;
@@ -1016,10 +1092,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ? '${recipientId.substring(0, recipientId.length.clamp(0, 10))}...'
           : 'Chat';
     }
-    // A group/channel room whose real name isn't available yet (GMK not
-    // delivered, or channel not loaded) would show a bare "Group"/"Chat". Fall
-    // back to the roster member names instead — the roster is always local.
-    if (isGroupChat && (title == 'Group' || title == 'Chat' || title.isEmpty)) {
+    // A group whose name isn't known on this device yet would show a bare
+    // "Group". Fall back to the member names instead — they are local.
+    if (isGroup && (title == 'Group' || title == 'Chat' || title.isEmpty)) {
       final rosterName =
           groupDisplayNameFallback(ref, widget.conversationId, mySnowId: _myId);
       if (rosterName != null && rosterName.isNotEmpty) title = rosterName;
@@ -1035,25 +1110,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         isDirect ? presenceService.isOnline(otherSnowId) : false;
 
     // Owner check: needed to show "Delete Group" menu item (owner only)
-    final groupId = conversation?.groupId ?? widget.conversationId;
-    final isCreator = isGroupChat
+    final groupId = widget.conversationId;
+    final isCreator = isGroup
         ? ref.watch(groupDetailProvider(groupId)).members.any(
             (m) => m.snowchatId == _myId && m.userId == ref.watch(groupDetailProvider(groupId)).creatorId,
           )
         : false;
-    // Vuln 3 (Stage 3): Clear Chat — admin/owner only on the server side.
-    // Mirror that on the client so a regular member's button does the
-    // local-only purge instead of hitting the now-403 endpoint.
-    // Owner = creator (role==='OWNER'); Admin = isAdmin true. Server gate is
-    // `isAdmin || role==='OWNER' || role==='ADMIN'`. Client GroupMember
-    // exposes only isAdmin, so reuse the pre-computed isCreator (=OWNER) to
-    // cover the case where an owner has isAdmin=false.
-    final isGroupAdminOrOwner = isGroupChat
-        ? (isCreator ||
-            ref.watch(groupDetailProvider(groupId)).members.any(
-                  (m) => m.snowchatId == _myId && m.isAdmin,
-                ))
+    // Vuln 3 (Stage 3): Clear Chat for everyone — the members honour it from
+    // an owner or admin only, so a regular member's button does the
+    // local-only purge. GroupMember exposes only isAdmin, so reuse the
+    // pre-computed isCreator (=OWNER). Only while this account can still
+    // write in the group.
+    final isGroupAdminOrOwner = isGroup
+        ? (gv2Standing != null && gv2CanWrite) &&
+            (isCreator ||
+                ref.watch(groupDetailProvider(groupId)).members.any(
+                      (m) => m.snowchatId == _myId && m.isAdmin,
+                    ))
         : false;
+    // Ending a group needs the owner of a group that can be changed.
+    final canDeleteGroup = gv2View?.canEnd ?? false;
     final lastSeenText =
         isDirect && !isOnline ? presenceService.formatLastSeen(otherSnowId) : null;
 
@@ -1069,14 +1145,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         titleSpacing: 0,
         title: GestureDetector(
-          onTap: isGroupChat
+          onTap: isGroup
               ? () => context.push('/group-info/${conversation?.groupId ?? widget.conversationId}')
               : null,
           behavior: HitTestBehavior.opaque,
           child: Row(
             children: [
               SnowAvatar(
-                snowId: isGroupChat ? (conversation?.groupId ?? widget.conversationId) : otherSnowId,
+                snowId: isGroup ? (conversation?.groupId ?? widget.conversationId) : otherSnowId,
                 size: 34,
                 displayName: title,
               ),
@@ -1092,7 +1168,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    if (isGroupChat)
+                    if (isGroup)
                       const Text(
                         'Group chat',
                         style: TextStyle(
@@ -1102,11 +1178,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ),
                       )
                     else if (chatState.isTyping)
-                      Text(
-                        chatState.typingUserName != null
-                            ? '${chatState.typingUserName} is typing...'
-                            : 'typing...',
-                        style: const TextStyle(
+                      const Text(
+                        'typing...',
+                        style: TextStyle(
                           fontSize: 12,
                           color: SnowColors.primary,
                           fontWeight: FontWeight.w400,
@@ -1151,7 +1225,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // Translation icon + native-character badge (i18n-safe, in place of a flag)
           _buildTranslateIcon(conversation),
           // Phase 8.2 VoIP: 1:1 voice call (group deferred to V3 — §19.4)
-          if (!isGroupChat && otherSnowId.isNotEmpty)
+          if (!isGroup && otherSnowId.isNotEmpty)
             IconButton(
               icon: const Icon(
                 Icons.call_rounded,
@@ -1240,11 +1314,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 case 'clear':
                   // Vuln 3 (Stage 3): regular group members can only clear locally
                   _confirmClearChat(
-                    localOnly: isGroupChat && !isGroupAdminOrOwner,
+                    localOnly: isGroup && !isGroupAdminOrOwner,
                   );
                   break;
                 case 'leave':
-                  _confirmLeaveGroup(isCreator: isCreator);
+                  unawaited(_confirmLeaveGroup());
                   break;
                 case 'delete_group':
                   _confirmDeleteGroup();
@@ -1252,13 +1326,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 case 'delete':
                   _confirmDeleteChat();
                   break;
+                case 'remove_group_chat':
+                  _confirmRemoveGroup();
+                  break;
               }
             },
             itemBuilder: (_) {
               return <PopupMenuEntry<String>>[
               // Auto-translate toggle
               // Group info (group only)
-              if (isGroupChat)
+              if (isGroup)
                 const PopupMenuItem(
                   value: 'group_info',
                   child: Row(
@@ -1299,13 +1376,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ],
                   ),
                 ),
-              // Clear chat (all except channel rooms)
+              // Clear chat
               // Vuln 3 (Stage 3):
-              //   - 1:1: 'Clear chat' (server cooperation N/A on this path — local clear)
-              //   - Group admin/owner: 'Clear chat for everyone' (server fan-out)
-              //   - Group regular member: 'Clear locally only' (no server call)
-              if (!isChannelRoom)
-                PopupMenuItem(
+              //   - 1:1: 'Clear chat'
+              //   - Group admin/owner: 'Clear chat for everyone' (told to the members)
+              //   - Group regular member: 'Clear locally only' (nothing sent)
+              PopupMenuItem(
                   value: 'clear',
                   child: Row(
                     children: [
@@ -1313,7 +1389,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           color: SnowColors.textSecondary, size: 20),
                       const SizedBox(width: 12),
                       Text(
-                        isGroupChat
+                        isGroup
                             ? (isGroupAdminOrOwner
                                 ? 'Clear chat for everyone'
                                 : 'Clear locally only')
@@ -1323,8 +1399,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ],
                   ),
                 ),
-              // Leave group (group only, NOT channel rooms)
-              if (isGroupChat && !isChannelRoom)
+              // Leave group (a member, with groups running on this device)
+              if (isGroup && (gv2View?.canLeave ?? false))
                 const PopupMenuItem(
                   value: 'leave',
                   child: Row(
@@ -1337,8 +1413,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ],
                   ),
                 ),
-              // Delete group (owner only, NOT channel rooms)
-              if (isGroupChat && !isChannelRoom && isCreator)
+              // Delete group (owner only)
+              if (isGroup && canDeleteGroup)
                 const PopupMenuItem(
                   value: 'delete_group',
                   child: Row(
@@ -1351,7 +1427,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ],
                   ),
                 ),
-              // Delete chat (1:1 only, NOT channel rooms)
+              // Remove what is left of a v2 group this account is not in
+              if (gv2Gone)
+                const PopupMenuItem(
+                  value: 'remove_group_chat',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_outline_rounded,
+                          color: SnowColors.error, size: 20),
+                      SizedBox(width: 12),
+                      Text('Remove chat',
+                          style: TextStyle(color: SnowColors.error)),
+                    ],
+                  ),
+                ),
+              // Delete chat (1:1 only)
               if (isDirect)
                 const PopupMenuItem(
                   value: 'delete',
@@ -1375,6 +1465,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           const SnowflakeBackground(),
           Column(
         children: [
+          // Group protocol v2: why this group cannot be used as usual.
+          ?_gv2StandingBanner(gv2Standing),
           // P0-2: Safety Number change banner (1:1 only).
           // Visible iff the IdentityVerifications row reports a recent
           // mismatch and the user hasn't dismissed it for this screen.
@@ -1393,11 +1485,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       verified) {
                     return const SizedBox.shrink();
                   }
-                  final wasPrev =
-                      (row.wasPreviouslyVerified as bool?) ?? false;
                   return IdentityChangeBanner(
                     peerDisplayName: title,
-                    wasPreviouslyVerified: wasPrev,
                     onVerify: () {
                       final encodedName = Uri.encodeQueryComponent(title);
                       context.push(
@@ -1462,7 +1551,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
                           // Group chat: show sender name above other people's messages
                           bool showSenderName = false;
-                          if (isGroupChat && !isMine && message.type != MessageType.system) {
+                          if (isGroup && !isMine && message.type != MessageType.system) {
                             showSenderName = true;
                             // Hide if consecutive text from same sender
                             // (always show for file/image — visually distinct)
@@ -1479,7 +1568,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           // Determine sender role for bubble color
                           final senderRole = _getSenderRole(
                             ref, widget.conversationId,
-                            message.senderSnowchatId, isGroupChat, isMine,
+                            message.senderSnowchatId, isGroup, isMine,
                           );
 
                           return Column(
@@ -1540,6 +1629,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                         isTranslating: entry?.isLoading ?? false,
                                         replyToSenderDisplayName:
                                             replyToDisplay,
+                                        // A failed 1:1 message of this
+                                        // user: the 1:1 outbox sends it
+                                        // again (v2 groups have their own).
+                                        onRetry: isMine &&
+                                                message.status ==
+                                                    MessageStatus.failed &&
+                                                !isGroup
+                                            ? () => ref
+                                                .read(chatProvider(widget
+                                                        .conversationId)
+                                                    .notifier)
+                                                .retryFailedMessage(message.id)
+                                            : null,
                                       );
                                     }),
                                     if (message.expiresAt != null)
@@ -1575,7 +1677,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
 
-          // Input bar
+          // Input bar — not in a v2 group nothing can be written in (this
+          // account is no longer in it or only invited, it is frozen or
+          // still being created, or groups are not running here yet).
+          if (isGv2 && gv2Standing != null && !gv2CanWrite)
+            SafeArea(
+              top: false,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: SnowSizes.md,
+                  vertical: 14,
+                ),
+                color: SnowColors.surface,
+                child: Text(
+                  switch (gv2Standing) {
+                    Gv2Standing.gone =>
+                      'You cannot send messages to this group.',
+                    Gv2Standing.notReady =>
+                      'Groups are not running on this device yet.',
+                    Gv2Standing.invited =>
+                      'Accept the invite to write in this group.',
+                    Gv2Standing.creating =>
+                      'This group is still being created.',
+                    _ => 'This group is read-only.',
+                  },
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: SnowColors.textTertiary,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            )
+          else
           MessageInput(
             onSend: _sendMessage,
             onAttachment: _showAttachmentSheet,
@@ -1875,9 +2010,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Get sender role from group detail (watched for reactivity).
   static SenderRole _getSenderRole(
     WidgetRef ref, String roomId, String senderSnowchatId,
-    bool isGroupChat, bool isMine,
+    bool isGroup, bool isMine,
   ) {
-    if (!isGroupChat || isMine) return SenderRole.none;
+    if (!isGroup || isMine) return SenderRole.none;
     final gd = ref.watch(groupDetailProvider(roomId));
     if (gd.creatorId.isEmpty || gd.members.isEmpty) return SenderRole.none;
 

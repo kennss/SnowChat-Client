@@ -1,0 +1,5 @@
+# A pure Dart package: it does not inherit the Flutter app's lint set.
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings). Earlier 2026-04-26 (header English translation; remove discover dependency -> independent fetch, pop after apply)
+/// @lastUpdated 2026-11-20 (the community's id is named channelId, not groupId). Earlier 2026-08-05 ("Channel"→"Community" UI strings). Earlier 2026-04-26 (header English translation; remove discover dependency -> independent fetch, pop after apply)
 ///
 /// @functions
 ///  - _channelInfoProvider: independently fetch channel detail
@@ -45,8 +45,8 @@ final _channelInfoProvider =
 });
 
 class ChannelInfoScreen extends ConsumerStatefulWidget {
-  final String groupId;
-  const ChannelInfoScreen({super.key, required this.groupId});
+  final String channelId;
+  const ChannelInfoScreen({super.key, required this.channelId});
 
   @override
   ConsumerState<ChannelInfoScreen> createState() => _ChannelInfoScreenState();
@@ -59,7 +59,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
   Future<void> _joinOpen() async {
     setState(() => _isJoining = true);
     final success =
-        await ref.read(channelActionsProvider).joinPublicChannel(widget.groupId);
+        await ref.read(channelActionsProvider).joinPublicChannel(widget.channelId);
     setState(() => _isJoining = false);
     if (success && mounted) {
       ref.invalidate(myChannelsProvider);
@@ -73,7 +73,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
   Future<void> _apply() async {
     setState(() => _isJoining = true);
     final status =
-        await ref.read(channelActionsProvider).applyToChannel(widget.groupId);
+        await ref.read(channelActionsProvider).applyToChannel(widget.channelId);
     ref.invalidate(channelDiscoverProvider(null));
     setState(() => _isJoining = false);
     if (mounted && (status == 'pending' || status == 'already_pending')) {
@@ -101,7 +101,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final channelAsync = ref.watch(_channelInfoProvider(widget.groupId));
+    final channelAsync = ref.watch(_channelInfoProvider(widget.channelId));
 
     return Scaffold(
       backgroundColor: SnowColors.background,
@@ -231,7 +231,7 @@ class _ChannelInfoScreenState extends ConsumerState<ChannelInfoScreen> {
   Widget _buildActionButton(JoinPolicy policy) {
     // Check if already a member
     final myChannels = ref.watch(myChannelsProvider).valueOrNull ?? [];
-    final alreadyJoined = myChannels.any((c) => c.id == widget.groupId);
+    final alreadyJoined = myChannels.any((c) => c.id == widget.channelId);
 
     if (alreadyJoined) {
       return Container(

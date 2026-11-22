@@ -6,7 +6,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-05-06 (missed-call countdown anchor switched from
+/// @lastUpdated 2026-11-21 (no safety_number_changed bubble — nothing writes that event since the legacy TOFU policy is gone). Earlier 2026-11-20 (group protocol v2: a line that carries a group event is worded here
+///              with the names the user knows the accounts by — _Gv2EventLine; a v2 message
+///              whose key has not come says that it may still arrive).
+///              Earlier 2026-05-06 (missed-call countdown anchor switched from
 ///              metadata['insertedAtMs'] to ChatScreen's _screenEnteredAt
 ///              when provided. Tester report 2026-05-06 — "user enters chat
 ///              several minutes after a missed call and barely sees the
@@ -20,7 +23,7 @@
 /// @functions
 ///  - SystemMessageBubble: StatelessWidget rendering WhatsApp-style system messages
 ///  - _buildDecryptionFailedBubble(): decryption-failed placeholder UI (lock icon + guidance copy)
-///  - _buildIconBubble(): icon + label system message (safety_number_changed, etc.)
+///  - _Gv2EventLine: a change of a group protocol v2 group, worded with local names
 ///  - _MissedCallBubble: missed call — 5-min countdown + red call_missed icon (StatefulWidget)
 ///  - _TransferCompletedBubble: transfer completed — direction (sent/received) + amount + token + 7-char tx hash (permanent, StatelessWidget)
 ///  - _formatTransferAmount(): metadata's amount (BigInt string) + token + decimals -> display string
@@ -29,7 +32,12 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../app/providers.dart' show currentSnowIdProvider;
+import '../../../core/group_v2/gv2_events.dart' show gv2EventText;
+import '../../group/providers/group_detail_provider.dart';
+import '../../group/providers/gv2_group_provider.dart';
 import '../../../shared/constants/colors.dart';
 import '../../wallet/rpc/rpc_config.dart';
 import '../../wallet/utils/amount_converter.dart';
@@ -67,18 +75,8 @@ class SystemMessageBubble extends StatelessWidget {
       return _buildDecryptionFailedBubble(context);
     }
 
-    // P0-2: eventType-aware system bubble (safety_number_changed → shield).
     final metadata = _decodeMetadata();
     final eventType = metadata['eventType'] as String?;
-    if (eventType == 'safety_number_changed') {
-      final wasPrev =
-          (metadata['wasPreviouslyVerified'] as bool?) ?? false;
-      return _buildIconBubble(
-        context,
-        icon: Icons.shield_outlined,
-        accent: wasPrev ? SnowColors.error : Colors.amber.shade800,
-      );
-    }
     // V1.0.1: missed-call system message — dynamic countdown display.
     // Per call/CLAUDE.md §2.2 restrictive notification policy (forced 5-min TTL).
     // Phase I follow-up (2026-04-21): caller-side busy/offline result messages
@@ -97,6 +95,17 @@ class SystemMessageBubble extends StatelessWidget {
       return _TransferCompletedBubble(metadata: metadata);
     }
 
+    // Group protocol v2: a change of the group, worded here with the names
+    // this user knows the accounts by (the stored text names them by
+    // nickname or id).
+    if (metadata['gv2Event'] is String) {
+      return _Gv2EventLine(message: message, metadata: metadata);
+    }
+
+    return _plainLine(message.plaintext);
+  }
+
+  static Widget _plainLine(String text) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 24),
       child: Center(
@@ -107,50 +116,12 @@ class SystemMessageBubble extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
-            message.plaintext,
+            text,
             style: const TextStyle(
               color: SnowColors.textTertiary,
               fontSize: 12,
             ),
             textAlign: TextAlign.center,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildIconBubble(
-    BuildContext context, {
-    required IconData icon,
-    required Color accent,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 24),
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: accent.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: accent.withValues(alpha: 0.5)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 16, color: accent),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  message.plaintext,
-                  style: TextStyle(
-                    color: accent,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
           ),
         ),
       ),
@@ -186,7 +157,12 @@ class SystemMessageBubble extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  'Waiting for this message. This may take a moment.',
+                  // A v2 group message whose key has not come: only its
+                  // sender's device can give the key.
+                  _decodeMetadata()['gv2Waiting'] == true
+                      ? 'This message cannot be read yet. It appears once '
+                          'its sender is back online.'
+                      : 'Waiting for this message. This may take a moment.',
                   style: TextStyle(
                     color: SnowColors.textTertiary.withValues(alpha: 0.9),
                     fontSize: 13,
@@ -493,4 +469,42 @@ String _explorerUrlForNetwork(
       ? SolanaNetwork.mainnet
       : SolanaNetwork.devnet;
   return network.explorerTxUrl(txHash);
+}
+
+/// The system line of a change in a group protocol v2 group. The row holds
+/// the event itself ({gv2Event, by, about, title}); the accounts are named
+/// here in the order of design §5.7 — "You", a contact's or friend's name,
+/// the nickname looked up for the member, a short form of the id. A name is
+/// for reading only: who did what was decided by the group's change log.
+class _Gv2EventLine extends ConsumerWidget {
+  final Message message;
+  final Map<String, dynamic> metadata;
+
+  const _Gv2EventLine({required this.message, required this.metadata});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final me = ref.watch(currentSnowIdProvider);
+    final known = ref.watch(gv2KnownNamesProvider);
+    final members = ref.watch(groupDetailProvider(message.conversationId)).members;
+
+    String name(Object? snowId) {
+      if (snowId is! String || snowId.isEmpty) return 'Someone';
+      if (snowId == me) return 'You';
+      String? nickname;
+      for (final m in members) {
+        if (m.snowchatId == snowId) nickname = m.displayName;
+      }
+      return gv2DisplayName(snowId, known: known, nickname: nickname);
+    }
+
+    final title = metadata['title'];
+    final text = gv2EventText(
+      event: metadata['gv2Event'] as String,
+      by: name(metadata['by']),
+      about: name(metadata['about']),
+      title: title is String ? title : null,
+    );
+    return SystemMessageBubble._plainLine(text ?? message.plaintext);
+  }
 }

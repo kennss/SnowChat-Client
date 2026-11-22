@@ -4,12 +4,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-08-05 (getLatestDisplayableMessage(): latest non-system/non-deleted row per conversation, ordered by dateReceived — backfills the Chats-list preview when the server returns no 1:1 snippet and the outgoing send path never wrote one). Earlier 2026-07-15 (sealed read receipt: markOutgoingAsRead() batch-flips own sent/delivered rows to 'read' — guarded by senderSnowchatId==myId so peer-echoed foreign ids are no-ops). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-18 P0-2 Safety Number: added insertLocalSystemMessage helper)
+/// @lastUpdated 2026-11-21 (schema v17: hasMessageFromPeer() — the receiver's duplicate guard;
+///              updateMetadata() — an uploaded attachment's file id and key; the local→server id
+///              swap carries peerClientId). Earlier 2026-11-21 (countWaitingPlaces(): the "cannot be read" places of a v2 group). Earlier 2026-11-21 (comment: no safety_number_changed bubble). Earlier 2026-11-20 (updatePlaceholder() fills only a placeholder of the sender of the retry response). Earlier 2026-11-13 (messageIdsSentBefore() / deleteMessagesSentBefore(): a history cleared up to a time — group protocol v2; freeDateSent(): two messages of one sender at the same millisecond). Earlier 2026-08-05 (getLatestDisplayableMessage(): latest non-system/non-deleted row per conversation, ordered by dateReceived — backfills the Chats-list preview when the server returns no 1:1 snippet and the outgoing send path never wrote one). Earlier 2026-07-15 (sealed read receipt: markOutgoingAsRead() batch-flips own sent/delivered rows to 'read' — guarded by senderSnowchatId==myId so peer-echoed foreign ids are no-ops). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-18 P0-2 Safety Number: added insertLocalSystemMessage helper)
 ///
 /// @functions
 ///  - MessageDao: messages DAO class
 ///  - watchMessages(): per-conversation reactive message stream
 ///  - insertIncomingMessage(): incoming message INSERT + conversation UPDATE transaction
+///  - countWaitingPlaces(): the "cannot be read" places of a v2 group
 ///  - insertOutgoingMessage(): outgoing message INSERT + conversation UPDATE transaction
 ///  - upsertMessage(): insert message or update its state (placeholder replacement)
 ///  - insertLocalSystemMessage(): helper to insert a local system message (e.g. key change)
@@ -17,6 +20,8 @@
 ///  - markAllRead(): mark all as read
 ///  - getUnreadCount(): query unread count
 ///  - updateOutgoingStatus(): update outgoing status (sending -> sent -> delivered -> read)
+///  - hasMessageFromPeer(): a sender's message with this own id is stored already (v17)
+///  - updateMetadata(): replace a message's metadata JSON
 ///  - markRemoteDeleted(): handle remote deletion
 ///  - getUnnotifiedMessages(): query messages whose notification has not been sent
 ///  - markNotified(): mark notification as sent
@@ -27,6 +32,8 @@
 ///  - updatePlaceholder(): replace decryption-failure placeholder with decrypted plaintext (Phase 10 P0-F)
 ///  - deleteMessage(): delete message
 ///  - deleteConversationMessages(): delete all messages for a conversation
+///  - messageIdsSentBefore() / deleteMessagesSentBefore(): the messages of a conversation sent before a time
+///  - freeDateSent(): a send time no other message of that sender in that conversation carries
 
 import 'dart:convert';
 
@@ -167,7 +174,7 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
   /// transcript without a server round-trip. The row is marked as read
   /// (no unread badge bump) and notified=true (no push). [eventType] is
   /// embedded into the JSON metadata so [SystemMessageBubble] can pick a
-  /// custom icon (e.g. shield for safety_number_changed).
+  /// custom presentation (e.g. the missed-call countdown).
   ///
   /// Returns the rowid of the inserted row.
   ///
@@ -222,17 +229,22 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
   /// When the original sender responds to a retry request, the receiver calls
   /// this to replace the placeholder content with the actual message text.
   /// Only updates rows where outgoingStatus == 'decryption_failed' to prevent
-  /// accidentally overwriting a real message.
+  /// accidentally overwriting a real message, and only a placeholder of
+  /// [fromSender] — the authenticated sender of the retry response. Without
+  /// that, any peer could name another conversation's placeholder and have
+  /// its own text shown there under the original sender.
   ///
   /// Returns true if a placeholder was found and updated, false otherwise.
   Future<bool> updatePlaceholder(
     String messageId,
     String plaintext,
-    String messageType,
-  ) async {
+    String messageType, {
+    required String fromSender,
+  }) async {
     final count = await (update(localMessages)
           ..where((m) =>
               m.id.equals(messageId) &
+              m.senderSnowchatId.equals(fromSender) &
               m.outgoingStatus.equals('decryption_failed')))
         .write(LocalMessagesCompanion(
       plaintext: Value(plaintext),
@@ -332,6 +344,22 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
 
   /// Unread message count for a specific conversation.
   /// Uses the partial index (idx_messages_unread_per_conversation).
+  /// How many "cannot be read" places of a v2 group [conversationId] holds
+  /// (rows Gv2AppMessageSink.waiting wrote) — counted up to [atMost].
+  Future<int> countWaitingPlaces(String conversationId, {required int atMost}) async {
+    final rows = await (select(localMessages)
+          ..where(
+            (m) =>
+                m.conversationId.equals(conversationId) &
+                m.type.equals('system') &
+                m.senderSnowchatId.equals('') &
+                m.outgoingStatus.equals('decryption_failed'),
+          )
+          ..limit(atMost))
+        .get();
+    return rows.length;
+  }
+
   Future<int> getUnreadCount(String conversationId) async {
     return _countUnread(conversationId);
   }
@@ -395,6 +423,7 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
               replyToPreview: Value(existing.replyToPreview),
               replyToSenderId: Value(existing.replyToSenderId),
               senderDisplayName: Value(existing.senderDisplayName),
+              peerClientId: Value(existing.peerClientId),
             ),
           );
         });
@@ -523,6 +552,25 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
   }
 
   /// Get a single message by ID (for deduplication check).
+  /// Whether [senderId] already has a stored message whose own id was
+  /// [peerClientId] (schema v17) — the same message sent again by the
+  /// sender's outbox after a lost ack.
+  Future<bool> hasMessageFromPeer(String senderId, String peerClientId) async {
+    final row = await (select(localMessages)
+          ..where((m) =>
+              m.senderSnowchatId.equals(senderId) &
+              m.peerClientId.equals(peerClientId))
+          ..limit(1))
+        .getSingleOrNull();
+    return row != null;
+  }
+
+  /// Replace the metadata (JSON) of [messageId] — an outgoing attachment
+  /// message gets its file id and key once the upload is done.
+  Future<void> updateMetadata(String messageId, String metadataJson) =>
+      (update(localMessages)..where((m) => m.id.equals(messageId)))
+          .write(LocalMessagesCompanion(metadata: Value(metadataJson)));
+
   Future<LocalMessage?> getMessageById(String messageId) {
     return (select(localMessages)
           ..where((m) => m.id.equals(messageId)))
@@ -568,6 +616,56 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
   Future<int> deleteConversationMessages(String conversationId) {
     return (delete(localMessages)
           ..where((m) => m.conversationId.equals(conversationId)))
+        .go();
+  }
+
+  /// The first time at or after [dateSent] that no message of [sender] in
+  /// [conversationId] carries. The table allows one message per (sender,
+  /// time, conversation); a message whose time is already taken by ANOTHER
+  /// message of the same sender (two written in one millisecond, or two
+  /// whose times were clamped to the same moment) is stored a millisecond
+  /// later instead of being refused.
+  Future<int> freeDateSent({
+    required String conversationId,
+    required String sender,
+    required int dateSent,
+    required String messageId,
+  }) async {
+    var at = dateSent;
+    while (true) {
+      final taken = await (select(localMessages)
+            ..where((m) =>
+                m.conversationId.equals(conversationId) &
+                m.senderSnowchatId.equals(sender) &
+                m.dateSent.equals(at) &
+                m.id.equals(messageId).not())
+            ..limit(1))
+          .getSingleOrNull();
+      if (taken == null) return at;
+      at++;
+    }
+  }
+
+  /// Ids of the messages of a conversation sent before [beforeMs] (Unix
+  /// milliseconds, by dateSent). For a history cleared up to a time (group
+  /// protocol v2): the caller removes their attachments, then the rows with
+  /// [deleteMessagesSentBefore].
+  Future<List<String>> messageIdsSentBefore(
+      String conversationId, int beforeMs) async {
+    final rows = await (selectOnly(localMessages)
+          ..addColumns([localMessages.id])
+          ..where(localMessages.conversationId.equals(conversationId) &
+              localMessages.dateSent.isSmallerThanValue(beforeMs)))
+        .get();
+    return [for (final r in rows) r.read(localMessages.id)!];
+  }
+
+  /// Delete the messages of a conversation sent before [beforeMs].
+  Future<int> deleteMessagesSentBefore(String conversationId, int beforeMs) {
+    return (delete(localMessages)
+          ..where((m) =>
+              m.conversationId.equals(conversationId) &
+              m.dateSent.isSmallerThanValue(beforeMs)))
         .go();
   }
 

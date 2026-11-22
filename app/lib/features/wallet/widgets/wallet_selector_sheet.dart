@@ -10,7 +10,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-25
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the marketplace active-listing interlock from wallet removal). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - showWalletSelectorSheet(context): show the WalletSelectorSheet
@@ -26,13 +26,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/toast.dart';
-import '../../marketplace/providers/marketplace_provider.dart'
-    show fetchActiveListingMintsForOwner;
 import '../../nft/nft_provider.dart' show nftServiceProvider;
 import '../models/wallet_account_model.dart';
-import '../models/wallet_index_exceptions.dart';
 import '../providers/wallet_list_provider.dart';
-import '../rpc/rpc_client_provider.dart';
 import '../wallet_provider.dart';
 import 'add_wallet_sheet.dart';
 import 'wallet_actions_dialogs.dart';
@@ -359,11 +355,9 @@ class _WalletRow extends ConsumerWidget {
         await showHideDerivedDialog(context, ref, entry);
         if (context.mounted) Navigator.of(context).pop();
       case _RowAction.remove:
-        // Phase 5-5 + 6-A: listing interlock + NFT count prefetch.
-        // listing is a hard block (preCheck throws); NFT count drives the
-        // dialog branch (derived → require type-DELETE, imported → show NFT
-        // count). NFT lookup failure is fail-open (the listing check is
-        // more critical).
+        // Phase 6-A: NFT count prefetch. NFT count drives the dialog branch
+        // (derived → require type-DELETE, imported → show NFT count). NFT
+        // lookup failure is fail-open.
         int nftCount = 0;
         try {
           nftCount = await ref
@@ -380,26 +374,6 @@ class _WalletRow extends ConsumerWidget {
           ref,
           entry,
           nftCount: nftCount,
-          preCheck: (e) async {
-            final rpc = ref.read(rpcClientProvider);
-            List<String> mints;
-            try {
-              mints = await fetchActiveListingMintsForOwner(
-                rpc: rpc,
-                ownerAddress: e.address,
-              );
-            } catch (err) {
-              throw const ActiveListingsBlockingException(
-                'cannot verify marketplace listings (network error)',
-              );
-            }
-            if (mints.isNotEmpty) {
-              throw ActiveListingsBlockingException(
-                '${mints.length} active marketplace listing(s) on this '
-                'wallet',
-              );
-            }
-          },
         );
         if (context.mounted) Navigator.of(context).pop();
     }

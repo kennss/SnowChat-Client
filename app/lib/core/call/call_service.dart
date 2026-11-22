@@ -6,7 +6,17 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-11 (_emit is a no-op once dispose() has closed the
+/// @lastUpdated 2026-11-22 (SC-10: every SDP sent — offer, answer, ICE-restart offer — carries
+///              fpSig, its DTLS fingerprint signed for the call with the Signal-layer Ed25519 key;
+///              a received fpSig must verify under the peer's account-bound key or the call ends
+///              (failed). An SDP without fpSig is a build-1000 peer: accepted, the SAS stays).
+///              Earlier 2026-11-21 (ring ends on both sides without a system UI: the caller's 30 s
+///              outgoing timeout now sends call_end (reason timeout) before cleaning up — the
+///              callee rang on after the caller gave up; the callee has its own ring timeout
+///              (incomingRingTimeout, 65 s, a backstop past the 60 s system ringer) that
+///              declines with reason timeout — an invite with no CallKit window (VoIP push not
+///              delivered) rang the in-app ringtone forever. endCall shares
+///              _sendCallEndUnawaited). Earlier 2026-11-11 (_emit is a no-op once dispose() has closed the
 ///              event controller — dispose() closes the controllers before its
 ///              final _cleanup(), whose terminal emit used to throw an unhandled
 ///              StateError on every Reset App / Delete Account). Earlier
@@ -102,8 +112,13 @@
 ///  - CallService.handleIncomingInvite(): prepare to accept incoming invite
 ///  - CallService.acceptCall(): accept (call_answer) — rtc_answer is automatic after offer received
 ///  - CallService.endCall(): terminate + cleanup
+///  - CallService._sendCallEndUnawaited(): call_end without waiting for the ack
+///  - CallService._scheduleIncomingTimeout() / _cancelIncomingTimeout(): callee ring timeout
 ///  - CallService.toggleMute() / toggleSpeaker()
 ///  - CallService.handleRemote*(): dispatch CallSignaling incoming events
+///  - CallService._fingerprintSignatureField(sdp): fpSig of an SDP this device sends (SC-10)
+///  - CallService._remoteFingerprintAccepted(event, sdp): check a received SDP's fpSig against the peer's bound Ed25519 key (SC-10)
+///  - CallService._endOnFingerprintRejected(callId): end the call when a signature is refused (fail closed)
 ///  - CallService._cleanup(): memory wipe (§23.4.5) + assert verification
 ///  - CallService._startRingback() / _stopRingback() / _playBusyTone() (Phase J §26)
 ///  - CallService._startRingtone() / _stopRingtone() (v212, iOS FG fallback)
@@ -169,9 +184,13 @@ class CallService {
     required CallSignaling signaling,
     required TurnCredentialManager turnManager,
     CallKitManager? callKit,
+    Uint8List? Function()? fingerprintSigningSeed,
+    Future<Uint8List?> Function(String snowId)? peerFingerprintKey,
   })  : _signaling = signaling,
         _turnManager = turnManager,
-        _callKit = callKit {
+        _callKit = callKit,
+        _fingerprintSigningSeed = fingerprintSigningSeed,
+        _peerFingerprintKey = peerFingerprintKey {
     _signalingSub = _signaling.onSignalingEvent.listen(_dispatchRemoteEvent);
     // v2.5 (2026-05-03): _subscribeToAudioSessionEvents removed. The previous
     // design registered a setMethodCallHandler on `snowchat/voip_native`,
@@ -183,6 +202,17 @@ class CallService {
 
   final CallSignaling _signaling;
   final TurnCredentialManager _turnManager;
+
+  /// SC-10 (2026-11-10 report): this device's Signal-layer Ed25519 seed
+  /// (SignalProtocolService.signingKeySeed), read at each use — it signs the
+  /// DTLS fingerprint of every SDP sent (fpSig). Null (tests): unsigned.
+  final Uint8List? Function()? _fingerprintSigningSeed;
+
+  /// SC-10: the peer's Signal-layer Ed25519 key, bound to its account
+  /// (SignalSessionManager.getPeerEd25519PublicKey) — checks the fpSig of
+  /// every SDP received. Null, or no key for the peer: a signed SDP cannot be
+  /// checked and the call ends.
+  final Future<Uint8List?> Function(String snowId)? _peerFingerprintKey;
   // v204 (2026-05-03): outbound CallKit registration. Null on Android (uses
   // ConnectionService Self-Managed via the same plugin internally) and in
   // tests. When non-null, startCall on iOS triggers CXStartCallAction so
@@ -266,6 +296,19 @@ class CallService {
   /// cause. 진짜 answer 도착 시점 (`_handleRemoteAnswer`) 으로 옮김.
   Timer? _outgoingTimer;
   bool _answerReceived = false;
+
+  /// Callee side: how long an incoming call may ring before this device gives
+  /// up on its own (declineCall reason 'timeout' — the caller is told, and the
+  /// missed-call message is inserted). The system UI has its own 60 s ringer
+  /// timeout (CallKitManager.showIncoming, the iOS PushKit report), but it
+  /// only exists when that UI was raised: an invite that came over the socket
+  /// with no CallKit window (VoIP push not delivered) rang the in-app ringtone
+  /// forever, and so did one whose caller's call_end never arrived. This timer
+  /// ends the ring either way. It is a backstop, 5 s past the system timeout,
+  /// so that when the system UI is up its own timeout ends the call first and
+  /// the two never decline the same call at once.
+  static const Duration incomingRingTimeout = Duration(seconds: 65);
+  Timer? _incomingTimer;
 
   // Fix B revised (2026-05-06) — cold-start anti-replay set.
   //
@@ -530,6 +573,7 @@ class CallService {
       innerPayload: {
         'callId': _callId,
         'sdp': finalSdp,
+        ..._fingerprintSignatureField(finalSdp),
       },
     );
 
@@ -615,6 +659,7 @@ class CallService {
     _remoteDisplayName = callerDisplayName;
     _alwaysRelay = remoteWantsRelay;
     _emit(CallServiceStatus.incoming);
+    _scheduleIncomingTimeout(callId);
     // v207 (2026-05-03) — receiver-side ringtone deleted on both platforms.
     // CallKit (iOS, via PushKit Phase E-2 v3.1) and ConnectionService Self-
     // Managed (Android) own the system ringtone now. Our Dart-side ringtone
@@ -665,6 +710,7 @@ class CallService {
     }
     // v212: stop in-app ringtone before audio session reconfig.
     unawaited(_stopRingtone());
+    _cancelIncomingTimeout();
     _alwaysRelay = _alwaysRelay || localAlwaysRelay;
 
     // Phase 8.2 v2.1 — Audio session CallKit delegation.
@@ -758,21 +804,7 @@ class CallService {
     // If the peer is offline / socket asleep, ack may not arrive for up to 30s, forcing
     // the user to wait 30s for the 'ended → idle' transition. Ignore end-signal failures —
     // the peer self-terminates on ICE timeout.
-    if (_callId != null && _remoteSnowchatId != null) {
-      final cid = _callId!;
-      final peer = _remoteSnowchatId!;
-      unawaited(() async {
-        try {
-          await _signaling.sendSealedSignaling(
-            recipientSnowchatId: peer,
-            eventType: 'call_end',
-            innerPayload: {'callId': cid, 'reason': 'ended'},
-          );
-        } catch (_) {
-          // ignore
-        }
-      }());
-    }
+    _sendCallEndUnawaited('ended');
     final sw = Stopwatch()..start();
     await _cleanup(endedReason: 'ended');
     debugPrint('[DIAG:CallService] endCall cleanup ${sw.elapsedMilliseconds}ms');
@@ -894,6 +926,15 @@ class CallService {
     final sdp = event.data['sdp'] as String?;
     if (sdp == null) return;
 
+    // SC-10: a signed fingerprint must be the peer's — else the call ends.
+    if (!await _remoteFingerprintAccepted(event, sdp)) {
+      await _endOnFingerprintRejected(eventCallId);
+      return;
+    }
+    // The check awaited: the call may have ended or changed meanwhile (the
+    // same guard as above).
+    if (_pc == null || (_callId != null && eventCallId != _callId)) return;
+
     await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
 
     final answer = await _pc!.createAnswer({
@@ -915,6 +956,7 @@ class CallService {
       innerPayload: {
         'callId': _callId,
         'sdp': finalAnswer,
+        ..._fingerprintSignatureField(finalAnswer),
       },
     );
   }
@@ -939,9 +981,62 @@ class CallService {
     // 2026-05-04 fix: 진짜 recipient answer 도착 — outgoing timeout cancel.
     // 이 시점이 RFC 3261 의 200 OK + ACK 수신 의미. 이 후 ICE 협상 중
     // (connecting → active) — timeout 더 안 필요.
+    // SC-10: a signed fingerprint must be the peer's — else the call ends.
+    if (!await _remoteFingerprintAccepted(event, sdp)) {
+      await _endOnFingerprintRejected(eventCallId);
+      return;
+    }
+    if (_pc == null || _callId != eventCallId) return;
     _cancelOutgoingTimeout();
     await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
     _maybeEmitSas(remoteSdp: sdp);
+  }
+
+  /// SC-10: the `fpSig` field for an SDP this device sends
+  /// (CallVerification.signatureField). The signature is not logged.
+  Map<String, String> _fingerprintSignatureField(String? sdp) {
+    try {
+      return CallVerification.signatureField(
+        callId: _callId,
+        sdp: sdp,
+        signingKeySeed: _fingerprintSigningSeed?.call(),
+      );
+    } catch (e) {
+      debugPrint('[CallService] fingerprint not signed: ${e.runtimeType}');
+      return const {};
+    }
+  }
+
+  /// SC-10: whether the DTLS fingerprint of a received [sdp] may be used —
+  /// unsigned (a build-1000 peer) or verified under the peer's account-bound
+  /// key; refused otherwise (CallVerification.checkRemote).
+  Future<bool> _remoteFingerprintAccepted(
+    CallSignalingEvent event,
+    String sdp,
+  ) async {
+    final keyOf = _peerFingerprintKey;
+    final check = await CallVerification.checkRemote(
+      fpSig: event.data['fpSig'],
+      callId: event.data['callId'],
+      sdp: sdp,
+      peerKey: () async =>
+          keyOf == null ? null : await keyOf(event.senderSnowchatId),
+    );
+    if (check == RemoteFingerprintCheck.unsigned) {
+      debugPrint('[CallService] peer SDP carries no fingerprint signature '
+          '(older app) — accepted, SAS stays');
+    }
+    return check != RemoteFingerprintCheck.refused;
+  }
+
+  /// A received SDP's fingerprint signature was refused: end the call here
+  /// and tell the peer (fail closed — the media would go to whoever made the
+  /// SDP). Only when [callId] is still the current call.
+  Future<void> _endOnFingerprintRejected(String? callId) async {
+    if (callId == null || _callId != callId) return;
+    debugPrint('[CallService] DTLS fingerprint signature refused — ending call');
+    _sendCallEndUnawaited('failed');
+    await _cleanup(endedReason: 'failed');
   }
 
   /// Once both local/remote fingerprints are obtained, compute the 4-digit SAS and emit on stream.
@@ -1195,6 +1290,10 @@ class CallService {
           _status != CallServiceStatus.ended) {
         debugPrint('[CallService] outgoing timeout 30s — no answer received '
             '(status=$_status) → auto-cleanup');
+        // Tell the callee before cleaning up: without a call_end its ring
+        // (CallKit, ConnectionService or the in-app ringtone) went on after
+        // this side had given up.
+        _sendCallEndUnawaited('timeout');
         unawaited(_cleanup(endedReason: 'timeout'));
       }
     });
@@ -1204,6 +1303,46 @@ class CallService {
     _outgoingTimer?.cancel();
     _outgoingTimer = null;
     _answerReceived = true;
+  }
+
+  /// Send call_end for the current call without waiting for the ack, so the
+  /// local teardown is never tied to the socket (an asleep peer's ack can take
+  /// up to 30 s). A failed send is ignored: the peer's own ring timeout
+  /// ([incomingRingTimeout]) or ICE timeout ends its side.
+  void _sendCallEndUnawaited(String reason) {
+    final cid = _callId;
+    final peer = _remoteSnowchatId;
+    if (cid == null || peer == null) return;
+    unawaited(() async {
+      try {
+        await _signaling.sendSealedSignaling(
+          recipientSnowchatId: peer,
+          eventType: 'call_end',
+          innerPayload: {'callId': cid, 'reason': reason},
+        );
+      } catch (_) {
+        // ignore — see the doc comment
+      }
+    }());
+  }
+
+  /// Start the callee-side ring timeout for [callId] (see
+  /// [incomingRingTimeout]). It fires only while that same call is still
+  /// ringing here.
+  void _scheduleIncomingTimeout(String callId) {
+    _incomingTimer?.cancel();
+    _incomingTimer = Timer(incomingRingTimeout, () {
+      _incomingTimer = null;
+      if (_status != CallServiceStatus.incoming || _callId != callId) return;
+      debugPrint('[CallService] incoming ring timeout '
+          '${incomingRingTimeout.inSeconds}s → decline(timeout)');
+      unawaited(declineCall(reason: 'timeout'));
+    });
+  }
+
+  void _cancelIncomingTimeout() {
+    _incomingTimer?.cancel();
+    _incomingTimer = null;
   }
 
   Future<void> _acquireLocalStream() async {
@@ -1278,6 +1417,7 @@ class CallService {
           'callId': _callId,
           'sdp': offer.sdp,
           'restart': true,
+          ..._fingerprintSignatureField(offer.sdp),
         },
       );
     } catch (e) {
@@ -1354,6 +1494,7 @@ class CallService {
     _iceRestartAttempts = 0;
     // 2026-05-04 fix: cancel outgoing timeout (manual end before timeout).
     _cancelOutgoingTimeout();
+    _cancelIncomingTimeout();
 
     // [2026-04-19] track.stop() is a synchronous native call, but on iOS sync negotiation
     // with the audio engine can hold the main thread (observed: 30s freeze after pressing end).
@@ -1754,6 +1895,9 @@ class CallService {
       };
 
   Future<void> dispose() async {
+    _cancelIncomingTimeout();
+    _outgoingTimer?.cancel();
+    _outgoingTimer = null;
     await _signalingSub.cancel();
     // v2.5: cancel bridge subscriptions instead of detaching the channel
     // handler — the channel is owned by VoipNativeBridge and dies with it.

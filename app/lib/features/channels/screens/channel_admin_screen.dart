@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-06
-/// @lastUpdated 2026-08-05 ("Channel"→"Community" UI strings; NFT "Community Fee Share" copy left as-is). Earlier 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
+/// @lastUpdated 2026-11-20 (delete confirmation no longer mentions rooms). Earlier 2026-11-12 (removed the owner-only "Community NFT Fee Share" section with the NFT marketplace feature). Earlier 2026-08-05 ("Channel"→"Community" UI strings; NFT "Community Fee Share" copy left as-is). Earlier 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
 ///
 /// @functions
 ///  - ChannelAdminScreen: channel settings + member management + pending approval + invite link + delete
@@ -29,7 +29,6 @@ import '../../../core/network/api_endpoints.dart';
 import '../../chat/providers/conversation_list_provider.dart';
 import '../models/channel.dart';
 import '../providers/channel_provider.dart';
-import '../../wallet/tensor/widgets/channel_community_section.dart';
 
 /// Channel detail provider for admin screen.
 final _adminDetailProvider =
@@ -298,24 +297,6 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
             icon: const Icon(Icons.link_rounded),
             label: const Text('Manage Invite Links'),
           ),
-
-          // ── Community NFT (owner only) ──
-          if (isOwner) ...[
-            const SizedBox(height: SnowSizes.xl),
-            _buildSectionHeader('Community NFT Fee Share'),
-            const SizedBox(height: SnowSizes.xs),
-            const Text(
-              'Register this community\'s NFT collection to receive 50% of '
-              'Tensor protocol fees on every trade. Sealed metadata '
-              '(one-way) required.',
-              style: TextStyle(
-                color: SnowColors.textTertiary,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: SnowSizes.sm),
-            ChannelCommunitySection(channelId: widget.channelId),
-          ],
 
           const SizedBox(height: SnowSizes.xl),
 
@@ -1092,7 +1073,7 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
         title: const Text('Delete Community',
             style: TextStyle(color: SnowColors.textPrimary)),
         content: const Text(
-          'This will permanently delete the community and all its rooms. This action cannot be undone.',
+          'This will permanently delete the community. This action cannot be undone.',
           style: TextStyle(color: SnowColors.textSecondary),
         ),
         actions: [

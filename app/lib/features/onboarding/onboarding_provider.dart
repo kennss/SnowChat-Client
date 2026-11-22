@@ -3,14 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-08-04 (setProfile now reflects the new nickname into currentDisplayNameProvider immediately, so a create-identity flow following an in-session reset shows the correct name without a cold start). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (setProfile stores the passcode of a chosen kind through PasscodeStore —
+///              salted Argon2id instead of an unsalted SHA-256). Earlier 2026-08-04 (setProfile now reflects the new nickname into currentDisplayNameProvider immediately, so a create-identity flow following an in-session reset shows the correct name without a cold start). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - OnboardingStep: onboarding-step enum (welcome, setupProfile, creating, backupPhrase, verifyPhrase, complete)
 ///  - OnboardingState: onboarding state data class (incl. displayName, pin)
 ///  - OnboardingNotifier: StateNotifier managing onboarding state
 ///  - onboardingProvider: StateNotifierProvider exposing onboarding state
-///  - setProfile(nickname, pin): set nickname and PIN, store hash in secure storage
+///  - setProfile(nickname, kind, passcode): set the nickname and the app passcode (PasscodeStore)
 ///  - createIdentity(): create new identity, derive wallet keypair, server register, authenticate, upload prekeys
 ///  - restoreIdentity(): restore identity from mnemonic, restore wallet, authenticate, upload prekeys
 ///  - proceedToVerify(): advance to verification step
@@ -26,6 +27,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../app/providers.dart';
+import '../../core/security/passcode.dart';
 import '../wallet/wallet_provider.dart' hide secureStorageProvider;
 
 // --- Onboarding state ---
@@ -87,16 +89,17 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
 
   OnboardingNotifier(this._ref) : super(const OnboardingState());
 
-  /// Store nickname and PIN (hashed) in secure storage, and keep
-  /// displayName in state for use during identity creation.
+  /// Store the nickname and the app passcode ([kind], salted Argon2id —
+  /// PasscodeStore; never the passcode itself), and keep displayName in
+  /// state for use during identity creation.
   Future<void> setProfile({
     required String nickname,
-    required String pin,
+    required PasscodeKind kind,
+    required String passcode,
   }) async {
     final secureStorage = _ref.read(secureStorageProvider);
 
-    // Store PIN hash (never raw) and display name
-    await secureStorage.storePin(pin);
+    await _ref.read(passcodeStoreProvider).set(kind, passcode);
     await secureStorage.storeDisplayName(nickname);
     // Reflect the new nickname into the in-memory provider immediately.
     // currentDisplayNameProvider is otherwise only hydrated from secure storage

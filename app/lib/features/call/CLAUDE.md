@@ -162,7 +162,7 @@ Future<void> _cleanup() async {
 └─────────────────────────────────┘
 ```
 
-**iOS / Android 시스템 통화 UI(CallKit/ConnectionService)가 우선** 표시되며, 사용자가 앱을 직접 연 경우만 본 화면이 표시된다.
+**iOS / Android 시스템 통화 UI(CallKit/ConnectionService)가 수신 화면을 맡는다** — 둘을 함께 띄우지 않는다(v211 되돌림). 예외(2026-11-21, V3): iOS에서 앱이 켜져 있는데 3초 안에 CallKit 창이 안 뜨면(VoIP 푸시 미도착) `CallState.inAppIncoming`이 켜지고 본 화면이 유일한 수신 UI가 된다. 늦게 뜬 CallKit 창이 넘겨받으면 본 화면은 닫힌다(`_CallRouteHost`).
 
 ### 3.3 OutgoingCallScreen 필수 요소
 
@@ -316,3 +316,4 @@ VoIP UI 관련 PR 시 다음을 모두 확인:
 |------|------|
 | 2026-04-07 | 초판 작성 |
 | 2026-04-21 | Phase J (Audio UX) 반영 — §3.3 OutgoingCallScreen에 Ringback tone 필수 요소, §3.5 종료 사유 표에 Audio 컬럼 + busy tone 재생 규칙, §6 PR 체크리스트에 AudioPlayer 소유/wipe 4항목 추가. 상세 Phase 8.2 §26. |
+| 2026-11-21 | V3 — iOS 앱 안 수신 화면 예외(§3.2): CallKit 창이 안 뜬 통화만. 설계 `Documentation/TO-DO/2026-11-21-voip-ring-end-design.md`. |

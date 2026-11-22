@@ -20,13 +20,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-11
-/// @lastUpdated 2026-11-11
+/// @lastUpdated 2026-11-21 (P5.6: AttachmentStorage.relativePathFor — a file id and an extension that cannot leave the directory). Earlier 2026-11-11
 ///
 /// @functions
 ///  - LocalFileProtection.excludeFromBackup(path): iOS backup exclusion
 ///  - LocalFileProtection.protectAttachmentDirectory(path): iOS dir policy + sweep
 ///  - LocalFileProtection.protectAttachmentFile(path): iOS per-file class
 ///  - AttachmentStorage.directoryName: 'snowchat_attachments' (relative root)
+///  - AttachmentStorage.relativePathFor(fileId, fileName): the stored path of an
+///    attachment, only for a file id and an extension that cannot leave the dir
 ///  - AttachmentStorage.ensureDirectory(): create + protect the attachments dir
 ///  - AttachmentStorage.protectFile(path): enforce the class on a copied file
 ///  - AttachmentStorage.purgeContents(): delete every file in the dir (fresh DB)
@@ -97,6 +99,32 @@ class LocalFileProtection {
 class AttachmentStorage {
   /// Relative root stored in drift (`snowchat_attachments/{fileId}.{ext}`).
   static const String directoryName = 'snowchat_attachments';
+
+  static final RegExp _uuid = RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  );
+  static final RegExp _extension = RegExp(r'^[a-z0-9]{1,8}$');
+
+  /// The path, relative to the app documents directory, where the plaintext
+  /// of the file [fileId] is kept: `snowchat_attachments/{fileId}.{ext}`,
+  /// [ext] taken from [fileName] (or [fallbackExtension]). Both come from a
+  /// sender or a server, so neither may name anything but a file in this
+  /// directory: the id must be a UUID (the server's file ids are), the
+  /// extension 1–8 lowercase letters or digits (anything else is
+  /// [fallbackExtension]). Throws [FormatException] for any other id — a
+  /// `../` in it would write the bytes anywhere in the app's container.
+  static String relativePathFor(
+    String fileId,
+    String fileName, {
+    String fallbackExtension = 'bin',
+  }) {
+    final id = fileId.toLowerCase();
+    if (!_uuid.hasMatch(id)) throw const FormatException('not a file id');
+    final dot = fileName.lastIndexOf('.');
+    final candidate = dot < 0 ? '' : fileName.substring(dot + 1).toLowerCase();
+    final ext = _extension.hasMatch(candidate) ? candidate : fallbackExtension;
+    return '$directoryName/$id.$ext';
+  }
 
   /// Once per process: the policy (incl. the sweep of existing files) has
   /// been applied successfully. Reset on failure so a later call retries.

@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (comment: dropped the marketplace screen mention). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - SendScreen: main send-screen widget (ConsumerStatefulWidget)
@@ -194,8 +194,8 @@ class _SendScreenState extends ConsumerState<SendScreen> {
             // SNS banner / AmountInput so the keypad never pushes the bottom
             // CTA off-screen on small phones (Galaxy S23 6.1") + accessibility
             // font scaling. Keeps Slide-to-confirm + Network speed always
-            // visible at the bottom (fixed CTA pattern, matches NFT/Marketplace
-            // send screens which already use SingleChildScrollView).
+            // visible at the bottom (fixed CTA pattern, matches the NFT send
+            // screen which already uses SingleChildScrollView).
             Expanded(
               child: SingleChildScrollView(
                 physics: const ClampingScrollPhysics(),

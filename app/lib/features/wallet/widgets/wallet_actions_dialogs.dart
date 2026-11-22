@@ -6,7 +6,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-25
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the marketplace line from the Set Default dialog and the removal preCheck hook, whose only use was the marketplace listing interlock). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - showSetDefaultDialog(context, ref, entry): biometric → setDefault
@@ -59,12 +59,6 @@ Future<void> showSetDefaultDialog(
               fontFamily: 'monospace',
               fontSize: 12,
             ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Marketplace buy/list will use ${entry.label} by default '
-            '(you can change per-tx).',
-            style: const TextStyle(color: SnowColors.textSecondary),
           ),
         ],
       ),
@@ -237,21 +231,16 @@ Future<void> showHideDerivedDialog(
 // Remove (imported = typing-DELETE + biometric / derived = simple confirm)
 // ---------------------------------------------------------------------------
 
-/// preCheck callback — Phase 5 will inject NFT/listing verification here.
-/// In Phase 3 only the sendlock check happens inside WalletNotifier.removeWallet.
-typedef WalletRemovePreCheck = Future<void> Function(WalletEntry entry);
-
 Future<void> showRemoveWalletDialog(
   BuildContext context,
   WidgetRef ref,
   WalletEntry entry, {
-  WalletRemovePreCheck? preCheck,
   int nftCount = 0,
 }) async {
   if (entry.kind == WalletKind.imported) {
-    await _showImportedRemoveDialog(context, ref, entry, preCheck, nftCount);
+    await _showImportedRemoveDialog(context, ref, entry, nftCount);
   } else {
-    await _showDerivedRemoveDialog(context, ref, entry, preCheck, nftCount);
+    await _showDerivedRemoveDialog(context, ref, entry, nftCount);
   }
 }
 
@@ -259,7 +248,6 @@ Future<void> _showDerivedRemoveDialog(
   BuildContext context,
   WidgetRef ref,
   WalletEntry entry,
-  WalletRemovePreCheck? preCheck,
   int nftCount,
 ) async {
   // Phase 6-A — D-1: derived also requires type-DELETE + recommends Hide when holding NFTs.
@@ -268,7 +256,6 @@ Future<void> _showDerivedRemoveDialog(
       context,
       ref,
       entry,
-      preCheck,
       nftCount,
     );
     return;
@@ -303,7 +290,7 @@ Future<void> _showDerivedRemoveDialog(
   );
   if (ok != true) return;
 
-  await _doRemove(context, ref, entry, preCheck);
+  await _doRemove(context, ref, entry);
 }
 
 /// Derived + NFT-holding case (Phase 6-A). Requires type-DELETE + recommends Hide.
@@ -311,7 +298,6 @@ Future<void> _showDerivedRemoveWithNftDialog(
   BuildContext context,
   WidgetRef ref,
   WalletEntry entry,
-  WalletRemovePreCheck? preCheck,
   int nftCount,
 ) async {
   final controller = TextEditingController();
@@ -432,7 +418,7 @@ Future<void> _showDerivedRemoveWithNftDialog(
         }
       }
     case _DerivedNftAction.remove:
-      await _doRemove(context, ref, entry, preCheck);
+      await _doRemove(context, ref, entry);
   }
 }
 
@@ -442,7 +428,6 @@ Future<void> _showImportedRemoveDialog(
   BuildContext context,
   WidgetRef ref,
   WalletEntry entry,
-  WalletRemovePreCheck? preCheck,
   int nftCount,
 ) async {
   final controller = TextEditingController();
@@ -537,19 +522,16 @@ Future<void> _showImportedRemoveDialog(
   );
   if (!auth) return;
 
-  await _doRemove(context, ref, entry, preCheck);
+  await _doRemove(context, ref, entry);
 }
 
 Future<void> _doRemove(
   BuildContext context,
   WidgetRef ref,
   WalletEntry entry,
-  WalletRemovePreCheck? preCheck,
 ) async {
   try {
-    await ref
-        .read(walletProvider.notifier)
-        .removeWallet(entry.id, preCheck: preCheck);
+    await ref.read(walletProvider.notifier).removeWallet(entry.id);
     if (context.mounted) {
       SnowToast.show(
         context,
@@ -562,10 +544,6 @@ Future<void> _doRemove(
       SnowToast.show(context, message: e.message, type: ToastType.error);
     }
   } on InFlightTransactionException catch (e) {
-    if (context.mounted) {
-      SnowToast.show(context, message: e.message, type: ToastType.warning);
-    }
-  } on ActiveListingsBlockingException catch (e) {
     if (context.mounted) {
       SnowToast.show(context, message: e.message, type: ToastType.warning);
     }

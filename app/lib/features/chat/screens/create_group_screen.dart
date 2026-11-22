@@ -1,19 +1,39 @@
 /// @file        create_group_screen.dart
-/// @description Group-chat creation screen — pick members from contacts, enter group name, GMK encryption then server creation
+/// @description Group-chat creation screen — pick accounts, enter a group name, create a group
+///              protocol v2 group and invite them. Picks from the contacts, or — opened from a
+///              community — from that community's roster. Either way the accounts this user
+///              chose by an action of their own (VerifiedIdentityStore.isVouched) are listed as
+///              known and "Select all" takes only them; the others are shown only after a
+///              warning, because the lists are the server's word and an invite gives an account
+///              the group's key for good (AccountPickerList). Every account shows its snowId.
+///              Blocked accounts are not listed. A group holds up to gv2GroupSizeLimit accounts.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-11-10 (B-2 §5.7: IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal — logged once, never retried). Earlier 2026-04-26 (header English translation; previous: 2026-04-10 Phase 8.8: GMK-based group-name E2EE)
+/// @lastUpdated 2026-11-21 (X1: the blocked accounts left out of the roster are this device's list (BlockList), not a server call). Earlier 2026-11-21 (community roster mode; known = vouched for by the user, in both modes;
+///              unknown accounts behind a warning; blocked accounts left out; the gv2GroupSizeLimit
+///              cap — the list is AccountPickerList). Earlier 2026-11-20
+///              (v1 groups removed: a new group is always a v2 group — no GMK, no server group
+///              creation; one picked contact is enough). Earlier same day (group protocol v2: with
+///              AppConfig.enableGroupsV2 a new group is a v2 group). Earlier 2026-11-10 (B-2 §5.7:
+///              IdentityBindingInvalidException / IdentityKeyChangedException handled as terminal —
+///              logged once, never retried). Earlier 2026-04-26 (header English translation;
+///              previous: 2026-04-10 Phase 8.8: GMK-based group-name E2EE)
 ///
 /// @functions
-///  - CreateGroupScreen: group-chat creation ConsumerStatefulWidget
+///  - CreateGroupScreen: group-chat creation ConsumerStatefulWidget ([communityId]: roster mode)
+///  - _loadRoster(): fetch the community roster and the block list; mark each account known
+///    or unknown
+///  - _toggleMember(): pick / unpick one account (up to the group size limit)
+///  - _selectAllKnown(): pick (or unpick) every known account
+///  - _nameOf(): the name shown for a picked account
+///  - _pickerList(): the roster or contact candidates in an AccountPickerList
 ///  - _showGroupNameDialog(): show group-name input dialog
-///  - _createGroup(): generate GMK -> encrypt name -> per-member GMK E2EE -> atomic POST
+///  - _createGroup(): create a v2 group, wait for the server to accept it, open its chat
+library;
 
-import '../../../core/crypto/identity_binding_exception.dart';
-import '../../../core/crypto/identity_key_changed_exception.dart';
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,32 +41,111 @@ import 'package:go_router/go_router.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
-import '../../../core/crypto/group_metadata_crypto.dart';
+import '../../../core/group_v2/gv2_groups.dart';
+import '../../../core/group_v2/gv2_payloads.dart' show gv2MaxTitleNameBytes;
 import '../../../core/network/api_endpoints.dart';
+import '../../../core/storage/database.dart' show Gv2GroupRow;
+import '../../../core/storage/tables/gv2_tables.dart';
 import '../../../app/providers.dart';
-import '../../contacts/contact_provider.dart';
-import '../models/conversation.dart';
+import '../../group/providers/gv2_group_provider.dart';
+import '../../group/providers/pick_candidates.dart';
+import '../../group/widgets/account_picker_list.dart';
 import '../providers/conversation_list_provider.dart';
 
 class CreateGroupScreen extends ConsumerStatefulWidget {
-  const CreateGroupScreen({super.key});
+  /// Pick from this community's roster instead of the contacts.
+  final String? communityId;
+
+  /// The community's name, for the title (roster mode).
+  final String? communityName;
+
+  const CreateGroupScreen({super.key, this.communityId, this.communityName});
 
   @override
   ConsumerState<CreateGroupScreen> createState() => _CreateGroupScreenState();
 }
 
 class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
-  final Set<String> _selectedIds = {};
+  final PickSelection _picked = PickSelection(_maxPicks);
   bool _isCreating = false;
 
-  void _toggleMember(String snowChatId) {
+  /// Roster mode: the roster (null while it loads), the community's name as
+  /// the server gave it, and whether loading failed.
+  List<PickCandidate>? _roster;
+  String? _communityName;
+  bool _rosterFailed = false;
+
+  /// How many accounts have to be picked. A group starts with its creator
+  /// alone and grows by invites, so one is enough.
+  static const int _minMembers = 1;
+
+  /// How many accounts can be picked: the group holds the creator too.
+  static const int _maxPicks = gv2GroupSizeLimit - 1;
+
+  bool get _rosterMode => widget.communityId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_rosterMode) _loadRoster();
+  }
+
+  Future<void> _loadRoster() async {
     setState(() {
-      if (_selectedIds.contains(snowChatId)) {
-        _selectedIds.remove(snowChatId);
-      } else {
-        _selectedIds.add(snowChatId);
-      }
+      _roster = null;
+      _rosterFailed = false;
     });
+    try {
+      final api = ref.read(apiClientProvider);
+      final res = await api.get<Object?>(
+        ApiEndpoints.channelDetail(widget.communityId!),
+      );
+      // The accounts this user blocked are not offered (this device's list).
+      final blockList = ref.read(blockListProvider);
+      await blockList.load();
+      final blocked = blockList.blocked;
+      final store = ref.read(verifiedIdentityStoreProvider);
+      final roster = await rosterCandidates(
+        detail: res.data,
+        mySnowId: ref.read(currentSnowIdProvider),
+        blocked: blocked,
+        isKnown: store.isVouched,
+      );
+      final detail = res.data;
+      final name = detail is Map ? detail['name'] : null;
+      if (mounted) {
+        setState(() {
+          _roster = roster;
+          if (name is String && name.trim().isNotEmpty) _communityName = name;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _rosterFailed = true);
+    }
+  }
+
+  void _toggleMember(String snowId) {
+    final picked = _picked.toggle(snowId);
+    setState(() {});
+    if (!picked) _say(_fullText);
+  }
+
+  static final String _fullText = gv2FailureText(
+    const Gv2GroupException(Gv2GroupFailure.full),
+  );
+
+  /// The candidates on screen (empty while they load).
+  List<PickCandidate> get _candidates => _rosterMode
+      ? (_roster ?? const <PickCandidate>[])
+      : (ref.read(contactPickCandidatesProvider).value ??
+          const <PickCandidate>[]);
+
+  /// Pick every known account (as many as fit), or unpick them all when
+  /// they are all picked already (or the group is full).
+  void _selectAllKnown() {
+    final cut = _picked.selectAllKnown(_candidates);
+    setState(() {});
+    if (cut) _say(_fullText);
   }
 
   void _showGroupNameDialog() {
@@ -96,121 +195,147 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     );
   }
 
+  /// How long the screen waits for the server to accept a new v2 group
+  /// before it leaves the rest to the outbox.
+  static const Duration _createWait = Duration(seconds: 20);
+
+  void _say(String text, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        backgroundColor: error ? SnowColors.error : SnowColors.surface,
+      ),
+    );
+  }
+
+  /// Group protocol v2: the group is made on this device and its members
+  /// are invited (design §9.1) — each of them becomes a member when their
+  /// app accepts. The server is told by the outbox: this waits for its
+  /// answer for a while, then opens the chat. Without a connection the
+  /// group is created later and shows up in the list then.
   Future<void> _createGroup(String groupName) async {
     if (_isCreating) return;
-    setState(() => _isCreating = true);
-
-    debugPrint('[CreateGroup] Creating group "$groupName" with members: $_selectedIds');
-
-    try {
-      // Phase 8.8: Generate GMK and encrypt group name
-      final gmk = GroupMetadataCrypto.generateGMK();
-      final encryptedName = GroupMetadataCrypto.encryptGroupName(gmk, groupName);
-      debugPrint('[CreateGroup] GMK generated, name encrypted');
-
-      final sessionManager = ref.read(signalSessionManagerProvider);
-      final mySnowId = ref.read(currentSnowIdProvider) ?? '';
-
-      // Step 1: Create group on server (encryptedName only, no plaintext)
-      final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.post(
-        ApiEndpoints.groups,
-        data: {
-          'memberSnowchatIds': _selectedIds.toList(),
-          'encryptedName': encryptedName,
-        },
-      );
-
-      final data = Map<String, dynamic>.from(response.data as Map);
-      final groupId = (data['groupId'] ?? data['id']) as String;
-      debugPrint('[CreateGroup] Group created: $groupId');
-
-      // Step 2: Store GMK locally
-      await GroupMetadataCrypto.storeGMK(groupId, gmk, 0);
-
-      // Step 3: Distribute signed GMK to each member via 1:1 E2EE
-      final signingKeySeed = sessionManager.signal.signingKeySeed;
-      final signature = signingKeySeed != null
-          ? GroupMetadataCrypto.signGMK(
-              signingKeySeed: signingKeySeed,
-              groupId: groupId,
-              gmk: gmk,
-              epoch: 0,
-            )
-          : null;
-
-      for (final memberId in _selectedIds) {
-        if (memberId == mySnowId) continue;
-        try {
-          await sessionManager.ensureSession(memberId);
-          final deviceId = await sessionManager.getDeviceIdForRecipient(memberId);
-          final gmkPayload = jsonEncode({
-            'type': 'group_metadata_key',
-            'groupId': groupId,
-            'gmk': base64Encode(gmk),
-            'epoch': 0,
-            if (signature != null) 'signature': base64Encode(signature),
-            'coordinatorSnowId': mySnowId,
-          });
-          final encrypted = await sessionManager.encrypt(
-            memberId, deviceId, Uint8List.fromList(utf8.encode(gmkPayload)),
-          );
-          ref.read(socketManagerProvider).sendPrivateMessage({
-            'recipientId': memberId,
-            'encryptedContent': {
-              'ciphertext': base64Encode(encrypted['ciphertext'] as Uint8List),
-            },
-            'messageType': encrypted['messageType'],
-            'type': 'group_metadata_key',
-          });
-          debugPrint('[CreateGroup] GMK sent to $memberId');
-        } on IdentityBindingInvalidException catch (idErr) {
-          // B-2 §5.7: forged / downgraded / replayed identity — terminal,
-          // never retried (the store already raised the security notice).
-          debugPrint('[CreateGroup] GMK send: identity rejected (${idErr.reason.name}) — terminal');
-        } on IdentityKeyChangedException {
-          // B-2 §5.5: verified contact awaits re-verification — terminal.
-          debugPrint('[CreateGroup] GMK send: peer awaits identity re-verification — terminal');
-        } catch (e) {
-          debugPrint('[CreateGroup] GMK send to $memberId failed: $e');
-        }
-      }
-
-      final conversation = Conversation(
-        id: groupId,
-        type: ConversationType.group,
-        groupId: groupId,
-        title: groupName,
-        participantIds: _selectedIds.toList(),
-        createdAt: DateTime.now(),
-      );
-
-      Future.microtask(() {
-        ref.read(conversationListProvider.notifier).addConversation(conversation);
-        if (mounted) {
-          context.pushReplacement('/chat/$groupId');
-        }
-      });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to create group: $e'),
-            backgroundColor: SnowColors.error,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isCreating = false);
-      }
+    final runtime = ref.read(gv2RuntimeProvider);
+    if (runtime == null) {
+      _say('Groups are not ready yet. Try again in a moment.', error: true);
+      return;
     }
+    if (utf8.encode(groupName).length > gv2MaxTitleNameBytes) {
+      _say('This name is too long.', error: true);
+      return;
+    }
+    setState(() => _isCreating = true);
+    try {
+      final groupId = await runtime.groups.create(
+        title: groupName,
+        invite: _picked.ids.toList(),
+      );
+      final store = ref.read(snowDatabaseProvider).gv2Store;
+      Gv2GroupRow? row;
+      var answered = true;
+      try {
+        row = await store
+            .watchGroup(groupId)
+            .firstWhere(
+              (g) => g == null || g.membership != Gv2Membership.creating,
+            )
+            .timeout(_createWait);
+      } on TimeoutException {
+        answered = false;
+      }
+      if (!mounted) return;
+      if (!answered) {
+        _say(
+          'No answer from the server yet. The group appears in your chats '
+          'once it is created.',
+        );
+        context.pop();
+        return;
+      }
+      if (row == null) {
+        _say('The server did not accept the group.', error: true);
+        return;
+      }
+      // The chat opens on the group's conversation row; the list learns of
+      // it the same way it does for a group this account was invited to.
+      await ref.read(conversationListProvider.notifier).syncGv2Group(groupId);
+      if (mounted) context.pushReplacement('/chat/$groupId');
+    } on Gv2GroupException catch (e) {
+      _say(gv2FailureText(e), error: true);
+    } catch (_) {
+      _say('The group could not be created.', error: true);
+    } finally {
+      if (mounted) setState(() => _isCreating = false);
+    }
+  }
+
+  /// The name shown for a picked account.
+  String? _nameOf(String snowId) => _candidates
+      .where((c) => c.snowId == snowId)
+      .firstOrNull
+      ?.name;
+
+  Widget _message(String text) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(SnowSizes.lg),
+          child: Text(
+            text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: SnowColors.textTertiary),
+          ),
+        ),
+      );
+
+  Widget _list(List<PickCandidate> candidates, String emptyText) =>
+      AccountPickerList(
+        candidates: candidates,
+        selected: _picked.ids,
+        onToggle: _toggleMember,
+        onSelectAllKnown: _selectAllKnown,
+        allKnownTaken: _picked.allKnownTaken(candidates),
+        emptyText: emptyText,
+      );
+
+  /// The roster or the contacts, as an AccountPickerList.
+  Widget _pickerList() {
+    if (!_rosterMode) {
+      return ref.watch(contactPickCandidatesProvider).when(
+            data: (c) => _list(c, 'No contacts available'),
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            error: (_, _) => _message("Couldn't load your contacts."),
+          );
+    }
+    if (_rosterFailed) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "Couldn't load the member list.",
+              style: TextStyle(color: SnowColors.textTertiary),
+            ),
+            TextButton(
+              onPressed: _loadRoster,
+              child: const Text(
+                'Try again',
+                style: TextStyle(color: SnowColors.primary),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    final roster = _roster;
+    if (roster == null) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    return _list(roster, 'Nobody else is in this community yet.');
   }
 
   @override
   Widget build(BuildContext context) {
-    final contacts = ref.watch(contactProvider).where((c) => !c.isBlocked).toList();
-
     return Scaffold(
       backgroundColor: SnowColors.background,
       appBar: AppBar(
@@ -218,13 +343,18 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
           icon: const Icon(Icons.close_rounded),
           onPressed: () => context.pop(),
         ),
-        title: const Text('New Group'),
+        title: Text(
+          _rosterMode && (_communityName ?? widget.communityName) != null
+              ? 'New group · ${_communityName ?? widget.communityName}'
+              : 'New Group',
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Selected members chips
-          if (_selectedIds.isNotEmpty)
+          if (_picked.ids.isNotEmpty)
             Container(
               height: 90,
               padding: const EdgeInsets.symmetric(
@@ -233,15 +363,12 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               ),
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
-                itemCount: _selectedIds.length,
-                separatorBuilder: (_, __) =>
+                itemCount: _picked.ids.length,
+                separatorBuilder: (_, _) =>
                     const SizedBox(width: SnowSizes.sm),
                 itemBuilder: (context, index) {
-                  final snowId = _selectedIds.elementAt(index);
-                  final contact = contacts
-                      .where((c) => c.snowChatId == snowId)
-                      .firstOrNull;
-                  final name = contact?.displayName ?? snowId;
+                  final snowId = _picked.ids.elementAt(index);
+                  final name = _nameOf(snowId) ?? snowId;
                   return GestureDetector(
                     onTap: () => _toggleMember(snowId),
                     child: Column(
@@ -294,15 +421,16 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               ),
             ),
 
-          if (_selectedIds.isNotEmpty)
+          if (_picked.ids.isNotEmpty)
             const Divider(color: SnowColors.divider, height: 1),
 
           // Member count hint
           Padding(
             padding: const EdgeInsets.all(SnowSizes.md),
             child: Text(
-              '${_selectedIds.length} member${_selectedIds.length != 1 ? 's' : ''} selected'
-              '${_selectedIds.length < 2 ? ' (minimum 2)' : ''}',
+              '${_picked.ids.length} member${_picked.ids.length != 1 ? 's' : ''} selected'
+              '${_picked.ids.length < _minMembers ? ' (minimum $_minMembers)' : ''}'
+              '${_rosterMode ? ' · up to $_maxPicks' : ''}',
               style: const TextStyle(
                 color: SnowColors.textTertiary,
                 fontSize: 13,
@@ -310,60 +438,10 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
             ),
           ),
 
-          // Contact list
-          Expanded(
-            child: contacts.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No contacts available',
-                      style: TextStyle(color: SnowColors.textTertiary),
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: contacts.length,
-                    itemBuilder: (context, index) {
-                      final contact = contacts[index];
-                      final isSelected =
-                          _selectedIds.contains(contact.snowChatId);
-                      return ListTile(
-                        leading: SnowAvatar(
-                          snowId: contact.snowChatId,
-                          size: SnowSizes.avatarMd,
-                          displayName: contact.displayName,
-                        ),
-                        title: Text(
-                          contact.displayName ?? contact.snowChatId,
-                          style: const TextStyle(
-                            color: SnowColors.textPrimary,
-                            fontSize: 15,
-                          ),
-                        ),
-                        subtitle: Text(
-                          '${contact.snowChatId.substring(0, 10)}...${contact.snowChatId.substring(contact.snowChatId.length - 4)}',
-                          style: const TextStyle(
-                            color: SnowColors.textTertiary,
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                        trailing: Checkbox(
-                          value: isSelected,
-                          onChanged: (_) =>
-                              _toggleMember(contact.snowChatId),
-                          activeColor: SnowColors.primary,
-                          checkColor: SnowColors.background,
-                          side: const BorderSide(
-                            color: SnowColors.textTertiary,
-                          ),
-                        ),
-                        onTap: () => _toggleMember(contact.snowChatId),
-                      );
-                    },
-                  ),
-          ),
+          Expanded(child: _pickerList()),
         ],
       ),
-      floatingActionButton: _selectedIds.length >= 2
+      floatingActionButton: _picked.ids.length >= _minMembers
           ? FloatingActionButton(
               onPressed: _isCreating ? null : _showGroupNameDialog,
               backgroundColor: SnowColors.primary,

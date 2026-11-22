@@ -2,14 +2,23 @@
 /// @description Drift-based local database. Stores messages, conversations, contacts, and E2EE session state.
 ///              Schema v2: Signal patterns applied (3-timestamp, read column, denormalized unread count)
 ///              Schema v8: added IdentityVerifications table (Safety Number 60-digit + TOFU mismatch)
+///              Schema v11: group protocol v2 tables (group state: Gv2Groups, Gv2Members, Gv2Pending, Gv2Heads; acting without a login: Gv2ServerKeys, Gv2AuthCredentials, Gv2Endorsements; the local inbox: Gv2InboxRows, Gv2Seen; pairwise messages: Gv2SenderKeys, Gv2KeyDeliveries, Gv2OutboxRows; group messages: Gv2MessageIds) + Gv2Store, Gv2InboxStore, Gv2SenderKeyStore, Gv2OutboxStore
+///              Schema v12: group key backup state; Schema v13: gv2_groups.change_sent_at_ms
+///              Schema v14: data only — conversations whose id is neither a snowId (1:1) nor a v2
+///              group id are removed with their messages and attachment rows (v1 groups gone)
+///              Schema v17: direct_outbox (the 1:1 outbox — DirectOutboxDao) and
+///              local_messages.peer_client_id with its unique index (a message the sender sent
+///              again is stored once)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header + inline English translation; previous: 2026-04-20 Schema v9: PendingTransfers + DAO — Wallet V2 Phase 1)
+/// @lastUpdated 2026-11-21 (v17: direct_outbox + local_messages.peer_client_id / idx_messages_peer_client
+///              — the 1:1 outbox and the receiver's duplicate guard). Earlier 2026-11-21 (v16: blocked_accounts — X1, the accounts this user blocked, on this device; BlockListDao). Earlier 2026-11-21 (v15: gv2_heads.stored_at_ms, gv2_groups.my_key_at_ms, gv2_backup_state.write_due_at_ms — the backup write is made at a random time 1–6 h after what changed it). Earlier 2026-11-20 (Schema v14: data only — the conversations of the v1 groups and rooms, and any other conversation whose id is neither a peer's snowId nor a group protocol v2 group id, go with their messages and attachment rows; the files stay). Earlier same day (Schema v13: gv2_groups.change_sent_at_ms — a group change whose answer never came). Earlier 2026-11-20 (Schema v11: group protocol v2 state tables and Gv2Store, then the local inbox tables and Gv2InboxStore, then the verified log points, v4 Sender Keys, key deliveries and the outbox, then the handled message ids; schema v12: gv2_backup_state and gv2_groups.reset_pending — a new version because development devices already carry v11; every schema version is now dumped to drift_schemas/ and the migration is tested against it). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-20 Schema v9: PendingTransfers + DAO — Wallet V2 Phase 1)
 ///
 /// @functions
 ///  - SnowDatabase: Drift database main class
 ///  - _createCustomIndexes(): create partial indexes and composite indexes
+///  - keptConversationIdSql(column): SQL condition — a conversation id that is still valid (v14)
 
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
@@ -26,6 +35,9 @@ import 'tables/wallet_address_book_table.dart';
 import 'tables/ai_messages_table.dart';
 import 'tables/identity_verifications_table.dart';
 import 'tables/pending_transfers_table.dart';
+import 'tables/gv2_tables.dart';
+import 'tables/blocked_accounts_table.dart';
+import 'tables/direct_outbox_table.dart';
 
 // Import DAOs
 import 'daos/message_dao.dart';
@@ -37,6 +49,12 @@ import 'daos/wallet_address_book_dao.dart';
 import 'daos/ai_message_dao.dart';
 import 'daos/identity_verification_dao.dart';
 import 'daos/pending_transfer_dao.dart';
+import 'daos/block_list_dao.dart';
+import 'daos/direct_outbox_dao.dart';
+import '../group_v2/gv2_inbox_store.dart';
+import '../group_v2/gv2_outbox.dart';
+import '../group_v2/gv2_sender_key_store.dart';
+import '../group_v2/gv2_store.dart';
 
 part 'database.g.dart';
 
@@ -64,6 +82,22 @@ part 'database.g.dart';
     AiMessages,
     IdentityVerifications,
     PendingTransfers,
+    Gv2Groups,
+    Gv2Members,
+    Gv2Pending,
+    Gv2ServerKeys,
+    Gv2AuthCredentials,
+    Gv2Endorsements,
+    Gv2InboxRows,
+    Gv2Seen,
+    Gv2Heads,
+    Gv2SenderKeys,
+    Gv2KeyDeliveries,
+    Gv2OutboxRows,
+    Gv2MessageIds,
+    Gv2BackupStates,
+    BlockedAccounts,
+    DirectOutboxJobs,
   ],
   daos: [
     MessageDao,
@@ -75,13 +109,19 @@ part 'database.g.dart';
     AiMessageDao,
     IdentityVerificationDao,
     PendingTransferDao,
+    Gv2Store,
+    Gv2InboxStore,
+    BlockListDao,
+    DirectOutboxDao,
+    Gv2SenderKeyStore,
+    Gv2OutboxStore,
   ],
 )
 class SnowDatabase extends _$SnowDatabase {
   SnowDatabase(super.e);
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 17;
 
   @override
   MigrationStrategy get migration {
@@ -216,10 +256,115 @@ class SnowDatabase extends _$SnowDatabase {
           await m.addColumn(localMessages, localMessages.replyToPreview);
           await m.addColumn(localMessages, localMessages.replyToSenderId);
         }
+        if (from < 11) {
+          // Group protocol v2: the state of v2 groups on this device (master
+          // key, the last verified point of the change log, members, pending
+          // invites). Written only through Gv2Store.
+          await m.createTable(gv2Groups);
+          await m.createTable(gv2Members);
+          await m.createTable(gv2Pending);
+          await m.createIndex(idxGv2MembersSnow);
+          // What this device holds to act in those groups without a login.
+          await m.createTable(gv2ServerKeys);
+          await m.createTable(gv2AuthCredentials);
+          await m.createTable(gv2Endorsements);
+          // The local inbox: envelopes taken off the server queue that wait
+          // here to be handled, and digests of the handled ones. Written
+          // only through Gv2InboxStore.
+          await m.createTable(gv2InboxRows);
+          await m.createIndex(idxGv2InboxLane);
+          await m.createTable(gv2Seen);
+          await m.createIndex(idxGv2SeenRow);
+          // Pairwise messages: the verified points of each log (Gv2Store),
+          // the v4 Sender Keys and the keys given to each member
+          // (Gv2SenderKeyStore), and what waits to be sent (Gv2OutboxStore).
+          await m.createTable(gv2Heads);
+          await m.createTable(gv2SenderKeys);
+          await m.createTable(gv2KeyDeliveries);
+          await m.createTable(gv2OutboxRows);
+          // Group messages already handled, by local message id
+          // (Gv2InboxStore).
+          await m.createTable(gv2MessageIds);
+        }
+        if (from < 12) {
+          // Group protocol v2 backup of the group keys: what this device
+          // knows of the server's copy, and — per group — whether a group
+          // restored from it still has to announce that its keys are gone.
+          // (A database below v11 got the column with the table just above.)
+          await m.createTable(gv2BackupStates);
+          if (from == 11) {
+            await m.addColumn(gv2Groups, gv2Groups.resetPending);
+          }
+        }
+        if (from < 13) {
+          // Group protocol v2: a change of this device whose answer never
+          // came. (A database below v11 got the column with the table.)
+          if (from >= 11) {
+            await m.addColumn(gv2Groups, gv2Groups.changeSentAtMs);
+          }
+        }
+        if (from < 14) {
+          // v1 groups are gone (2026-11-20). A conversation id is now one of
+          // two things: the peer's snowId (a 1:1 room) or a group protocol
+          // v2 group id. Every other conversation — v1 groups and community
+          // rooms (server CUIDs), legacy CUID-keyed 1:1 rooms, an old group
+          // row mis-typed as 'direct' that could capture 1:1 routing — goes,
+          // with its messages and their attachment rows. Attachment files on
+          // disk are not touched (orphans, gone with a reinstall).
+          final keepMessage = keptConversationIdSql('conversation_id');
+          await customStatement(
+            'DELETE FROM local_attachments WHERE message_id IN '
+            '(SELECT id FROM local_messages WHERE NOT ($keepMessage))',
+          );
+          await customStatement(
+            'DELETE FROM local_messages WHERE NOT ($keepMessage)',
+          );
+          await customStatement(
+            'DELETE FROM conversations WHERE NOT (${keptConversationIdSql('id')})',
+          );
+        }
+        if (from < 15 && to >= 15) {
+          // Group protocol v2: when the delayed write of the backup is due,
+          // when a point of a log was stored (old ones are pruned), when this
+          // device made its own Sender Key (it is replaced after a while).
+          // (A database below v12 / v11 got the columns with the tables.)
+          // Bounded by [to] too: the schema tests upgrade to earlier
+          // versions.
+          if (from >= 12) {
+            await m.addColumn(gv2BackupStates, gv2BackupStates.writeDueAtMs);
+          }
+          if (from >= 11) {
+            await m.addColumn(gv2Heads, gv2Heads.storedAtMs);
+            await m.addColumn(gv2Groups, gv2Groups.myKeyAtMs);
+          }
+        }
+        if (from < 16 && to >= 16) {
+          // X1: the accounts this user blocked, kept on this device.
+          await m.createTable(blockedAccounts);
+        }
+        if (from < 17 && to >= 17) {
+          // The 1:1 outbox: a message is sent (and sent again) by a job that
+          // outlives the chat screen; the receiver stores a message sent
+          // twice once, by the sender's own id for it.
+          await m.createTable(directOutboxJobs);
+          await m.createIndex(idxDirectOutboxPeer);
+          await m.addColumn(localMessages, localMessages.peerClientId);
+          await m.createIndex(idxMessagesPeerClient);
+        }
         debugPrint('[Perf] 💾 drift onUpgrade complete: ${sw.elapsedMilliseconds}ms');
       },
     );
   }
+
+  /// SQL condition: [column] holds a conversation id that is still valid —
+  /// a peer's snowId ("snow" + 32 lowercase hex) or a group protocol v2 group
+  /// id (64 lowercase hex). GLOB is case-sensitive, so upper-case hex is not
+  /// kept either. Used by the v14 cleanup.
+  @visibleForTesting
+  static String keptConversationIdSql(String column) =>
+      "(length($column) = 36 AND substr($column, 1, 4) = 'snow' "
+      "AND substr($column, 5) NOT GLOB '*[^0-9a-f]*') "
+      "OR (length($column) = 64 AND $column NOT GLOB '*[^0-9a-f]*')";
 
   /// Signal partial index pattern (02-Signal Section 2.3, 10.2).
   /// Indexes optimized for unread queries, notification lookup, conversation list sort, etc.

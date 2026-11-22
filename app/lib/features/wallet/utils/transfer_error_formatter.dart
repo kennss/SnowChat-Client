@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-15
-/// @lastUpdated 2026-04-26 (header + inline English translation)
+/// @lastUpdated 2026-11-12 (removed the marketplace program error mapping and marketplace hints). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - TransferErrorFormatter.format(): RPC error → user-friendly message
@@ -32,20 +32,7 @@ class TransferErrorFormatter {
     if (lower.contains('custom program error: 0x1') &&
         lower.contains('tokenkeg')) {
       return 'Token account has insufficient balance. '
-          'The token may be listed on marketplace or already transferred.';
-    }
-
-    // Marketplace (Tensor program) 0x1 — typically insufficient balance on
-    // buy/list, or listing state mismatch (NFT already sold or cancelled).
-    if (lower.contains('custom program error: 0x1') &&
-        (lower.contains('buylegacy') ||
-            lower.contains('listlegacy') ||
-            lower.contains('delistlegacy'))) {
-      return 'Marketplace transaction failed. '
-          'Likely insufficient SOL in this wallet — '
-          'you need the listing price plus about 0.005 SOL for fees. '
-          'If you have enough, the listing may have just been bought or '
-          'cancelled by someone else.';
+          'The token may already have been transferred.';
     }
 
     // Blockhash expired

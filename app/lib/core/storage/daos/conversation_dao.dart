@@ -4,7 +4,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-08-12 (findDirectByParticipant() gained trustServerCuidRows: on a device still carrying a pre-302 mis-typed group row, the inbound queue drains before loadFromServer's retypeToGroup heal, so a queued sealed 1:1 was still routed into the group room on the first post-upgrade boot (measured on 303: routed 36s before the heal). Receive-path callers pass false until the server group-id set has been synced once this session; the deterministic snow-id room is used instead and dedupeDirectByPeer folds it onto the canonical row on the same pass). Earlier 2026-08-03 (retypeToGroup() heals a group whose local row was mis-created as type='direct' by the group-message listener — that row was indistinguishable from a 1:1 with the sender, so findDirectByParticipant routed 1:1 messages into it and dedupeDirectByPeer merged the receive-first 1:1 room onto it, bleeding 1:1 and group transcripts together; dedupeDirectByPeer now also skips any row carrying a groupId as forward defense). Earlier 2026-08-03 (add public participantIdsOf() wrapping the tolerant _parseParticipants so MessageRepository can resolve the 1:1 peer without a jsonDecode FormatException on the CSV column). Earlier 2026-05-14 (dedupeDirectByPeer merges duplicate direct rows per peer into the canonical server-CUID row — heals the badge-stuck-at-N regression where Sealed Sender phantom rows accumulated unread the UI never surfaced)
+/// @lastUpdated 2026-11-20 (v1 groups removed: a 1:1 room is keyed by the peer's snowId, so
+///              findDirectByParticipant() is that row and nothing else; retypeToGroup() and
+///              dedupeDirectByPeer() — heals for mis-typed v1 group rows and server-CUID
+///              duplicates — are gone with the rows they healed). Earlier 2026-11-12 (retypeToGroup: the raw print() that wrote the group id to the console in every build mode is now a debugPrint without the id). Earlier 2026-08-12 (findDirectByParticipant() gained trustServerCuidRows: on a device still carrying a pre-302 mis-typed group row, the inbound queue drains before loadFromServer's retypeToGroup heal, so a queued sealed 1:1 was still routed into the group room on the first post-upgrade boot (measured on 303: routed 36s before the heal). Receive-path callers pass false until the server group-id set has been synced once this session; the deterministic snow-id room is used instead and dedupeDirectByPeer folds it onto the canonical row on the same pass). Earlier 2026-08-03 (retypeToGroup() heals a group whose local row was mis-created as type='direct' by the group-message listener — that row was indistinguishable from a 1:1 with the sender, so findDirectByParticipant routed 1:1 messages into it and dedupeDirectByPeer merged the receive-first 1:1 room onto it, bleeding 1:1 and group transcripts together; dedupeDirectByPeer now also skips any row carrying a groupId as forward defense). Earlier 2026-08-03 (add public participantIdsOf() wrapping the tolerant _parseParticipants so MessageRepository can resolve the 1:1 peer without a jsonDecode FormatException on the CSV column). Earlier 2026-05-14 (dedupeDirectByPeer merges duplicate direct rows per peer into the canonical server-CUID row — heals the badge-stuck-at-N regression where Sealed Sender phantom rows accumulated unread the UI never surfaced)
 ///
 /// @functions
 ///  - ConversationDao: conversations DAO class
@@ -13,8 +16,7 @@
 ///  - watchTotalUnreadCount(): reactive stream of total unread count (app badge)
 ///  - watchConversation(): reactive stream for a single conversation's changes
 ///  - findOrCreate(): fetch or create a conversation
-///  - dedupeDirectByPeer(): merge duplicate direct rows per peer into the canonical row
-///  - retypeToGroup(): repair a group row mis-created as type='direct' (id matched to a known group)
+///  - findDirectByParticipant(): the 1:1 room with a peer (keyed by the peer's snowId)
 ///  - getConversation(): single-row fetch
 ///  - getAllConversations(): batch fetch all conversations
 ///  - updateLastMessage(): refresh snippet
@@ -28,7 +30,6 @@
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart';
 import '../database.dart';
 import '../tables/conversations_table.dart';
 import '../tables/messages_table.dart';
@@ -136,187 +137,14 @@ class ConversationDao extends DatabaseAccessor<SnowDatabase>
         .getSingle());
   }
 
-  /// Find a direct conversation by participant's snowchat ID.
-  ///
-  /// Returns the canonical conversation row when multiple match. The Sealed
-  /// Sender receive path falls back to using the sender's snowchatId as the
-  /// conversation id when the server-provided id is absent (zero-knowledge —
-  /// the server cannot resolve the row without knowing the sender). That
-  /// creates orphan rows whose id matches the snow-id pattern. Whenever a
-  /// proper server-CUID row also exists for the same peer (created earlier
-  /// by any non-sealed exchange), it is the canonical one and every caller
-  /// — chat open, call routing, transfer attribution — wants that row, not
-  /// the orphan. Prefer non-snow-id rows; fall back to a snow-id row only
-  /// when no canonical row is present.
-  ///
-  /// [trustServerCuidRows] guards the cold-start window on a device still
-  /// carrying a pre-302 mis-typed group row (see [retypeToGroup]). That row is
-  /// `type='direct'` under the group's server CUID, so it passes the type
-  /// filter and — being a non-snow-id row — wins the canonical preference
-  /// above, routing the peer's 1:1 messages into the group room. The heal runs
-  /// in loadFromServer, but the inbound queue drains first on a cold start:
-  /// measured on 303, a queued sealed 1:1 was routed into the poisoned row 36s
-  /// before retypeToGroup fired. Until the authoritative group-id set has been
-  /// synced at least once this session, callers on the receive path pass false
-  /// so an unproven CUID row is skipped and the deterministic snow-id room is
-  /// used instead; dedupeDirectByPeer folds it onto the canonical row on the
-  /// same pass that confirms the group set. Lookups that are not routing
-  /// decisions (chat open, call routing, transfer attribution) keep the
-  /// default and always prefer the canonical row.
-  Future<Conversation?> findDirectByParticipant(
-    String snowchatId, {
-    bool trustServerCuidRows = true,
-  }) async {
-    final all = await (select(conversations)
-          ..where((c) => c.type.equals('direct')))
-        .get();
-    Conversation? snowFallback;
-    for (final conv in all) {
-      if (!conv.participantIds.contains(snowchatId)) continue;
-      final isSnowIdRow =
-          conv.id.length == 36 && conv.id.startsWith('snow');
-      if (!isSnowIdRow) {
-        if (!trustServerCuidRows) continue;
-        return conv;
-      }
-      snowFallback ??= conv;
-    }
-    return snowFallback;
-  }
-
-  /// Dedupe duplicate direct rows for the same peer pair.
-  ///
-  /// Multiple direct rows can accumulate when the Sealed Sender receive path
-  /// creates rows under foreign ids (sender's own server-CUID, or the snow-id
-  /// fallback) while loadFromServer later inserts the receiver's canonical
-  /// server-CUID. With both rows alive, unread on the non-canonical row sits
-  /// inside watchTotalUnreadCount's SUM but the UI only exposes the canonical
-  /// row — the badge stays at N and the user can't reach the message that
-  /// drove it (the badge-stuck-at-1 regression after a manual delete).
-  ///
-  /// Per peer: keep the canonical row when [canonicalIds] (server-CUID set
-  /// just confirmed by loadFromServer) names one of the duplicates,
-  /// otherwise fall back to the non-snow-id row. Migrate messages from the
-  /// duplicates onto the keeper, fold their unread counts in, then delete
-  /// the duplicates. Idempotent — runs to a no-op once dedupe converges.
-  /// Repair a group whose local row was mis-created as `type='direct'`.
-  ///
-  /// The group-message list listener creates a drift row for the group's id via
-  /// findOrCreate but hardcoded `type='direct'` with the message sender as the
-  /// sole "peer" and title. That row is indistinguishable from a 1:1 with the
-  /// sender: [findDirectByParticipant] then routes the sender's 1:1 messages
-  /// into it and [dedupeDirectByPeer] merges the receive-first 1:1 room onto it,
-  /// fusing the 1:1 and group transcripts (and leaving a delete-time landmine —
-  /// deleting a direct row wipes the peer's Signal session). The caller supplies
-  /// the authoritative server group id; when a `type='direct'` row exists under
-  /// that exact id we retype it to a real group: `type='group'`, `groupId=id`,
-  /// participants cleared, title reset to the known group name (or left for the
-  /// group-name path to repopulate). Matching is by exact id equality against
-  /// the server group-id set only — never by peer/participants — so a genuine
-  /// 1:1 row (whose id is a direct-conversation CUID or snow-id fallback, never
-  /// a group id) can never be retyped. Idempotent: a no-op once the row is
-  /// already a group. Must run BEFORE [dedupeDirectByPeer] on the healing pass,
-  /// otherwise dedupe merges the still-`direct` group row into the peer's 1:1
-  /// room first.
-  Future<bool> retypeToGroup({required String id, String? title}) async {
-    final rows = await (update(conversations)
-          ..where((c) => c.id.equals(id) & c.type.equals('direct')))
-        .write(ConversationsCompanion(
-      type: const Value('group'),
-      groupId: Value(id),
-      participantIds: Value(_encodeParticipants(const [])),
-      // Always overwrite the 1:1-shaped title (the sender's snow-id). When the
-      // group name is known it lands here; when not (GMK not decrypted yet)
-      // null clears the bogus title so the UI falls back to "Group Chat" until
-      // the group-name path repopulates it — never keep the misleading peer id.
-      title: Value(title),
-      updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
-    ));
-    if (rows > 0) {
-      // ignore: avoid_print
-      print('[ConvDao] retypeToGroup healed mis-typed direct row -> group: $id');
-    }
-    return rows > 0;
-  }
-
-  Future<int> dedupeDirectByPeer({
-    required String mySnowId,
-    required Set<String> canonicalIds,
-  }) async {
-    final all = await (select(conversations)
-          ..where((c) => c.type.equals('direct')))
-        .get();
-    final byPeer = <String, List<Conversation>>{};
-    for (final conv in all) {
-      // Forward defense: never fold a row that carries a groupId into a 1:1
-      // peer bucket. A correctly-typed group is already excluded by the
-      // type='direct' filter above; this guards the transient window where a
-      // row still reads 'direct' but already knows its groupId.
-      if (conv.groupId != null) continue;
-      final parts = _parseParticipants(conv.participantIds);
-      String? peer;
-      for (final p in parts) {
-        if (p.isNotEmpty && p != mySnowId) {
-          peer = p;
-          break;
-        }
-      }
-      if (peer == null) continue;
-      byPeer.putIfAbsent(peer, () => []).add(conv);
-    }
-
-    var mergedRows = 0;
-    for (final entry in byPeer.entries) {
-      final rows = entry.value;
-      if (rows.length < 2) continue;
-
-      Conversation? keeper;
-      for (final r in rows) {
-        if (canonicalIds.contains(r.id)) {
-          keeper = r;
-          break;
-        }
-      }
-      keeper ??= rows.firstWhere(
-        (r) => !(r.id.length == 36 && r.id.startsWith('snow')),
-        orElse: () => rows.first,
-      );
-      final keepId = keeper.id;
-
-      for (final dup in rows) {
-        if (dup.id == keepId) continue;
-        await transaction(() async {
-          await (update(localMessages)
-                ..where((m) => m.conversationId.equals(dup.id)))
-              .write(LocalMessagesCompanion(
-            conversationId: Value(keepId),
-          ));
-          final keep = await (select(conversations)
-                ..where((c) => c.id.equals(keepId)))
-              .getSingleOrNull();
-          if (keep != null) {
-            await (update(conversations)
-                  ..where((c) => c.id.equals(keepId)))
-                .write(ConversationsCompanion(
-              unreadCount: Value(keep.unreadCount + dup.unreadCount),
-              unreadSelfMentionCount: Value(
-                keep.unreadSelfMentionCount + dup.unreadSelfMentionCount,
-              ),
-              lastMessageTime: Value(
-                _maxTimestamp(keep.lastMessageTime, dup.lastMessageTime),
-              ),
-            ));
-          }
-          await (delete(conversations)
-                ..where((c) => c.id.equals(dup.id)))
-              .go();
-        });
-        mergedRows += 1;
-        debugPrint('[ConvDedupe] merged ${dup.id} -> $keepId '
-            '(peer=${entry.key}, dupUnread=${dup.unreadCount})');
-      }
-    }
-    return mergedRows;
+  /// The 1:1 room with [snowchatId]. A 1:1 room's id is the peer's snowId
+  /// (since 2026-08-07 the server keeps no conversation ids; rooms keyed
+  /// otherwise were removed by the v14 migration), so this is that row when
+  /// it is a direct room — never a row that merely lists the peer.
+  Future<Conversation?> findDirectByParticipant(String snowchatId) {
+    return (select(conversations)
+          ..where((c) => c.id.equals(snowchatId) & c.type.equals('direct')))
+        .getSingleOrNull();
   }
 
   /// Single-row conversation fetch.
@@ -496,8 +324,7 @@ class ConversationDao extends DatabaseAccessor<SnowDatabase>
 
   /// Parse the participantIds column, tolerating both encodings actually
   /// found in the wild: CSV (the current writer) and legacy JSON arrays
-  /// (some read paths still use jsonDecode — historical drift). Returning
-  /// a typed list lets dedupeDirectByPeer extract the peer reliably.
+  /// (some read paths still use jsonDecode — historical drift).
   List<String> _parseParticipants(String raw) {
     if (raw.isEmpty) return const [];
     if (raw.startsWith('[')) {
@@ -516,10 +343,4 @@ class ConversationDao extends DatabaseAccessor<SnowDatabase>
   /// column is written as CSV (_encodeParticipants), so a plain jsonDecode there
   /// threw FormatException and silently skipped the Signal session wipe.
   List<String> participantIdsOf(String raw) => _parseParticipants(raw);
-
-  int? _maxTimestamp(int? a, int? b) {
-    if (a == null) return b;
-    if (b == null) return a;
-    return a >= b ? a : b;
-  }
 }

@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-07-15 (registerFcmToken now sends appVersion so the server's UserDevice.appVersion stays fresh on every launch — fixes stale-build mis-fire of the sealed_control / VoIP version gates). Earlier 2026-06-08 (Bug B-1: clear notification shade on foreground +
+/// @lastUpdated 2026-11-20 (v1 groups removed: no socket group-invite listener — an invite into a group protocol v2 group arrives as a sealed 1:1 message and is listed in the Chats tab). Earlier 2026-07-15 (registerFcmToken now sends appVersion so the server's UserDevice.appVersion stays fresh on every launch — fixes stale-build mis-fire of the sealed_control / VoIP version gates). Earlier 2026-06-08 (Bug B-1: clear notification shade on foreground +
 ///              on conversation open. Samsung One UI badge follows active-
 ///              notification count, not app_badge_plus, so unread badge stays
 ///              stuck at N until the shade is cleared. PushService now observes
@@ -20,7 +20,7 @@
 ///
 /// @functions
 ///  - PushService: service that receives push notification events and triggers local notifications
-///  - PushService.initialize(): obtain push token (FCM Android / APNs iOS) + register socket event listeners + lifecycle observer
+///  - PushService.initialize(): obtain push token (FCM Android / APNs iOS) + lifecycle observer
 ///  - PushService.setActiveConversation(): track viewed conversation + cancel its lingering notification on open
 ///  - PushService.didChangeAppLifecycleState(): foreground → cancelAll message notifications (Samsung badge fix)
 ///  - PushService.registerFcmToken(): register push token with server
@@ -38,7 +38,6 @@ import 'package:flutter/widgets.dart'
 
 import '../network/api_client.dart';
 import '../network/api_endpoints.dart';
-import '../network/socket_manager.dart';
 import '../storage/secure_storage.dart';
 import '../../utils/version.dart';
 import 'notification_service.dart';
@@ -50,7 +49,6 @@ import 'notification_service.dart';
 /// - Data-only: { type: "new_message", conversationId: "..." }
 /// - Client receives silent push -> fetches encrypted message -> decrypts -> shows local notification
 class PushService with WidgetsBindingObserver {
-  final SocketManager _socketManager;
   final NotificationService _notificationService;
   final ApiClient _apiClient;
   final SecureStorageService _secureStorage;
@@ -66,16 +64,13 @@ class PushService with WidgetsBindingObserver {
   // Recently notified message IDs — prevents Socket.IO + FCM duplicate alerts.
   final Set<String> _recentlyNotifiedIds = {};
 
-  StreamSubscription<Map<String, dynamic>>? _groupInviteSubscription;
   StreamSubscription<String>? _tokenRefreshSubscription;
 
   PushService({
-    required SocketManager socketManager,
     required NotificationService notificationService,
     required ApiClient apiClient,
     required SecureStorageService secureStorage,
-  })  : _socketManager = socketManager,
-        _notificationService = notificationService,
+  })  : _notificationService = notificationService,
         _apiClient = apiClient,
         _secureStorage = secureStorage;
 
@@ -90,10 +85,6 @@ class PushService with WidgetsBindingObserver {
     // 2026-05-30 — measured launcher "notification listener: N, badge provider:
     // 0"). Foreground = the user is in the app → clear the message shade.
     WidgetsBinding.instance.addObserver(this);
-
-    // Socket.IO listeners (group invites)
-    _groupInviteSubscription =
-        _socketManager.onGroupInvite.listen(_onGroupInvite);
 
     final fcm = FirebaseMessaging.instance;
 
@@ -314,24 +305,9 @@ class PushService with WidgetsBindingObserver {
     }
   }
 
-  /// Handle incoming group invite from socket.
-  void _onGroupInvite(Map<String, dynamic> data) {
-    debugPrint('[PushService] Group invite received: ${data['groupName']}');
-    final groupName = (data['groupName'] ?? 'Group') as String;
-    final inviterName =
-        ((data['invitedBy'] as Map?)?['displayName'] ?? 'Someone') as String;
-
-    _notificationService.showMessageNotification(
-      senderName: groupName,
-      preview: '$inviterName invited you to join',
-      conversationId: data['groupId'] as String? ?? '',
-    );
-  }
-
   /// Clean up subscriptions.
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _groupInviteSubscription?.cancel();
     _tokenRefreshSubscription?.cancel();
   }
 }

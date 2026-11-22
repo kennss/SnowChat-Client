@@ -1,22 +1,19 @@
 /// @file        enhanced_tx_list_tile.dart
 /// @description Transaction history list tile based on Helius Enhanced
 ///              Transaction. type-based icon/label (TRANSFER, SWAP, NFT_SALE,
-///              ...) + description subtitle. Phase X-2: marketplace tx
-///              (nftSale / nftListing / nftCancelListing) renders NFT name +
-///              price by watching nftAssetByMintProvider.
+///              ...) + description subtitle. NFT trade rows (nftSale /
+///              nftListing / nftCancelListing) show the owner's net SOL.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-08
-/// @lastUpdated 2026-04-26 (Phase X-2 marketplace name+price)
+/// @lastUpdated 2026-11-12 (removed the SnowChat marketplace NFT name / price title; back to a StatelessWidget; NFT trade rows keep the net-SOL amount). Earlier 2026-04-26 (Phase X-2 marketplace name+price)
 ///
 /// @functions
 ///  - EnhancedTxListTile: per-transaction tile widget based on EnhancedTransaction
 library;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../nft/nft_provider.dart' show nftAssetByMintProvider;
 import '../transaction/enhanced_transaction.dart';
 
 abstract class _C {
@@ -30,7 +27,7 @@ abstract class _C {
 }
 
 /// A single transaction row for the Enhanced History activity list.
-class EnhancedTxListTile extends ConsumerWidget {
+class EnhancedTxListTile extends StatelessWidget {
   const EnhancedTxListTile({
     super.key,
     required this.tx,
@@ -43,15 +40,7 @@ class EnhancedTxListTile extends ConsumerWidget {
   final VoidCallback? onTap;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Phase X-2: marketplace tx — fetch NFT name (cached via family
-    // provider, no autoDispose so scroll doesn't refire DAS).
-    String? nftName;
-    if (tx.marketplaceNftMint != null) {
-      final asset =
-          ref.watch(nftAssetByMintProvider(tx.marketplaceNftMint!)).valueOrNull;
-      nftName = asset?.name;
-    }
+  Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
       child: Container(
@@ -70,7 +59,7 @@ class EnhancedTxListTile extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    _title(nftName: nftName),
+                    _title(),
                     style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
@@ -96,7 +85,7 @@ class EnhancedTxListTile extends ConsumerWidget {
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
-                    color: _amountColor(ref),
+                    color: _amountColor(),
                   ),
                 ),
                 const SizedBox(height: 2),
@@ -144,57 +133,21 @@ class EnhancedTxListTile extends ConsumerWidget {
     };
   }
 
-  String _title({String? nftName}) {
+  String _title() {
     final isSend = tx.isSend(ownerAddress);
-    // Phase X-2 — marketplace tx: include NFT name + price in title.
-    // nftName null = still loading or DAS lookup failed → fallback to
-    // truncated mint or generic word.
-    final assetLabel = nftName?.trim().isNotEmpty ?? false
-        ? nftName!.trim()
-        : (tx.marketplaceNftMint != null
-            ? _shortMint(tx.marketplaceNftMint!)
-            : null);
-    final priceSol = tx.marketplaceLamports != null
-        ? _formatSol(tx.marketplaceLamports!)
-        : null;
-
     return switch (tx.type) {
       EnhancedTxType.transfer || EnhancedTxType.transferChecked =>
         isSend ? 'Sent' : 'Received',
       EnhancedTxType.swap => 'Swapped',
-      // buy_legacy 의 maxAmount 가 listing × 2 라 정확한 price 가 아님 →
-      // X-3 의 tx detail breakdown 에서만 표시. row 에선 name 만.
-      // isSend(ownerAddress) 는 marketplace 에서 정반대 결과 — buyer 가
-      // SystemProgram.transfer 의 from 으로 잡혀 isSend=true → 잘못 "Sold"
-      // 분류됐던 bug. _amount 와 일관성 위해 net SOL 부호로 결정.
-      EnhancedTxType.nftSale => (() {
-          var net = BigInt.zero;
-          for (final nt in tx.nativeTransfers) {
-            if (nt.toUserAccount == ownerAddress) net += nt.amount;
-            if (nt.fromUserAccount == ownerAddress) net -= nt.amount;
-          }
-          final isSell = net > BigInt.zero; // 받았으면 seller
-          if (assetLabel == null) {
-            return isSell ? 'NFT Sold' : 'NFT Purchased';
-          }
-          return isSell ? 'Sold $assetLabel' : 'Bought $assetLabel';
-        })(),
-      EnhancedTxType.nftListing => assetLabel == null || priceSol == null
-          ? 'Listed NFT'
-          : 'Listed $assetLabel at $priceSol SOL',
-      EnhancedTxType.nftCancelListing => assetLabel == null
-          ? 'Cancelled Listing'
-          : 'Cancelled listing of $assetLabel',
+      // isSend is net-SOL based for NFT trades: net SOL out = buyer.
+      EnhancedTxType.nftSale => isSend ? 'NFT Purchased' : 'NFT Sold',
+      EnhancedTxType.nftListing => 'Listed NFT',
+      EnhancedTxType.nftCancelListing => 'Cancelled Listing',
       EnhancedTxType.nftMint || EnhancedTxType.compressedNftMint => 'Minted NFT',
       EnhancedTxType.tokenMint => 'Token Mint',
       EnhancedTxType.burn || EnhancedTxType.burnChecked => 'Burned',
       _ => tx.type.displayLabel,
     };
-  }
-
-  String _shortMint(String mint) {
-    if (mint.length <= 12) return mint;
-    return '${mint.substring(0, 4)}…${mint.substring(mint.length - 4)}';
   }
 
   String _subtitle() {
@@ -211,25 +164,20 @@ class EnhancedTxListTile extends ConsumerWidget {
   }
 
   String _amount() {
-    // Phase X-2 fix: marketplace tx 는 복합 SOL 분산 (price → seller +
-    // royalty → creator + marketplace fee → vault + ...). 첫 nativeTransfer
-    // 만 보면 잘못된 부호/금액. owner address 의 net SOL change 합산이
-    // 정확.
+    // NFT trades spread SOL over several legs (price, royalty, fees), so the
+    // first native transfer alone gives a wrong sign / amount. Sum the
+    // owner's net SOL change instead.
     if (tx.type == EnhancedTxType.nftSale ||
         tx.type == EnhancedTxType.nftListing ||
         tx.type == EnhancedTxType.nftCancelListing) {
-      var net = BigInt.zero;
-      for (final nt in tx.nativeTransfers) {
-        if (nt.toUserAccount == ownerAddress) net += nt.amount;
-        if (nt.fromUserAccount == ownerAddress) net -= nt.amount;
-      }
+      final net = tx.netSolForOwner(ownerAddress);
       if (net == BigInt.zero) return '';
       final prefix = net < BigInt.zero ? '-' : '+';
       final formatted = _formatSol(net.abs());
       return '$prefix$formatted SOL';
     }
 
-    // Native transfer amount (SOL) — 일반 transfer 케이스
+    // Native transfer amount (SOL)
     final lamports = tx.primaryAmountLamports(ownerAddress);
     if (lamports != null && lamports > BigInt.zero) {
       final formatted = _formatSol(lamports);
@@ -251,20 +199,8 @@ class EnhancedTxListTile extends ConsumerWidget {
     return '';
   }
 
-  Color _amountColor(WidgetRef ref) {
+  Color _amountColor() {
     if (tx.type == EnhancedTxType.swap) return _C.warning;
-    // marketplace 의 net SOL 부호로 색상 결정 (buy 면 net 음수 → out 색,
-    // sell 이면 net 양수 → in 색).
-    if (tx.type == EnhancedTxType.nftSale ||
-        tx.type == EnhancedTxType.nftListing ||
-        tx.type == EnhancedTxType.nftCancelListing) {
-      var net = BigInt.zero;
-      for (final nt in tx.nativeTransfers) {
-        if (nt.toUserAccount == ownerAddress) net += nt.amount;
-        if (nt.fromUserAccount == ownerAddress) net -= nt.amount;
-      }
-      return net < BigInt.zero ? _C.textPrimary : _C.primary;
-    }
     return tx.isSend(ownerAddress) ? _C.textPrimary : _C.primary;
   }
 

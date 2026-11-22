@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: every POST /keys/prekeys body (full upload AND OPK replenish) carries identityKeyEd25519 + identityBinding; checkPreKeyCount() self-checks hasIdentityBinding/identityBindingEpoch against the server and repairs via PUT /keys/identity-binding; ensureSession picks the highest-epoch validly-bound device and never retries a hard identity rejection (memoized cooldown, no OPK burn); ensureSessionBatch is per-entry fault isolated; decrypt() hands the envelope deviceId + a cached non-consuming GET /keys/identity lookup to the Signal layer instead of pre-fetching a TOFU pin; the incoming deviceId is cached only after a verified decrypt; getPeerEd25519PublicKey returns the bound Ed (verified directory fallback). Removed dead _syncIdentityKeyToServer (posted keys without a binding)). Earlier 2026-05-05 (Fix A: pin-cache-first on msgType=2 decrypt — eliminates the ~500ms HTTP race that let sealed_call_signaling overtake an in-flight session_reset on long-idle pre-warm)
+/// @lastUpdated 2026-11-22 (SC-05: the session_reset notice goes only through sessionResetNotifier —
+///              a sealed control — never as a non-sealed private_message; the socket parameter is gone — nothing here sends). Earlier 2026-11-21 (legacy TOFU removed: no pending-key-change block or IdentityKeyChangedException; the identity store is always there; the peer Ed lookup admits only bound identities). Earlier 2026-11-20 (a peer whose directory device has no identity binding is refused — refuseUnbound(); v1 groups removed: the group Sender Key operations and saveGroupState() are gone. refreshPeerIdentity(): admit the peer's current directory identity and put aside sessions that do not match it — before a group invite, so that it is not sealed to an identity the peer no longer has. archivePeerSessions() is durable: the peer is recorded in secure storage first and the record cleared only once the store is saved; before initialize() only the record is made, and initialize() applies it right after loading the store — an archive asked for early is no longer lost. Optional sessionStorePath for tests. Earlier same day: archivePeerSessions(): a peer stated — with its own signature, group protocol v2 member_reset — that its sessions are gone; ours with it are archived and the next message starts a new one). Earlier 2026-11-13 (archiveAndResetSession(notifyPeer: false): group protocol v2 sends the first message of the new session itself, sealed over the group queue, instead of the non-sealed session_reset row). Earlier 2026-11-10 (B-2 Identity Binding v1: every POST /keys/prekeys body (full upload AND OPK replenish) carries identityKeyEd25519 + identityBinding; checkPreKeyCount() self-checks hasIdentityBinding/identityBindingEpoch against the server and repairs via PUT /keys/identity-binding; ensureSession picks the highest-epoch validly-bound device and never retries a hard identity rejection (memoized cooldown, no OPK burn); ensureSessionBatch is per-entry fault isolated; decrypt() hands the envelope deviceId + a cached non-consuming GET /keys/identity lookup to the Signal layer instead of pre-fetching a TOFU pin; the incoming deviceId is cached only after a verified decrypt; getPeerEd25519PublicKey returns the bound Ed (verified directory fallback). Removed dead _syncIdentityKeyToServer (posted keys without a binding)). Earlier 2026-05-05 (Fix A: pin-cache-first on msgType=2 decrypt — eliminates the ~500ms HTTP race that let sealed_call_signaling overtake an in-flight session_reset on long-idle pre-warm)
 ///
 /// @functions
 ///  - SignalSessionManager: Signal session management class
@@ -20,11 +21,8 @@
 ///  - SignalSessionManager.peekDeviceIdForIncoming(): Resolve the deviceId for an inbound envelope WITHOUT caching it
 ///  - SignalSessionManager.refreshLocalIdentityBinding(): Mint/reuse our binding and install it for type-2 embedding
 ///  - SignalSessionManager.selfCheckIdentityBinding(): Compare server binding state with ours, PUT when missing/stale
-///  - SignalSessionManager.createGroupSenderKey(): Create group Sender Key
-///  - SignalSessionManager.processGroupSenderKey(): Process incoming group Sender Key
-///  - SignalSessionManager.encryptGroup(): Encrypt group message
-///  - SignalSessionManager.decryptGroup(): Decrypt group message
-///  - SignalSessionManager.archiveAndResetSession(): Archive session, then re-establish X3DH + notify peer (Phase 10 Mechanism 0 + P1-A)
+///  - SignalSessionManager.archiveAndResetSession(): Archive session, then re-establish X3DH + notify peer over the sealed sessionResetNotifier (Phase 10 Mechanism 0 + P1-A)
+///  - SignalSessionManager.archivePeerSessions(): Archive the sessions with a peer that lost its own; nothing is fetched or sent
 ///  - SignalSessionManager.resetSession(): Backward-compat wrapper for archiveAndResetSession
 ///  - SignalSessionManager.resetSessionData(): Reset all E2EE session data (on app reset/onboarding)
 ///  - SignalSessionManager.dispose(): Persist session state and release resources
@@ -40,13 +38,11 @@ import 'package:path_provider/path_provider.dart';
 
 import '../network/api_client.dart';
 import '../network/api_endpoints.dart';
-import '../network/socket_manager.dart';
 import '../storage/secure_storage.dart';
 import 'hkdf.dart' show hkdfDerive;
 import 'identity_admission.dart';
 import 'identity_binding.dart';
 import 'identity_binding_exception.dart';
-import 'identity_key_changed_exception.dart';
 import 'identity_manager.dart';
 import 'session_store.dart';
 import 'signal_protocol_service.dart';
@@ -69,10 +65,9 @@ class SignalSessionManager {
   final SecureStorageService _secureStorage;
   final IdentityManager _identityManager;
   final SessionStore _sessionStore;
-  final SocketManager _socketManager;
 
   /// B-2: verified identity store (owned by the Signal layer).
-  VerifiedIdentityStore? get _identityStore => _signal.identityStore;
+  VerifiedIdentityStore get _identityStore => _signal.identityStore;
 
   /// B-2: hard identity rejections are memoized per peer so callers that loop
   /// (group fan-out fallbacks, call recovery, queue resets) never refetch a
@@ -106,6 +101,17 @@ class SignalSessionManager {
   /// Secure-storage flag: set to 'true' once session store has been encrypted.
   /// Once set, plaintext fallback is permanently disabled (tamper protection).
   static const _storeEncryptedFlagKey = 'signal_store_encrypted';
+
+  /// Secure-storage key: the peers whose sessions are to be archived
+  /// (archivePeerSessions) and have not been written to the session store
+  /// yet. A JSON list of snowIds; empty or absent when nothing waits.
+  static const _pendingArchivesKey = 'signal_pending_peer_archives';
+
+  /// Serializes the changes of the pending archives (read, change, write).
+  Future<void> _pendingLock = Future<void>.value();
+
+  /// Where the session store file is (tests pass their own place).
+  final Future<String> Function()? _storePathOverride;
 
   bool _initialized = false;
   bool get isInitialized => _initialized;
@@ -176,13 +182,13 @@ class SignalSessionManager {
     required SecureStorageService secureStorage,
     required IdentityManager identityManager,
     required SessionStore sessionStore,
-    required SocketManager socketManager,
-  })  : _signal = signalService,
+    Future<String> Function()? sessionStorePath,
+  })  : _storePathOverride = sessionStorePath,
+        _signal = signalService,
         _apiClient = apiClient,
         _secureStorage = secureStorage,
         _identityManager = identityManager,
-        _sessionStore = sessionStore,
-        _socketManager = socketManager;
+        _sessionStore = sessionStore;
 
   // ---------------------------------------------------------------------------
   // Initialization
@@ -204,6 +210,8 @@ class SignalSessionManager {
       // Restore session store from secure storage path
       final storePath = await _sessionStorePath();
       await _signal.loadSessionStore(storePath);
+      // Archives asked for before the store was loaded apply to it now.
+      await _applyPendingArchives();
 
       // Load persisted session states from local DB
       await _sessionStore.initialize();
@@ -860,13 +868,14 @@ class SignalSessionManager {
     }
 
     // B-2: fail fast — without a network call or OPK consumption — for a
-    // peer we just hard-rejected or that awaits re-verification.
+    // peer we just hard-rejected.
     await _throwIfIdentityBlocked(recipientSnowchatId);
 
     // B-2 M4: admit the peer from the NON-consuming identity directory first.
-    // A forged / downgraded / replayed identity or a verified legacy key
-    // change is refused here, before the bundle endpoint pops a one-time
-    // prekey. Null → server predates the endpoint (legacy bundle path).
+    // A forged / downgraded / replayed / missing identity binding is refused
+    // here, before the bundle endpoint pops a one-time prekey. Null → the
+    // directory knows no such user (404): the bundle path decides (it retries
+    // a 404 while the peer is still uploading keys).
     final String? preAdmittedDevice;
     try {
       preAdmittedDevice = await _preAdmit(recipientSnowchatId);
@@ -898,10 +907,10 @@ class SignalSessionManager {
         }
 
         // B-2: pick ONE device — the one admitted from the directory (M4),
-        // else the highest-epoch validly-bound one, or the first device when
-        // nobody is bound (legacy). createSession re-verifies the bundle's own
-        // binding, so a bundle that drifted from the directory between the two
-        // requests is still judged on its own merits.
+        // else the highest-epoch validly-bound one (a bundle with no binding
+        // is refused by createSession). createSession re-verifies the bundle's
+        // own binding, so a bundle that drifted from the directory between the
+        // two requests is still judged on its own merits.
         final selected = await _selectBundleDevice(
           recipientSnowchatId,
           data['accountPublicKey'],
@@ -927,8 +936,6 @@ class SignalSessionManager {
         _identityRejections[recipientSnowchatId] =
             (at: DateTime.now(), error: e);
         rethrow; // never retried
-      } on IdentityKeyChangedException {
-        rethrow; // blocked until re-verification — never retried
       } catch (e) {
         final is404 = e.toString().contains('404') ||
             e.toString().contains('DEVICE_NOT_FOUND') ||
@@ -952,42 +959,23 @@ class SignalSessionManager {
   }
 
   /// B-2: throw (without network) when [snowId] is in the hard-rejection
-  /// cooldown or has a legacy key change awaiting re-verification.
+  /// cooldown.
   Future<void> _throwIfIdentityBlocked(String snowId) async {
     final rejected = _identityRejections[snowId];
-    if (rejected != null) {
-      if (DateTime.now().difference(rejected.at) < _identityRejectionCooldown) {
-        throw rejected.error;
-      }
-      _identityRejections.remove(snowId);
+    if (rejected == null) return;
+    if (DateTime.now().difference(rejected.at) < _identityRejectionCooldown) {
+      throw rejected.error;
     }
-    final store = _identityStore;
-    if (store == null) return;
-    VerifiedIdentityRecord? rec;
-    try {
-      rec = await store.get(snowId);
-    } catch (_) {
-      return; // createSession re-checks with fail-closed semantics
-    }
-    if (rec != null && rec.hasPendingChange) {
-      throw IdentityKeyChangedException(
-        peerSnowchatId: snowId,
-        deviceId: rec.pendingDeviceId,
-        expectedKey: Uint8List.fromList(
-            rec.identityKey ?? rec.ed25519 ?? Uint8List(32)),
-        actualKey: Uint8List.fromList(
-            rec.pendingIdentityKey ?? rec.pendingEd25519 ?? Uint8List(32)),
-      );
-    }
+    _identityRejections.remove(snowId);
   }
 
   /// M4: non-consuming pre-admission. Returns the admitted deviceId, or null
-  /// when the identity endpoint does not exist (pre-B-2 server → legacy
-  /// bundle path). Typed identity failures propagate; other network errors
-  /// surface as a transient SignalProtocolException (no bundle fetched).
+  /// when the directory answers 404 (no such user yet — the bundle path's
+  /// own 404 retry and admission decide). Typed identity failures propagate;
+  /// other network errors surface as a transient SignalProtocolException (no
+  /// bundle fetched).
   Future<String?> _preAdmit(String snowId) async {
     final store = _identityStore;
-    if (store == null) return null;
     final RemoteIdentityDirectory dir;
     try {
       dir = await fetchIdentityDirectory(snowId);
@@ -1003,6 +991,33 @@ class SignalSessionManager {
     final r = await IdentityAdmission(store)
         .admitDirectory(snowId: snowId, directory: dir);
     return r?.device.deviceId;
+  }
+
+  /// Look [snowId] up in the identity directory and admit what it shows —
+  /// a newer binding replaces the one this device holds — then put aside
+  /// every session that does not match the identity now bound (the peer
+  /// reinstalled, or registered again with its recovery phrase). The next
+  /// message to the peer then starts a session with its current identity
+  /// instead of being sealed to one nobody holds any more: a sealed message
+  /// to an identity the peer no longer has cannot be opened, and the peer
+  /// cannot even tell who sent it (so no retry can be asked for).
+  ///
+  /// For a first message after a long while that must not be lost (a group
+  /// invite). Throws like [ensureSession] does: an identity that is refused
+  /// or awaits re-verification, or a directory that cannot be reached.
+  Future<void> refreshPeerIdentity(String snowId) async {
+    await _throwIfIdentityBlocked(snowId);
+    try {
+      await _preAdmit(snowId);
+    } on IdentityBindingInvalidException catch (e) {
+      _identityRejections[snowId] = (at: DateTime.now(), error: e);
+      rethrow;
+    }
+    final purged = await _signal.enforceBoundSessions(snowId);
+    if (purged > 0) {
+      _recipientDeviceIds.remove(snowId);
+      if (_initialized) await _saveSessionStore();
+    }
   }
 
   /// Clear the hard-rejection memo for [snowId] (verify screen re-check).
@@ -1024,9 +1039,7 @@ class SignalSessionManager {
       final store = _identityStore;
       Uint8List? account =
           IdentityBindingV1.parseAccountKeyHex(rawAccountKey as String?);
-      if (store != null) {
-        account ??= (await store.get(snowId))?.accountPublicKey;
-      }
+      account ??= (await store.get(snowId))?.accountPublicKey;
       for (final m in maps) {
         if (m['deviceId'] == preferDeviceId) {
           return (device: m, accountPublicKey: account);
@@ -1037,9 +1050,6 @@ class SignalSessionManager {
       throw SignalProtocolException('No devices found for $snowId');
     }
     final store = _identityStore;
-    if (store == null) {
-      return (device: maps.first, accountPublicKey: null);
-    }
     Uint8List? account =
         IdentityBindingV1.parseAccountKeyHex(rawAccountKey as String?);
     account ??= (await store.get(snowId))?.accountPublicKey;
@@ -1133,6 +1143,79 @@ class SignalSessionManager {
     );
   }
 
+  /// The peer stated that its sessions are gone (a reinstall — group
+  /// protocol v2 `member_reset`, which only the account itself can sign):
+  /// archive ours with it, whatever device they were with, and forget which
+  /// device it used. Nothing is fetched and nothing is sent: the next
+  /// message to the peer finds no session, fetches the peer's current
+  /// prekey bundle and starts a new one. Archived sessions still open what
+  /// was in flight.
+  ///
+  /// The archive is never lost: the peer is first recorded in secure
+  /// storage, then archived and the store saved; the record goes only once
+  /// the store is on disk. Before [initialize] (the store not loaded yet)
+  /// only the record is made, and [initialize] applies it right after it
+  /// loads the store. Throws when the record cannot be made — the caller
+  /// then tries again (a member notice is handled again later).
+  Future<void> archivePeerSessions(String snowId) async {
+    _recipientDeviceIds.remove(snowId);
+    await _changePending((pending) => pending..add(snowId));
+    if (!_initialized) return;
+    await _applyPendingArchives();
+  }
+
+  /// Archive the sessions of every recorded peer and save the store; the
+  /// record is cleared once the store is on disk. A store that cannot be
+  /// saved (no encryption key yet) keeps the record for the next time.
+  Future<void> _applyPendingArchives() async {
+    final pending = await _readPending();
+    if (pending.isEmpty) return;
+    for (final peer in pending) {
+      _recipientDeviceIds.remove(peer);
+      await _signal.archiveSessionsOf(peer);
+    }
+    if (!_signal.hasStoreEncryptionKey || !await _saveSessionStore()) {
+      debugPrint('[SignalSessionManager] archived sessions not saved yet — '
+          'kept for the next save');
+      return;
+    }
+    await _changePending((current) => current..removeAll(pending));
+  }
+
+  Future<Set<String>> _readPending() async {
+    final raw = await _secureStorage.read(_pendingArchivesKey);
+    if (raw == null || raw.isEmpty) return <String>{};
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return <String>{};
+    return {for (final v in decoded) if (v is String && v.isNotEmpty) v};
+  }
+
+  /// Change the recorded peers, one change at a time.
+  Future<void> _changePending(
+    Set<String> Function(Set<String> pending) change,
+  ) {
+    final next = _pendingLock.then((_) async {
+      final updated = change(await _readPending());
+      if (updated.isEmpty) {
+        await _secureStorage.delete(_pendingArchivesKey);
+      } else {
+        await _secureStorage.write(
+          _pendingArchivesKey,
+          jsonEncode(updated.toList()..sort()),
+        );
+      }
+    });
+    // A failed change does not block the next one.
+    _pendingLock = next.catchError((Object _) {});
+    return next;
+  }
+
+  /// Sends the sealed session_reset control to a peer after
+  /// [archiveAndResetSession] re-established the session; true when it was
+  /// sent. Set by providers.dart to EncryptedMessageHandler.sendSealedSessionReset
+  /// (the handler owns the Sealed Sender path). Null: no notice is sent.
+  Future<bool> Function(String snowId)? sessionResetNotifier;
+
   /// Phase 10 Mechanism 0: Archive the stale session and re-establish via X3DH.
   ///
   /// Unlike the previous hard-delete approach, this method **archives** the
@@ -1152,11 +1235,13 @@ class SignalSessionManager {
   /// (typically due to dropped chain hops, multi-device skew, or restored
   /// session stores).
   ///
-  /// NOTE: this is a unilateral reset. The peer will only sync once we
-  /// send the next outbound message (which becomes a new prekey msg).
+  /// The peer learns of the new session from a sealed session_reset control
+  /// ([sessionResetNotifier]) or, failing that, from the next outbound
+  /// message (a prekey message either way).
   Future<void> archiveAndResetSession(
     String snowId, {
     bool force = false,
+    bool notifyPeer = true,
   }) async {
     // Rate limit check: skip if last reset for this peer was < 5 min ago.
     // [force]=true bypasses the cooldown — used by the retry_handler path
@@ -1219,31 +1304,34 @@ class SignalSessionManager {
     // Step 4 (P1-A): Send session_reset notification to the peer.
     // This is a prekey message (type 2) which automatically establishes
     // the new session on the peer's side when they process it.
-    try {
-      final deviceId = await getDeviceIdForRecipient(snowId);
-      final resetPayload = utf8.encode(jsonEncode({
-        'type': 'system',
-        'text': '',
-        'metadata': {'isSessionReset': true},
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
-      }));
-      final encrypted = await encrypt(
-        snowId,
-        deviceId,
-        Uint8List.fromList(resetPayload),
-      );
-      _socketManager.sendPrivateMessage({
-        'recipientId': snowId,
-        'encryptedContent':
-            base64Encode(encrypted['ciphertext'] as Uint8List),
-        'messageType': encrypted['messageType'] as int,
-        'type': 'session_reset',
-        'metadata': jsonEncode({'isSessionReset': true}),
-      });
-      debugPrint('[SessionMgr] Session reset notification sent');
-    } catch (e) {
-      // Non-fatal — the new session will still work for future messages
-      debugPrint('[SessionMgr] Session reset notification failed: $e');
+    // [notifyPeer]=false: the caller sends the first message of the new
+    // session itself — group protocol v2 does, as a sealed pairwise message
+    // over the group queue, so that no server row names sender and
+    // recipient (design §7.2).
+    if (!notifyPeer) {
+      debugPrint('[SignalSessionManager] archiveAndResetSession DONE '
+          '(peer notified by the caller)');
+      return;
+    }
+    // Sealed only (SC-05, 2026-11-10 report): a non-sealed private_message
+    // told the server who reset a session with whom and was kept 7 days. No
+    // notifier (Sealed Sender not wired) or a failed send: nothing is sent —
+    // the next real message is a prekey message and builds the session on
+    // the peer's side all the same.
+    final notify = sessionResetNotifier;
+    if (notify == null) {
+      debugPrint('[SessionMgr] Session reset notification skipped '
+          '(no sealed path)');
+    } else {
+      try {
+        final sent = await notify(snowId);
+        debugPrint('[SessionMgr] Session reset notification '
+            '${sent ? 'sent (sealed)' : 'not sent (sealed path unavailable)'}');
+      } catch (e) {
+        // Non-fatal — the new session will still work for future messages
+        debugPrint('[SessionMgr] Session reset notification failed: '
+            '${e.runtimeType}');
+      }
     }
 
     debugPrint('[SignalSessionManager] archiveAndResetSession DONE');
@@ -1299,9 +1387,6 @@ class SignalSessionManager {
           _identityRejections[id] = (at: DateTime.now(), error: e);
           debugPrint('[SignalSessionManager] batch: identity rejected for one '
               'member (${e.reason.name}) — no bundle fetched');
-        } on IdentityKeyChangedException {
-          debugPrint('[SignalSessionManager] batch: member awaits identity '
-              're-verification — no bundle fetched');
         } catch (e) {
           debugPrint('[SignalSessionManager] batch: identity lookup for one '
               'member failed (transient): ${e.runtimeType}');
@@ -1331,8 +1416,8 @@ class SignalSessionManager {
       return;
     }
 
-    // B-2 per-entry isolation: one bad bundle (forged binding, legacy key
-    // change, missing SPK) must not fail the whole batch and trigger a
+    // B-2 per-entry isolation: one bad bundle (forged or missing binding,
+    // missing SPK) must not fail the whole batch and trigger a
     // re-fetch — and OPK re-consumption — for every other member.
     for (final entry in bundles.entries) {
       final snowchatId = entry.key;
@@ -1362,10 +1447,6 @@ class SignalSessionManager {
         _recipientDeviceIds.remove(snowchatId);
         debugPrint('[SignalSessionManager] batch: identity rejected for one '
             'member (${e.reason.name}) — skipped, not retried');
-      } on IdentityKeyChangedException {
-        _recipientDeviceIds.remove(snowchatId);
-        debugPrint('[SignalSessionManager] batch: member awaits identity '
-            're-verification — skipped');
       } catch (e) {
         _recipientDeviceIds.remove(snowchatId);
         debugPrint('[SignalSessionManager] batch: session for one member '
@@ -1493,62 +1574,6 @@ class SignalSessionManager {
   }
 
   // ---------------------------------------------------------------------------
-  // Group Operations
-  // ---------------------------------------------------------------------------
-
-  /// Create and distribute a sender key for [groupId].
-  /// Returns the sender key distribution message to send to group members.
-  Future<Map<String, dynamic>> createGroupSenderKey(
-    String groupId, {
-    String? myId,
-  }) async {
-    _assertInitialized();
-    final result = await _signal.createSenderKey(groupId, myId: myId);
-    await _saveSessionStore();
-    return result;
-  }
-
-  /// Process a received sender key from another group member.
-  Future<void> processGroupSenderKey(
-    String groupId,
-    String senderId,
-    Map<String, dynamic> senderKeyMessage,
-  ) async {
-    _assertInitialized();
-    await _signal.processSenderKey(groupId, senderId, senderKeyMessage);
-    await _saveSessionStore();
-  }
-
-  /// Encrypt a group message.
-  Future<Uint8List> encryptGroup(
-    String groupId,
-    Uint8List plaintext, {
-    String? myId,
-  }) async {
-    _assertInitialized();
-    final result = await _signal.encryptGroupMessage(
-      groupId,
-      plaintext,
-      myId: myId,
-    );
-    await _saveSessionStore();
-    return result;
-  }
-
-  /// Decrypt a group message.
-  Future<Uint8List> decryptGroup(
-    String groupId,
-    String senderId,
-    Uint8List ciphertext,
-  ) async {
-    _assertInitialized();
-    final result =
-        await _signal.decryptGroupMessage(groupId, senderId, ciphertext);
-    await _saveSessionStore();
-    return result;
-  }
-
-  // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
 
@@ -1660,6 +1685,8 @@ class SignalSessionManager {
   }
 
   Future<String> _sessionStorePath() async {
+    final override = _storePathOverride;
+    if (override != null) return override();
     final dir = await getApplicationDocumentsDirectory();
     return '${dir.path}/signal_session_store.bin';
   }
@@ -1687,10 +1714,6 @@ class SignalSessionManager {
       }
     }
   }
-
-  /// Public method for GroupSessionManager to trigger session store save.
-  /// Includes SenderKeyManager state in the persisted data.
-  Future<void> saveGroupState() async => _saveSessionStore();
 
   /// Persist the session store. Returns `true` iff bytes actually reached disk
   /// (see SignalProtocolService.saveSessionStore) so persist-before-advertise
@@ -1887,9 +1910,8 @@ class SignalSessionManager {
   /// 1. VerifiedIdentityStore bound record → the account-signed Ed.
   /// 2. Non-consuming `GET /keys/identity/:snowId` → highest-epoch device with
   ///    a VALID binding → admitted (recorded + latched) → its Ed.
-  /// 3. Legacy peer (no binding anywhere): the TOFU Ed from our record, or
-  ///    the directory Ed admitted under the legacy policy. A latched peer
-  ///    without a binding is rejected (downgrade).
+  /// 3. No valid binding anywhere: refused (bindingRequired, or downgrade for
+  ///    a latched peer).
   /// The server response is never pinned without verification.
   ///
   /// **Returns**: 32-byte raw Ed25519 verify key, or null when the peer has
@@ -1897,17 +1919,11 @@ class SignalSessionManager {
   Future<Uint8List?> getPeerEd25519PublicKey(String peerSnowchatId) async {
     if (peerSnowchatId.isEmpty) return null;
     final store = _identityStore;
-    if (store != null) {
-      final rec = await store.get(peerSnowchatId);
-      if (rec != null && rec.bound && rec.ed25519 != null) return rec.ed25519;
-      if (rec != null && rec.hasPendingChange) {
-        await _throwIfIdentityBlocked(peerSnowchatId);
-      }
-    }
+    final rec = await store.get(peerSnowchatId);
+    if (rec != null && rec.bound && rec.ed25519 != null) return rec.ed25519;
 
     final dir = await fetchIdentityDirectory(peerSnowchatId);
     if (dir.devices.isEmpty) return null;
-    if (store == null) return dir.devices.first.ed25519;
 
     final admission = IdentityAdmission(store);
     final account =
@@ -1931,14 +1947,7 @@ class SignalSessionManager {
       );
       return admitted.ed25519;
     }
-    final admitted = await admission.admitUnbound(
-      snowId: peerSnowchatId,
-      deviceId: pick.deviceId,
-      identityKey: pick.identityKey,
-      ed25519: pick.ed25519,
-      accountPublicKey: dir.accountPublicKey,
-    );
-    return admitted.ed25519;
+    throw await admission.refuseUnbound(peerSnowchatId);
   }
 
   /// B-2: non-consuming identity directory — `GET /keys/identity/:snowId` →
@@ -1988,7 +1997,7 @@ class SignalSessionManager {
               (raw['oneTimePreKey'] as Map<String, dynamic>)['publicKey']),
         },
       'registrationId': raw['registrationId'],
-      // B-2: per-device binding (absent for legacy peers). A present but
+      // B-2: per-device binding (an absent one is refused by admission). A present but
       // unparseable binding is flagged so admission rejects it (fail-closed).
       'identityBinding': ?binding,
       if (rawBinding != null && binding == null)

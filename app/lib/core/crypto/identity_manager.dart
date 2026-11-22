@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2 Identity Binding v1: account-key signing is purpose-bound — signAuthChallenge() with a strict nonce regex and signIdentityBinding(); the generic sign()/signString() are private (signing-oracle fix §3.1). currentIdentityBinding() mints/reuses the local binding with a monotonic epoch, re-signed whenever the X25519 IK, the Signal Ed25519 key or the deviceId changes). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-21 (snowIdStorageKey made public: the database key manager's readability probe). Earlier 2026-11-20 (matchesRecoveryPhrase(): local proof of the recovery phrase, for resetting a forgotten PIN). Earlier 2026-11-20 (group protocol v2: purpose-bound uses of the account key — deriveGroupMemberKey(), signGroupMemberCert(), signAccountDeleted(), deriveGroupBackupKey()). Earlier 2026-11-10 (B-2 Identity Binding v1: account-key signing is purpose-bound — signAuthChallenge() with a strict nonce regex and signIdentityBinding(); the generic sign()/signString() are private (signing-oracle fix §3.1). currentIdentityBinding() mints/reuses the local binding with a monotonic epoch, re-signed whenever the X25519 IK, the Signal Ed25519 key or the deviceId changes). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - IdentityManager: User ID keypair and Signal key management class
@@ -13,6 +13,7 @@
 ///  - IdentityManager.restoreIdentity(): Restore identity from mnemonic
 ///  - IdentityManager.getSnowChatId(): Get the current SnowChat ID
 ///  - IdentityManager.getMnemonic(): Get the stored mnemonic
+///  - IdentityManager.matchesRecoveryPhrase(): Whether a phrase derives this account's key
 ///  - IdentityManager.getPublicKey(): Get public key bytes
 ///  - IdentityManager.getPublicKeyHex(): Get public key as hex string
 ///  - IdentityManager.getPrivateKey(): Get private key bytes
@@ -23,6 +24,10 @@
 ///  - IdentityManager.recordAccountMaxBindingEpoch(): Persist the server's account-wide max epoch (H1)
 ///  - IdentityManager.accountMaxBindingEpoch(): Read it back
 ///  - IdentityManager._sign(): Private Ed25519 detached signing with the account key
+///  - IdentityManager.deriveGroupMemberKey(): This account's member signing key in one v2 group
+///  - IdentityManager.deriveGroupBackupKey(): The key sealing this account's backup of its v2 group keys
+///  - IdentityManager.signGroupMemberCert(): Account key vouches for that member key
+///  - IdentityManager.signAccountDeleted(): Account deletion proof for this account
 ///  - IdentityManager.generateSignalIdentityKey(): Generate and store Signal Curve25519 keypair
 ///  - IdentityManager.getSignalPublicKey(): Get Signal public key
 ///  - IdentityManager.hasSignalIdentity(): Check whether Signal keypair exists
@@ -34,7 +39,9 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:pinenacl/ed25519.dart';
 
+import '../group_v2/gv2_keys.dart';
 import '../storage/secure_storage.dart';
+import 'account_deletion_proof.dart';
 import 'identity_binding.dart';
 import 'key_derivation.dart';
 import 'signal_protocol_service.dart';
@@ -52,7 +59,12 @@ class IdentityManager {
   static const _mnemonicKey = 'identity_mnemonic';
   static const _privateKeyKey = 'identity_private_key';
   static const _publicKeyKey = 'identity_public_key';
-  static const _snowIdKey = 'snow_chat_id';
+  static const _snowIdKey = snowIdStorageKey;
+
+  /// Secure-storage key of this account's snowId. It exists on every
+  /// onboarded install, in the regular (first-unlock) keychain class — a
+  /// read of it is the readability probe of the database key manager.
+  static const String snowIdStorageKey = 'snow_chat_id';
   static const _signalIdentityPublicKey = 'signal_identity_public_key';
   static const _signalIdentityPrivateKey = 'signal_identity_private_key';
   static const _signalSigningSeedKey = 'signal_signing_seed';
@@ -159,6 +171,24 @@ class IdentityManager {
     return stored.split(' ');
   }
 
+  /// Whether [words] is the recovery phrase of the account on this device:
+  /// the account key derived from it equals the stored one. It proves the
+  /// user holds the account's root secret, so a forgotten PIN can be replaced
+  /// with it (the phrase already grants the whole account — this gives it no
+  /// new power). Purely local: nothing is stored or sent, and the derived
+  /// private key is wiped before returning.
+  Future<bool> matchesRecoveryPhrase(List<String> words) async {
+    if (!KeyDerivation.isValidMnemonic(words)) return false;
+    final stored = await getPublicKey();
+    if (stored == null) return false;
+    final derived = await KeyDerivation.deriveKeyPair(words);
+    try {
+      return constantTimeEquals(derived.publicKey, stored);
+    } finally {
+      derived.privateKey.fillRange(0, derived.privateKey.length, 0);
+    }
+  }
+
   /// Get the public key bytes.
   Future<Uint8List?> getPublicKey() async {
     final hex = await _secureStorage.read(_publicKeyKey);
@@ -231,6 +261,67 @@ class IdentityManager {
       ed25519: ed25519,
     );
     return _sign(msg);
+  }
+
+  /// Group protocol v2: this account's member signing key in the group
+  /// [groupId]. The key is derived from the account seed and the group id, so
+  /// a reinstall from the recovery phrase gets the same key, and the keys of
+  /// two groups cannot be linked. Only the derived key leaves this class; the
+  /// account seed does not.
+  Future<Gv2SigningKey> deriveGroupMemberKey(Uint8List groupId) async {
+    final accountSeed = await getPrivateKey();
+    if (accountSeed == null) {
+      throw StateError('No identity key available');
+    }
+    return Gv2SigningKey.fromSeed(gv2DeriveMemberSeed(accountSeed, groupId));
+  }
+
+  /// Group protocol v2: the key that seals this account's backup of its
+  /// group keys (design §9.8). Derived from the account seed, so the same
+  /// recovery phrase opens the backup on a new install. Only the derived
+  /// key leaves this class.
+  Future<Uint8List> deriveGroupBackupKey() async {
+    final accountSeed = await getPrivateKey();
+    if (accountSeed == null) {
+      throw StateError('No identity key available');
+    }
+    return gv2DeriveBackupKey(accountSeed);
+  }
+
+  /// Group protocol v2: the member certificate — the account key vouching
+  /// that its own member key in [groupId] speaks for this account from
+  /// [issuedAtMs] (Unix milliseconds) on. The member key is derived here, not
+  /// taken from the caller, so the account key never certifies a key it does
+  /// not own. The message starts with 0xFF and its own label.
+  Future<Uint8List> signGroupMemberCert({
+    required Uint8List groupId,
+    required int issuedAtMs,
+  }) async {
+    final memberKey = await deriveGroupMemberKey(groupId);
+    return _sign(gv2MemberCertMessage(
+      groupId: groupId,
+      memberPub: memberKey.publicKey,
+      issuedAtMs: issuedAtMs,
+    ));
+  }
+
+  /// The proof that THIS account was deleted at [deletedAtMs] (Unix
+  /// milliseconds), sent with the account deletion request. Signs for the
+  /// stored snowId only; the message starts with 0xFF and its own label.
+  Future<AccountDeletionProof> signAccountDeleted(int deletedAtMs) async {
+    final snowId = await getSnowChatId();
+    final accountPub = await getPublicKey();
+    if (snowId == null || accountPub == null) {
+      throw StateError('No identity available for a deletion proof');
+    }
+    if (KeyDerivation.deriveSnowChatId(accountPub) != snowId) {
+      throw StateError('Stored account key does not derive the stored snowId');
+    }
+    final signature = await _sign(AccountDeletionProofV1.buildMessage(
+      snowId: snowId,
+      deletedAtMs: deletedAtMs,
+    ));
+    return AccountDeletionProof(deletedAtMs: deletedAtMs, signature: signature);
   }
 
   /// Return the local Identity Binding covering exactly ([deviceId],

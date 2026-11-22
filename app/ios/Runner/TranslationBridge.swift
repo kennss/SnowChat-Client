@@ -6,7 +6,8 @@
 // @author      Kennt Kim
 // @company     Calida Lab
 // @created     2026-04-18
-// @lastUpdated 2026-04-18
+// @lastUpdated 2026-11-11 (translate/OK log lines carry lengths only — message text and
+//              translations are no longer written to the system log)
 //
 // @functions
 //  - TranslationBridge.register(): Flutter MethodChannel 등록
@@ -87,7 +88,8 @@ class TranslationBridge: NSObject {
 
     private func translate(text: String, sourceLang: String?, targetLang: String,
                            result: @escaping FlutterResult) {
-        NSLog("[TranslationBridge] translate: '\(text.prefix(50))' \(sourceLang ?? "auto") → \(targetLang)")
+        // Never log message text — lengths and language codes only.
+        NSLog("[TranslationBridge] translate: \(text.count) chars \(sourceLang ?? "auto") → \(targetLang)")
 
         ensureViewAttached()
 
@@ -100,7 +102,7 @@ class TranslationBridge: NSObject {
         service.translate(text: text, sourceLang: sourceLang, targetLang: targetLang) { translated, error in
             DispatchQueue.main.async {
                 if let translated = translated {
-                    NSLog("[TranslationBridge] OK: '\(translated.prefix(50))'")
+                    NSLog("[TranslationBridge] OK: \(translated.count) chars")
                     result(translated)
                 } else {
                     NSLog("[TranslationBridge] FAIL: \(error?.localizedDescription ?? "unknown")")

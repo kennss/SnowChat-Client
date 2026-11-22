@@ -13,7 +13,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-05-06
-/// @lastUpdated 2026-05-06
+/// @lastUpdated 2026-11-21 (an account this user blocked: confirmUnblockIfBlocked first, instead of
+///              the server's refusal shown as "Failed to start conversation"). Earlier 2026-11-20 (the room id is the recipient's snowId — the server's reply only says
+///              whether a 1:1 may start, it never names the room)
 ///
 /// @functions
 ///  - openDirectChatWith(): existing direct convo → /chat/{id}; otherwise POST conversations/find-or-create then /chat/{id}
@@ -24,6 +26,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/network/api_endpoints.dart';
+import '../../contacts/blocked_peer_prompt.dart';
 import '../models/conversation.dart';
 import '../providers/conversation_list_provider.dart';
 
@@ -42,28 +45,41 @@ Future<void> openDirectChatWith({
   required String recipientSnowchatId,
   String? recipientDisplayName,
 }) async {
+  // An account this user blocked: offer to unblock first (the server would
+  // refuse the 1:1 anyway, with nothing but "Failed to start conversation").
+  if (!await confirmUnblockIfBlocked(
+    context: context,
+    ref: ref,
+    snowId: recipientSnowchatId,
+    displayName: recipientDisplayName,
+  )) {
+    return;
+  }
+  if (!context.mounted) return;
+
   final myId = ref.read(currentSnowIdProvider) ?? '';
+
+  // A 1:1 room's id is the peer's snowId.
+  final convId = recipientSnowchatId;
 
   // Existing direct conversation?
   final conversations = ref.read(conversationListProvider);
-  final existing = conversations.where((c) =>
-      c.type == ConversationType.direct &&
-      c.participantIds.contains(recipientSnowchatId));
-  if (existing.isNotEmpty) {
+  if (conversations
+      .any((c) => c.type == ConversationType.direct && c.id == convId)) {
     if (context.mounted) {
-      context.push('/chat/${existing.first.id}');
+      context.push('/chat/$convId');
     }
     return;
   }
 
-  // Otherwise create through the server.
+  // Otherwise ask the server whether a 1:1 may start (a friend or a
+  // community co-member; refused otherwise). Its reply never names the room.
   try {
     final apiClient = ref.read(apiClientProvider);
-    final response = await apiClient.post(
+    await apiClient.post(
       ApiEndpoints.conversationFindOrCreate,
       data: {'recipientSnowchatId': recipientSnowchatId},
     );
-    final convId = (response.data as Map)['id'] as String;
 
     // Optimistic insert — chatProvider needs the conversation present in
     // the list to resolve recipientSnowchatId (otherwise it group-falls

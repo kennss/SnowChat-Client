@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-08-05 (secure-storage backend aligned to the app-wide config — AndroidOptions(encryptedSharedPreferences: true) + IOSOptions(first_unlock_this_device) — replacing the bare FlutterSecureStorage() legacy backend that loses the ack flag on reload and risks collateral prefs-file sharing, same class as the GMK loss fixed in b413dee). Earlier 2026-04-26 (header + inline English translation; UI: English)
+/// @lastUpdated 2026-11-20 (comment: the GMK store it cites is gone). Earlier 2026-08-05 (secure-storage backend aligned to the app-wide config — AndroidOptions(encryptedSharedPreferences: true) + IOSOptions(first_unlock_this_device) — replacing the bare FlutterSecureStorage() legacy backend that loses the ack flag on reload and risks collateral prefs-file sharing, same class as the GMK loss fixed in b413dee). Earlier 2026-04-26 (header + inline English translation; UI: English)
 ///
 /// @functions
 ///  - VoipPolicyDialog.showIfNeeded(): show once after checking flutter_secure_storage flag
@@ -23,7 +23,7 @@ class VoipPolicyDialog extends StatelessWidget {
     // falls back to the legacy Android backend, which loses values across
     // reload/reinstall AND shares the default prefs file with the AndroidX
     // store — risking collateral loss of other keys. Same class of bug that
-    // wiped the GMK (group_metadata_crypto.dart / commit b413dee).
+    // wiped the v1 group name keys (commit b413dee).
     const storage = FlutterSecureStorage(
       aOptions: AndroidOptions(encryptedSharedPreferences: true),
       iOptions: IOSOptions(

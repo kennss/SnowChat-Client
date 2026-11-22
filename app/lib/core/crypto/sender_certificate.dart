@@ -3,13 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-11
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (verify() takes the trusted key list pinned in the build and accepts a
+///              signature of any of them — key rotation; SC-06). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - SenderCertificate: Sender certificate data class (fixed 177 bytes)
 ///  - SenderCertificate.toBytes(): Serialize the certificate to 177-byte binary
 ///  - SenderCertificate.fromBytes(): Deserialize the certificate from 177-byte binary
-///  - SenderCertificate.verify(): Ed25519 signature verification + expiry check
+///  - SenderCertificate.verify(trustedServerKeys): Ed25519 signature (any trusted key) + expiry check
 ///  - SenderCertificate.isExpired: Whether the certificate has expired
 
 import 'dart:convert';
@@ -212,15 +213,17 @@ class SenderCertificate {
   // Verification
   // -------------------------------------------------------------------------
 
-  /// Verify this certificate against the server's Ed25519 verify key.
+  /// Verify this certificate against the server keys this build trusts
+  /// ([trustedServerKeys] — pinned in the build, sealed_trusted_keys.dart;
+  /// several during a key rotation).
   ///
   /// Checks in order (all must pass):
   /// 1. Version == 0x01
   /// 2. Not expired
-  /// 3. Ed25519 signature over bytes [0..112] is valid
+  /// 3. Ed25519 signature over bytes [0..112] is valid under ONE of the keys
   ///
   /// Throws [StateError] on any verification failure with a descriptive message.
-  void verify(Uint8List serverVerifyKey) {
+  void verify(List<Uint8List> trustedServerKeys) {
     // 1. Version check
     if (version != _certVersion) {
       throw StateError(
@@ -247,18 +250,21 @@ class SenderCertificate {
       _signedPortionLength,
     );
 
-    try {
-      final verifyKey = ed.VerifyKey(serverVerifyKey);
-      verifyKey.verify(
-        signature: ed.Signature(serverSignature),
-        message: signedPortion,
-      );
-    } catch (e) {
-      if (e is StateError) rethrow;
-      throw StateError(
-        'SenderCertificate server signature verification failed: $e',
-      );
+    for (final key in trustedServerKeys) {
+      try {
+        final verified = ed.VerifyKey(key).verify(
+          signature: ed.Signature(serverSignature),
+          message: signedPortion,
+        );
+        if (verified) return;
+      } catch (_) {
+        // Not this key — try the next one.
+      }
     }
+    throw StateError(
+      'SenderCertificate server signature verification failed '
+      '(no trusted key signed it)',
+    );
   }
 
   @override

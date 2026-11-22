@@ -347,11 +347,9 @@ await _callSignaling.sendSealedSignaling(
   eventType: 'rtc_offer',
   innerPayload: {
     'callId': callId,
-    'sdp': offer.sdp,
-    'fingerprint': _parseFingerprint(offer.sdp),
-    'fingerprintSignature': base64Encode(
-      _signal.signWithIdentityKey(fingerprintBytes),
-    ),
+    'sdp': finalSdp,
+    // SC-10 (2026-11-22): the SDP's DTLS fingerprint signed for this call — §4.1
+    ..._fingerprintSignatureField(finalSdp),   // {'fpSig': base64}
   },
 );
 ```
@@ -412,7 +410,9 @@ socket.on('sealed_call_signaling', async (payload: {
 });
 ```
 
-메시징 `sealed_message` 이벤트와 동일한 불투명 relay 패턴. 서버는 "누가 누구에게 통화 시그널링을 보냈는지"를 **모른다** — 수신자 ID만 알 뿐.
+메시징 `sealed_message` 이벤트와 동일한 불투명 relay 패턴. 서버는 "누가 누구에게 통화 시그널링을 보냈는지"를 **저장·기록하지 않는다** — 봉투에는 수신자 ID만 있다. (보내는 소켓은 인증돼 있어 서버가 중계하는 순간 거는 쪽을 알기는 한다: 같은 이유로 `senderHash`를 계산한다. 그 순간 외에는 남기지 않는다.)
+
+**차단 (X1, 2026-11-21)**: 수신자가 거는 쪽을 차단했으면(`user_blocks`) 서버는 그 순간 확인해 중계·푸시·큐 저장 없이 버리고, 로그도 남기지 않는다. 거는 쪽에는 "오프라인 수신자에게 푸시함"과 같은 ack(`offline: true, pushed: true`)를 준다 — 차단 사실을 알리지 않는다(거는 쪽은 응답 없음 시간까지 울린다). 수신자 앱도 `CallSignaling`에서 복호한 뒤 차단한 계정의 신호를 흘려보내지 않는다(세션은 맞춰 둠, 복구 신호도 보내지 않음, 받기·거절 경로의 `parseEnvelope`는 null). 설계: `Documentation/TO-DO/2026-11-21-x1-blocked-accounts-design.md`.
 
 ---
 
@@ -420,27 +420,15 @@ socket.on('sealed_call_signaling', async (payload: {
 
 ### 4.1 자동 검증 (모든 통화)
 
-```dart
-// 발신 측 — fingerprint를 Ed25519로 서명
-final fingerprint = _parseFingerprint(localSdp);
-final signature = _signal.signWithIdentityKey(
-  Uint8List.fromList(utf8.encode(fingerprint)),
-);
+구현됨 (2026-11-22, 보안 보고서 SC-10). `call_verification.dart` + `call_service.dart`.
 
-// 수신 측 — 서명 검증 + SDP fingerprint 일치 검증
-final sdpFingerprint = _parseFingerprint(received['sdp']);
-if (sdpFingerprint != received['fingerprint']) {
-  throw CallVerificationException('Fingerprint mismatch — SDP forged');
-}
-if (!_signal.verifySignature(
-  fingerprintBytes,
-  remoteSignature,
-  remoteIdentityKey,
-)) {
-  throw CallVerificationException('Signature invalid');
-}
-// 검증 실패 시 통화 즉시 차단
-```
+- **서명 대상**: `"SnowChat-Call-DTLS-v1|" + callId + "|" + fingerprint`(소문자 hex). callId를 묶어 다른 통화로 옮겨 쓰지 못하게 한다. 지문은 보낸 SDP에서 뽑는다 — 따로 `fingerprint` 필드를 보내지 않는다(받는 쪽이 받은 SDP에서 직접 뽑으니 불일치가 생길 수 없다).
+- **키**: 서명 = 자기 Signal 계층 Ed25519 씨앗(`SignalProtocolService.signingKeySeed`), 검증 = 상대의 계정에 묶인 Ed25519(`SignalSessionManager.getPeerEd25519PublicKey` — 바인딩된 기록 먼저, 없으면 바인딩을 검증한 디렉터리). `callServiceProvider`가 주입.
+- **필드**: `rtc_offer`·`rtc_answer`·ICE 재시작 offer 안쪽 payload의 `fpSig`(base64 64바이트).
+- **받는 쪽** (`CallVerification.checkRemote`, `setRemoteDescription` 전):
+  - `fpSig` 있음 → 반드시 검증돼야 한다. 상대 키 없음·형식 오류·다른 통화/지문/키의 서명 → **통화 종료**(상대에게 `call_end` reason `failed`, 이쪽도 `failed`).
+  - `fpSig` 없음 → 빌드 1000 상대로 보고 받아들인다(SAS는 그대로). 신호가 Sealed + DR이라 서버가 서명을 지우거나 SDP를 바꿀 수 없다. 빌드 1000 지원 종료 시 필수로 바꾼다(`Documentation/TO-DO/2026-11-22-audit-remainder-design.md` §8).
+- 서명·키는 로그에 남기지 않는다.
 
 ### 4.2 SAS 표시 (사용자 검증)
 
@@ -854,3 +842,6 @@ Phase E (PushKit/CallKit/ConnectionService)
 | 2026-04-21 | Phase I — FCM Voice Push (Android) 정책 확장. §2.6.1 신설: FCM 경로도 §2.6 nonce-only 원칙 + 추가 강화 (notification 필드 금지, callerName/callerSnowchatId 평문 금지, CallKit 표시는 "SnowChat Call" 익명 강제 — Signal 패턴, Redis TTL 60s + fetch 후 즉시 DEL, iOS 분기 차단). §10 CI lint grep 패턴 6개 추가. 상세 Phase 8.2 §25. |
 | 2026-04-29 | Phase E-2 — Apple Dev cert 확보 후 iOS PushKit 활성화. §2.6.1의 "iOS 분기 차단" 조항 해제 (PushKit + APNs `ApnsService.ts` 통합 완료). **§2.7 신설** — ringtone/ringback 재생 시 `_configureAudioSession()` 선행 필수 (foreground 무음 ringtone bug 방지). §10 CI lint에 7개 패턴 추가 (`_startRingtone` 호출부 audit, plugin sharedInstance Optional drop 방지, nonce regex widening 유지, `FirebaseAppDelegateProxyEnabled=false` 유지, `APNS_PRODUCTION` env 명시, DIAG 로그 production 0건, `_processedEnvelopes` lifecycle). 상세 Phase 8.2 §25.7 + §28. |
 | 2026-05-05 | Z-fix — **§2.6.2 신설**: FCM voip data 에 envelope `callId` echo 허용. Galaxy 21:04:47 logcat 에서 BG isolate(FCM nonce) + main isolate(socket envelope callId) 가 각자 다른 UUID 로 `showCallkitIncoming` 호출 → Telecom 에 Connection 2개 등록 → endCall 1개만 처리 → TC@222 좀비 7분 잔존 발견. 단일 source-of-truth (envelope callId) 통일 시 fork dedup gate 가 두 번째 등록 silent skip → 단일 Connection. callId 는 caller-side random UUID, nonce 와 동일 threat class, 서버 영속화 없음 — Zero-Trace 매트릭스 무영향. §10 lint 의 `sendVoipIncomingCall.*callId` 차단 항목을 §2.6.2 예외로 표시. |
+| 2026-11-21 | X1 — 차단한 계정의 통화: 서버가 중계 순간 `user_blocks`를 확인해 버림(중계·푸시·저장·로그 없음, 거는 쪽엔 오프라인 수신자와 같은 ack), 클라이언트 `CallSignaling`도 복호 뒤 버림. §3.5 문구 정정: 서버는 거는 쪽을 "모르는" 게 아니라 "저장·기록하지 않는" 것(인증된 소켓). Zero-Trace 매트릭스 무영향 — 새로 저장·기록하는 것 없음. |
+| 2026-11-21 | 벨이 끝나지 않던 문제 (실기 시험) — V1: 거는 쪽 30초 응답 없음 타임아웃도 정리 전에 `call_end`(reason `timeout`)를 보낸다(전엔 `_cleanup`만 해서 받는 쪽이 계속 울림). V2: 받는 쪽 자체 벨 제한 `CallService.incomingRingTimeout` 65초(시스템 UI 60초 뒤의 안전망) — 만료 시 `declineCall('timeout')`. V3: iOS 앱이 켜져 있는데 CallKit 창이 안 뜨면(VoIP 푸시 미도착) 3초 뒤 앱 안 수신 화면(`CallState.inAppIncoming`); 늦게 뜬 CallKit 창은 아직 울리면 넘겨받고, 이미 앱에서 받았거나 끝났으면 닫고 그 이벤트를 무시. Dart에서 iOS CallKit은 여전히 띄우지 않는다. 설계: `Documentation/TO-DO/2026-11-21-voip-ring-end-design.md`. |
+| 2026-11-22 | SC-10 (2026-11-10 보안 보고서 A-5) — DTLS 지문 서명 구현: 보내는 모든 SDP(offer·answer·ICE 재시작)에 `fpSig` = 통화 id에 묶인 지문의 Ed25519 서명(Signal 계층 키), 받은 `fpSig`는 상대의 계정에 묶인 키로 검증 — 틀리거나 검증할 수 없으면 통화 종료(`failed`). `fpSig` 없는 SDP는 빌드 1000 상대로 받아들임(최소 지원 빌드 이후 필수). §3.2·§4.1 갱신. 설계: `Documentation/TO-DO/2026-11-22-audit-remainder-design.md` §4. |

@@ -3,13 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (the subtitle names the wallet only when AppConfig.enableWallet — the
+///              beta builds have none). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - WelcomeScreen: onboarding entry StatelessWidget
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../../app/app_config.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 
@@ -63,7 +65,10 @@ class WelcomeScreen extends StatelessWidget {
 
               // Subtitle
               const Text(
-                'End-to-end encrypted messaging\nwith built-in wallet',
+                // The wallet is named only where this build has it.
+                AppConfig.enableWallet
+                    ? 'End-to-end encrypted messaging\nwith built-in wallet'
+                    : 'End-to-end encrypted messaging',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: SnowColors.textSecondary,

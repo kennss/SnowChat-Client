@@ -1,10 +1,10 @@
 /// @file        identity_binding_review_test.dart
 /// @description B-2 review follow-ups (2026-11-10):
 ///               H1 account-wide max epoch floor for minting
-///               M1 migrated-Ed weakness + reinstall evidence on promotion
-///               M2 blocked notice emitted once + held-message queue skip
+///               M1 key-change notice: only a bound peer's change
 ///               M3 self-check recovery by bindingRejectReason (guarded)
 ///               M4 non-consuming pre-admission — no OPK fetch on rejection
+///                  (a forged binding, or none at all)
 ///               L1 malformed embedded binding → typed badFormat rejection
 ///               L3 non-canonical signature (S >= L) rejected
 ///              Uses a fake ApiClient / SocketManager / SessionStore and the
@@ -12,7 +12,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-10
+/// @lastUpdated 2026-11-22 (SignalSessionManager takes no socket). Earlier 2026-11-21 (legacy TOFU removed: M1 is the bound-only key-change notice; M2's held queue is gone). Earlier 2026-11-20 (bindings always mandatory: the legacy blocked-notice case is gone, and the
+///              M4 legacy key change case is now an unbound directory device refused before any
+///              bundle fetch. refreshPeerIdentity: a peer registered again is admitted from the directory and its old session put aside, before a group invite)
 ///
 /// @functions
 ///  - FakeApiClient: records calls, answers by (method, path) handler
@@ -26,26 +28,16 @@ import 'package:dio/dio.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pinenacl/ed25519.dart' as ed;
-import 'package:snowchat/core/crypto/encrypted_message_handler.dart';
 import 'package:snowchat/core/crypto/identity_admission.dart';
 import 'package:snowchat/core/crypto/identity_binding.dart';
 import 'package:snowchat/core/crypto/identity_binding_exception.dart';
-import 'package:snowchat/core/crypto/identity_key_changed_exception.dart';
 import 'package:snowchat/core/crypto/identity_manager.dart';
 import 'package:snowchat/core/crypto/key_derivation.dart';
 import 'package:snowchat/core/crypto/session_store.dart';
 import 'package:snowchat/core/crypto/signal_protocol_service.dart';
 import 'package:snowchat/core/crypto/signal_session_manager.dart';
 import 'package:snowchat/core/crypto/verified_identity_store.dart';
-import 'package:snowchat/core/messaging/message_queue.dart';
 import 'package:snowchat/core/network/api_client.dart';
-import 'package:snowchat/core/network/socket_manager.dart';
-import 'package:snowchat/core/network/file_service.dart';
-import 'package:snowchat/core/storage/daos/attachment_dao.dart';
-import 'package:snowchat/core/storage/daos/conversation_dao.dart';
-import 'package:snowchat/core/storage/daos/message_dao.dart';
-import 'package:snowchat/core/storage/database.dart';
-import 'package:snowchat/features/chat/providers/expiring_message_manager.dart';
 
 import 'identity_test_support.dart';
 
@@ -89,11 +81,6 @@ class FakeApiClient extends Fake implements ApiClient {
       _answer<T>('PUT', path, data);
 }
 
-class _FakeSocket extends Fake implements SocketManager {
-  @override
-  Stream<Map<String, dynamic>> get onSenderKeyRequestFailed =>
-      const Stream.empty();
-}
 
 class _FakeSessionStore extends Fake implements SessionStore {}
 
@@ -122,7 +109,6 @@ Future<({SignalSessionManager mgr, IdentityManager im, InMemorySecureStorage s})
     secureStorage: s,
     identityManager: im,
     sessionStore: _FakeSessionStore(),
-    socketManager: _FakeSocket(),
   );
   return (mgr: mgr, im: im, s: s);
 }
@@ -142,12 +128,6 @@ Map<String, dynamic> _directoryJson(TestParty p,
     };
 
 void main() {
-  // These suites exercise the alpha-only legacy (unbound / TOFU) policy, which
-  // the default build configuration disables. Mandatory-binding behaviour is
-  // covered separately in identity_binding_mandatory_test.dart.
-  setUpAll(() => IdentityAdmission.debugAllowUnboundOverride = true);
-  tearDownAll(() => IdentityAdmission.debugAllowUnboundOverride = null);
-
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('H1 account-wide max epoch', () {
@@ -205,39 +185,66 @@ void main() {
     });
   });
 
-  group('M1 migrated Ed + reinstall evidence', () {
-    test('ambiguous device pins migrate no Ed; single pin is legacy-sourced',
-        () async {
-      const snowX = 'snow0123456789abcdef0123456789abcdef';
-      const snowY = 'snowfedcba9876543210fedcba9876543210';
-      final s = InMemorySecureStorage()
-        ..data['snow_chat_id'] = snowY
-        ..data['signal_identity_pin:$snowX:$_devB'] = base64Encode(List.filled(32, 1))
-        ..data['signal_identity_pin:$snowX:$_devB2'] = base64Encode(List.filled(32, 2))
-        ..data['signal_identity_pin:$snowY:$_devB'] = base64Encode(List.filled(32, 3));
-      final store = VerifiedIdentityStore(s);
-      expect(await store.get(snowX), isNull);
-      final y = await store.get(snowY);
-      expect(y!.edLegacySourced, isTrue);
-      expect(y.deviceId, _devB);
+  group('M1 key-change notice (bound peers only)', () {
+    test('keyChangeNotice: only a bound record whose device or keys differ',
+        () {
+      final ik1 = Uint8List.fromList(List.filled(32, 1));
+      final ik2 = Uint8List.fromList(List.filled(32, 2));
+      final ed1 = Uint8List.fromList(List.filled(32, 5));
+      final ed2 = Uint8List.fromList(List.filled(32, 6));
+      const snow = 'snow0123456789abcdef0123456789abcdef';
+      final bound = VerifiedIdentityRecord(
+        snowId: snow,
+        accountPublicKey: Uint8List.fromList(List.filled(32, 7)),
+        deviceId: _devB,
+        epoch: 1,
+        identityKey: ik1,
+        ed25519: ed1,
+        bindingSignature: Uint8List(64),
+        bound: true,
+        updatedAt: 1,
+      );
+      bool notice(VerifiedIdentityRecord r, String dev, Uint8List ik,
+              Uint8List ed) =>
+          IdentityAdmission.keyChangeNotice(
+              existing: r, deviceId: dev, identityKey: ik, ed25519: ed);
+      expect(notice(bound, _devB, ik1, ed1), isFalse, reason: 'same keys');
+      expect(notice(bound, _devB2, ik1, ed1), isTrue, reason: 'other device');
+      expect(notice(bound, _devB, ik2, ed1), isTrue, reason: 'other IK');
+      expect(notice(bound, _devB, ik1, ed2), isTrue, reason: 'other Ed');
+      // A record that only pins the account key holds no keys: first keys
+      // are no change.
+      final pinned = VerifiedIdentityRecord(
+        snowId: snow,
+        accountPublicKey: Uint8List.fromList(List.filled(32, 7)),
+        updatedAt: 1,
+      );
+      expect(notice(pinned, _devB, ik1, ed1), isFalse);
     });
 
-    test('honest +304 → +305 reinstall: device notice, NOT interception',
+    test('a reinstall of a bound peer (same account, new device) gives the '
+        'device notice; the first binding after an invite pin gives none',
         () async {
       final alice = await TestParty.create(seedByte: 1, deviceId: _devA);
       final bobOld = await TestParty.create(seedByte: 2, deviceId: _devB);
       final bobNew = await TestParty.create(seedByte: 2, deviceId: _devB2);
-      // Pre-B-2 state: migrated Ed pin + IK seeded with its device.
-      await alice.store.put(VerifiedIdentityRecord(
-        snowId: bobOld.snowId,
-        deviceId: _devB,
-        identityKey: bobOld.identityKey,
-        ed25519: bobOld.ed25519,
-        edLegacySourced: true,
-        updatedAt: 1,
-      ));
       final events = <IdentityStoreEvent>[];
       alice.store.events.listen(events.add);
+
+      // The invite link pinned bob's account key; his first binding follows.
+      expect(await alice.store.pinFromInviteLink(bobOld.snowId, bobOld.accountPub),
+          isTrue);
+      await alice.signal.createSession(
+        recipientId: bobOld.snowId,
+        deviceId: _devB,
+        preKeyBundle: bobOld.bundle(
+            binding: bobOld.bindingFor(epoch: 1000),
+            accountPublicKey: bobOld.accountPub),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(events, isEmpty);
+
+      // Bob reinstalls: same account, new device and keys, a newer binding.
       await alice.signal.createSession(
         recipientId: bobNew.snowId,
         deviceId: _devB2,
@@ -246,107 +253,7 @@ void main() {
             accountPublicKey: bobNew.accountPub),
       );
       await Future<void>.delayed(Duration.zero);
-      expect(events.map((e) => e.kind),
-          [IdentityEventKind.deviceKeysChanged]);
-    });
-
-    test('promotionNotice rules', () {
-      final ik1 = Uint8List.fromList(List.filled(32, 1));
-      final ik2 = Uint8List.fromList(List.filled(32, 2));
-      final ed1 = Uint8List.fromList(List.filled(32, 5));
-      final ed2 = Uint8List.fromList(List.filled(32, 6));
-      VerifiedIdentityRecord rec({
-        String? dev,
-        Uint8List? ik,
-        bool legacyEd = false,
-      }) =>
-          VerifiedIdentityRecord(
-            snowId: 'snow0123456789abcdef0123456789abcdef',
-            deviceId: dev,
-            identityKey: ik,
-            ed25519: ed1,
-            edLegacySourced: legacyEd,
-            updatedAt: 1,
-          );
-      // Legacy-sourced Ed differs, IK same → nothing.
-      expect(
-          IdentityAdmission.promotionNotice(
-              existing: rec(dev: _devB, ik: ik1, legacyEd: true),
-              deviceId: _devB,
-              identityKey: ik1,
-              ed25519: ed2),
-          isNull);
-      // Same device, different IK → interception.
-      expect(
-          IdentityAdmission.promotionNotice(
-              existing: rec(dev: _devB, ik: ik1),
-              deviceId: _devB,
-              identityKey: ik2,
-              ed25519: ed1),
-          IdentityEventKind.interceptionSuspected);
-      // Unknown legacy device, different IK → interception.
-      expect(
-          IdentityAdmission.promotionNotice(
-              existing: rec(ik: ik1),
-              deviceId: _devB,
-              identityKey: ik2,
-              ed25519: ed1),
-          IdentityEventKind.interceptionSuspected);
-      // Different device → reinstall evidence.
-      expect(
-          IdentityAdmission.promotionNotice(
-              existing: rec(dev: _devB, ik: ik1),
-              deviceId: _devB2,
-              identityKey: ik2,
-              ed25519: ed1),
-          IdentityEventKind.deviceKeysChanged);
-    });
-  });
-
-  group('M2 held messages', () {
-    test('blocked notice fires once across repeated attempts', () async {
-      final alice = await TestParty.create(seedByte: 1, deviceId: _devA);
-      final old = await TestParty.create(seedByte: 5, deviceId: _devB);
-      final re = await TestParty.create(seedByte: 5, deviceId: _devB2);
-      alice.store.verifiedLookup = (_) async => true;
-      await alice.signal.createSession(
-          recipientId: old.snowId, deviceId: _devB, preKeyBundle: old.bundle());
-      final events = <IdentityStoreEvent>[];
-      alice.store.events.listen(events.add);
-      for (var i = 0; i < 3; i++) {
-        await expectLater(
-          alice.signal.createSession(
-              recipientId: old.snowId,
-              deviceId: _devB2,
-              preKeyBundle: re.bundle(opkIndex: i)),
-          throwsA(isA<IdentityKeyChangedException>()),
-        );
-      }
-      await Future<void>.delayed(Duration.zero);
-      expect(events.length, 1);
-      expect(events.single.kind, IdentityEventKind.legacyKeyChangeBlocked);
-    });
-
-    test('a held envelope is skipped on redelivery until released', () {
-      final q = MessageQueue(
-        sessionManager: _FakeMgr(),
-        e2eeHandler: _FakeHandler(),
-        messageDao: _FakeMessageDao(),
-        conversationDao: _FakeConversationDao(),
-        attachmentDao: _FakeAttachmentDao(),
-        fileService: _FakeFileService(),
-        expiringManager: _FakeExpiring(),
-        database: _FakeDb(),
-        apiClient: FakeApiClient(),
-        socketManager: _FakeSocket(),
-        myIdResolver: () => 'snow0123456789abcdef0123456789abcdef',
-      );
-      q.holdForReverifyForTesting('m1', 'snowpeer');
-      expect(q.heldForReverifyCount, 1);
-      q.enqueue({'id': 'm1', 'type': 'e2ee_text'});
-      expect(q.depth, 0, reason: 'held id must not be decrypted again');
-      q.releaseHeldForPeer('snowpeer');
-      expect(q.heldForReverifyCount, 0);
+      expect(events.map((e) => e.kind), [IdentityEventKind.deviceKeysChanged]);
     });
   });
 
@@ -456,23 +363,19 @@ void main() {
       expect(api.calls.length, 1, reason: 'memoized — no further network');
     });
 
-    test('verified legacy key change → blocked before any bundle fetch',
-        () async {
+    test('a directory device without a binding → refused before any bundle '
+        'fetch', () async {
       final api = FakeApiClient();
-      final re = await TestParty.create(seedByte: 5, deviceId: _devB2);
+      final bob = await TestParty.create(seedByte: 5, deviceId: _devB2);
       final a = await _localAccount(api);
-      final store = a.mgr.signal.identityStore!;
-      store.verifiedLookup = (_) async => true;
-      await store.put(VerifiedIdentityRecord(
-        snowId: re.snowId,
-        deviceId: _devB,
-        identityKey: Uint8List.fromList(List.filled(32, 7)),
-        updatedAt: 1,
-      ));
-      api.handlers['GET /keys/identity/${re.snowId}'] =
-          (_) => _directoryJson(re);
-      await expectLater(a.mgr.ensureSession(re.snowId),
-          throwsA(isA<IdentityKeyChangedException>()));
+      api.handlers['GET /keys/identity/${bob.snowId}'] =
+          (_) => _directoryJson(bob);
+      api.handlers['GET /keys/prekeys/${bob.snowId}'] = (_) => throw StateError(
+          'consuming bundle endpoint must not be called');
+      await expectLater(
+          a.mgr.ensureSession(bob.snowId),
+          throwsA(isA<IdentityBindingInvalidException>().having(
+              (e) => e.reason, 'reason', IdentityBindingFailure.bindingRequired)));
       expect(api.calls.where((c) => c.startsWith('GET /keys/prekeys/')),
           isEmpty);
     });
@@ -487,6 +390,89 @@ void main() {
       final a = await _localAccount(api);
       await a.mgr.ensureSessionBatch([bob.snowId]);
       expect(api.calls.where((c) => c.contains('/batch')), isEmpty);
+    });
+  });
+
+  group('refreshPeerIdentity (before a group invite)', () {
+    /// A session with [bob] made the way a first contact makes one.
+    Future<void> connect(SignalSessionManager mgr, TestParty bob, int epoch) =>
+        mgr.signal.createSession(
+          recipientId: bob.snowId,
+          deviceId: bob.deviceId,
+          preKeyBundle: bob.bundle(
+            binding: bob.bindingFor(epoch: epoch),
+            accountPublicKey: bob.accountPub,
+          ),
+        );
+
+    test('the peer registered again with its phrase (a new identity, a newer '
+        'binding): the old session is put aside', () async {
+      final api = FakeApiClient();
+      final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
+      final a = await _localAccount(api);
+      await connect(a.mgr, bob, 1000);
+      expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isTrue);
+
+      final again = await TestParty.create(
+        accountSeed: Uint8List.fromList(List.filled(32, 2)),
+        deviceId: _devB2,
+      );
+      expect(again.snowId, bob.snowId);
+      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) =>
+          _directoryJson(again, binding: again.bindingFor(epoch: 2000));
+      await a.mgr.refreshPeerIdentity(bob.snowId);
+      // Looked at first: hasSession() itself puts aside what does not match
+      // the bound identity, so it would hide whether the refresh did.
+      expect(a.mgr.signal.getRemoteIdentityKey(bob.snowId), again.identityKey);
+      expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isFalse);
+      // Nothing was consumed: no bundle was fetched.
+      expect(api.calls.where((c) => c.startsWith('GET /keys/prekeys/')), isEmpty);
+    });
+
+    test('an unchanged peer keeps its session', () async {
+      final api = FakeApiClient();
+      final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
+      final a = await _localAccount(api);
+      await connect(a.mgr, bob, 1000);
+      api.handlers['GET /keys/identity/${bob.snowId}'] =
+          (_) => _directoryJson(bob, binding: bob.bindingFor(epoch: 1000));
+      await a.mgr.refreshPeerIdentity(bob.snowId);
+      expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isTrue);
+    });
+
+    test('a forged directory entry is refused and the session kept', () async {
+      final api = FakeApiClient();
+      final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
+      final a = await _localAccount(api);
+      await connect(a.mgr, bob, 1000);
+      final other = await TestParty.create(seedByte: 9, deviceId: _devB2);
+      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) => _directoryJson(
+        other,
+        binding: IdentityBinding(signature: Uint8List(64), epoch: 3000),
+      );
+      await expectLater(
+        a.mgr.refreshPeerIdentity(bob.snowId),
+        throwsA(isA<IdentityBindingInvalidException>()),
+      );
+      expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isTrue);
+    });
+
+    test('a directory that cannot be reached throws, and nothing changes',
+        () async {
+      final api = FakeApiClient();
+      final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
+      final a = await _localAccount(api);
+      await connect(a.mgr, bob, 1000);
+      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) =>
+          throw DioException.connectionError(
+            requestOptions: RequestOptions(path: '/keys/identity'),
+            reason: 'offline',
+          );
+      await expectLater(
+        a.mgr.refreshPeerIdentity(bob.snowId),
+        throwsA(isA<SignalProtocolException>()),
+      );
+      expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isTrue);
     });
   });
 
@@ -586,21 +572,3 @@ void main() {
     });
   });
 }
-
-// --- Inert fakes for MessageQueue construction (never invoked) -------------
-class _FakeMgr extends Fake implements SignalSessionManager {}
-
-class _FakeHandler extends Fake implements EncryptedMessageHandler {}
-
-class _FakeMessageDao extends Fake implements MessageDao {}
-
-class _FakeConversationDao extends Fake implements ConversationDao {}
-
-class _FakeAttachmentDao extends Fake implements AttachmentDao {}
-
-class _FakeFileService extends Fake implements FileService {}
-
-class _FakeExpiring extends Fake implements ExpiringMessageManager {}
-
-class _FakeDb extends Fake implements SnowDatabase {}
-

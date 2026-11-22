@@ -1,18 +1,9 @@
 /// @file        api_endpoints.dart
-/// @description SnowChat server API endpoint constant definitions. Includes auth, keys, messages, contacts, files, devices, prekeys, and group invite paths.
+/// @description SnowChat server API endpoint constant definitions. Includes auth, keys, messages, contacts, files, devices, prekeys, communities and group protocol v2 paths.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2: identityForUser() non-consuming GET /keys/identity/:snowId + identityBinding PUT /keys/identity-binding). Earlier 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
-///  - ApiEndpoints.groupLeave(): group leave endpoint
-///  - ApiEndpoints.group(): specific group endpoint
-///  - ApiEndpoints.groupMembers(): group members endpoint
-///  - ApiEndpoints.groupMember(): specific group member endpoint
-///  - ApiEndpoints.groupName(): group name change endpoint
-///  - ApiEndpoints.groupMessages(): group messages list endpoint
-///  - ApiEndpoints.groupInviteAccept(): group invite accept endpoint
-///  - ApiEndpoints.groupInviteReject(): group invite reject endpoint
-///  - ApiEndpoints.pendingGroupInvites: pending group invites list endpoint
+/// @lastUpdated 2026-11-21 (blockUser POST /users/block, unblockUser DELETE /users/block/:snowchatId — BlockList). Earlier 2026-11-21 (blockedUsers GET /users/blocked). Earlier 2026-11-20 (DEV_SERVER_URL: a dev build on a physical device names the dev server — e.g. `http://<mac LAN ip>:3100` — instead of localhost; ignored by a production build. v1 groups removed: no /groups endpoints. Earlier same day: group protocol v2: gv2Backup GET/PUT /gv2-account/backup, gv2Retention GET/PUT /gv2-account/retention, deleteAccountWithProof POST /users/me/delete). Earlier 2026-11-10 (B-2: identityForUser() non-consuming GET /keys/identity/:snowId + identityBinding PUT /keys/identity-binding). Earlier 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
 ///
 /// @functions
 ///  - ApiEndpoints: API endpoint constants class
@@ -42,8 +33,10 @@ import 'package:flutter/foundation.dart';
 /// API endpoint constants for the SnowChat server.
 ///
 /// Environment switching: flutter run --dart-define=SERVER_ENV=prod
-///   - dev (default): localhost:3100 (Android emulator uses 10.0.2.2:3100)
-///   - prod:          https://snowchat.calidalab.ai
+///   - dev (default): localhost:3100 (Android emulator uses 10.0.2.2:3100);
+///                    a physical device names the dev server with
+///                    `--dart-define=DEV_SERVER_URL=http://<host>:3100`
+///   - prod:          https://snowchat.calidalab.ai (DEV_SERVER_URL ignored)
 abstract class ApiEndpoints {
   static const String _env =
       String.fromEnvironment('SERVER_ENV', defaultValue: 'dev');
@@ -54,6 +47,12 @@ abstract class ApiEndpoints {
   static const String _prodBase = 'https://$_prodHost';
   static const String _devBase = 'http://localhost:3100';
   static const String _devBaseAndroid = 'http://10.0.2.2:3100';
+
+  /// The dev server as a physical device reaches it (no trailing slash), or
+  /// empty: the simulator / emulator defaults above. Never used by a
+  /// production build.
+  static const String _devServerUrl =
+      String.fromEnvironment('DEV_SERVER_URL');
 
   /// Cached resolved IP for production server.
   /// Set by [resolveProductionDns] at app startup to work around
@@ -83,6 +82,7 @@ abstract class ApiEndpoints {
   /// Get the base URL (always uses hostname — SSL/SNI requires it).
   static String getBaseUrl() {
     if (isProduction) return '$_prodBase/api/v2';
+    if (_devServerUrl.isNotEmpty) return '$_devServerUrl/api/v2';
     if (Platform.isAndroid) return '$_devBaseAndroid/api/v2';
     return '$_devBase/api/v2';
   }
@@ -90,6 +90,7 @@ abstract class ApiEndpoints {
   /// Get the Socket.IO URL (always uses hostname).
   static String getSocketUrl() {
     if (isProduction) return _prodBase;
+    if (_devServerUrl.isNotEmpty) return _devServerUrl;
     if (Platform.isAndroid) return _devBaseAndroid;
     return _devBase;
   }
@@ -146,23 +147,23 @@ abstract class ApiEndpoints {
   static const String lookupByNick =
       '/users/lookup-by-nick'; // POST — nick first-contact; returns one-time opaque inviteToken (no id/avatar)
   static const String userProfile = '/users/profile'; // PUT — update displayName / avatar
+  static const String blockedUsers = '/users/blocked'; // GET — the accounts this user blocked
+  static const String blockUser = '/users/block'; // POST { snowchatId } — block an account (idempotent)
+  static String unblockUser(String snowchatId) => '/users/block/$snowchatId'; // DELETE — unblock (idempotent)
+  /// POST — delete this account; the body carries the deletion proof the
+  /// account key signed: { deletionProof: { deletedAtMs, sig } }.
+  static const String deleteAccountWithProof = '/users/me/delete';
 
-  // Groups
-  static const String groups = '/groups';
-  static String group(String groupId) => '/groups/$groupId';
-  static String groupMembers(String groupId) => '/groups/$groupId/members';
-  static String groupMember(String groupId, String userId) =>
-      '/groups/$groupId/members/$userId';
-  static String groupName(String groupId) => '/groups/$groupId/name';
-  static String groupLeave(String groupId) => '/groups/$groupId/leave';
-  static String groupMessages(String groupId) => '/groups/$groupId/messages';
-  static String groupInviteAccept(String groupId) =>
-      '/groups/$groupId/invites/accept';
-  static String groupInviteReject(String groupId) =>
-      '/groups/$groupId/invites/reject';
-  static const String pendingGroupInvites = '/groups/pending';
+  // Group protocol v2 — per-account data (login required)
+  /// GET → { blob, etag } (both null when none); PUT { blob, ifMatch } →
+  /// { etag }, 409 BACKUP_CONFLICT when the stored blob is another one.
+  static const String gv2Backup = '/gv2-account/backup';
 
-  // Channels (Phase 7 — Channel ≠ GroupChat) + Phase 9.1 PERSONAL Channel
+  /// GET → { days }; PUT { days: 1 | 7 | 30 } → { days }. How long the
+  /// server keeps group messages for this account while it is offline.
+  static const String gv2Retention = '/gv2-account/retention';
+
+  // Channels: communities (member lists) + Phase 9.1 PERSONAL Channel (friends)
   static const String channels = '/channels';
   static const String personalChannel = '/channels/personal';
   static const String personalChannelAdd = '/channels/personal/add';

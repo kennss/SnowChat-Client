@@ -10,7 +10,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-30 (Phase E-2 v3.1: relaxed-key routing for VoIP
+/// @lastUpdated 2026-11-22 (the PIN API (storePin / getPin / verifyPin / hasPin, unsalted SHA-256) moved to
+///              PasscodeStore — salted Argon2id; auto-lock delay and biometric lock persisted).
+///              Earlier 2026-04-30 (Phase E-2 v3.1: relaxed-key routing for VoIP
 ///              accept fetch; auth_refresh_token added to allowlist so BFU
 ///              JWT refresh after expiry is unblocked)
 ///
@@ -22,24 +24,19 @@
 ///  - SecureStorageService.containsKey(): check whether a key exists
 ///  - SecureStorageService.deleteAll(): delete everything
 ///  - SecureStorageService.readAll(): read everything
-///  - SecureStorageService.storePin(hashedPin): store hashed PIN
-///  - SecureStorageService.getPin(): read stored PIN hash
-///  - SecureStorageService.verifyPin(input): verify input PIN via hash comparison
-///  - SecureStorageService.hasPin(): check whether a PIN is set
+///  - SecureStorageService.storeAutoLockSeconds() / getAutoLockSeconds(): app auto-lock delay
+///  - SecureStorageService.storeBiometricLock() / getBiometricLock(): biometric unlock on/off
+///    (the app passcode itself is core/security/passcode.dart — PasscodeStore)
 ///  - SecureStorageService.storeDisplayName(name): store nickname
 ///  - SecureStorageService.getDisplayName(): read nickname
 ///  - SecureStorageService.storePreferredLanguage(name): store translation target language
 ///  - SecureStorageService.getPreferredLanguage(): read stored translation target language
 
-import 'dart:convert';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
-import '../crypto/hkdf.dart' show sha256;
 
 /// Wrapper around flutter_secure_storage.
 /// iOS: Keychain (kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
@@ -158,44 +155,12 @@ class SecureStorageService {
 
   // --- PIN management ---
 
-  static const _pinHashKey = 'pin_hash';
   static const _displayNameKey = 'display_name';
   static const _preferredLanguageKey = 'preferred_lang';
   static const _callAlwaysRelayKey = 'call_always_relay';
   static const _callRequirePinKey = 'call_require_pin';
-
-  /// Hash a raw PIN string with SHA-256. Returns hex-encoded hash.
-  /// Never stores or logs the raw PIN.
-  String _hashPin(String rawPin) {
-    final bytes = Uint8List.fromList(utf8.encode(rawPin));
-    final hash = sha256(bytes);
-    return hash.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  }
-
-  /// Store a PIN as a SHA-256 hash. The raw PIN is never persisted.
-  Future<void> storePin(String rawPin) async {
-    final hashed = _hashPin(rawPin);
-    await write(_pinHashKey, hashed);
-  }
-
-  /// Get the stored PIN hash, or null if no PIN is set.
-  Future<String?> getPin() async {
-    return read(_pinHashKey);
-  }
-
-  /// Verify a PIN input against the stored hash.
-  /// Returns true if the input matches, false otherwise.
-  Future<bool> verifyPin(String input) async {
-    final storedHash = await getPin();
-    if (storedHash == null) return false;
-    final inputHash = _hashPin(input);
-    return storedHash == inputHash;
-  }
-
-  /// Check whether a PIN has been set.
-  Future<bool> hasPin() async {
-    return containsKey(_pinHashKey);
-  }
+  static const _autoLockSecondsKey = 'app_auto_lock_seconds';
+  static const _biometricLockKey = 'app_biometric_lock';
 
   /// Store display name (nickname).
   Future<void> storeDisplayName(String name) async {
@@ -243,4 +208,21 @@ class SecureStorageService {
     final stored = await read(_callRequirePinKey);
     return stored == 'true';
   }
+
+  /// How long the app may stay in the background before it locks again
+  /// (seconds; 0 = at once). Null when never set (the default applies).
+  Future<void> storeAutoLockSeconds(int seconds) async {
+    await write(_autoLockSecondsKey, '$seconds');
+  }
+
+  Future<int?> getAutoLockSeconds() async =>
+      int.tryParse(await read(_autoLockSecondsKey) ?? '');
+
+  /// Whether the lock screen offers Face ID / Touch ID / fingerprint first.
+  Future<void> storeBiometricLock(bool enabled) async {
+    await write(_biometricLockKey, enabled ? 'true' : 'false');
+  }
+
+  Future<bool> getBiometricLock() async =>
+      await read(_biometricLockKey) == 'true';
 }

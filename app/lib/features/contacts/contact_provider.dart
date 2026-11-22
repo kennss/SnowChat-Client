@@ -3,19 +3,20 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-08-03 (privacy: removed the user_registered blind-add listener and the profile_updated add-unknown branch — both turned the contact list into the full server directory. Contacts now come only from the scoped GET /users; profile_updated only renames an existing contact). Earlier 2026-04-26 (header + inline English translation; P2: IdentityPinStore unpin + IdentityVerificationDao deleteByPeer on removeContact/blockContact)
+/// @lastUpdated 2026-11-21 (X1: block / unblock go through BlockList — on this device first, then the server (awaited, sent again when it cannot be reached); blockedContactsProvider lists this device's blocked accounts, named from the server's list when it can be had). Earlier 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-08-03 (privacy: removed the user_registered blind-add listener and the profile_updated add-unknown branch — both turned the contact list into the full server directory. Contacts now come only from the scoped GET /users; profile_updated only renames an existing contact). Earlier 2026-04-26 (header + inline English translation; P2: IdentityPinStore unpin + IdentityVerificationDao deleteByPeer on removeContact/blockContact)
 ///
 /// @functions
 ///  - Contact: contact data-model class
 ///  - contactProvider: StateNotifierProvider that exposes the contact list
 ///  - ContactNotifier: load user list from server + local management
-///  - blockedContactsProvider: FutureProvider that fetches only blocked users from server
+///  - blockedContactsProvider: this device's blocked accounts, named from the server's list
 
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../app/providers.dart';
+import '../../core/network/api_endpoints.dart';
 
 class Contact {
   final String snowChatId;
@@ -170,14 +171,13 @@ class ContactNotifier extends StateNotifier<List<Contact>> {
     }).toList();
   }
 
-  void blockContact(String snowChatId) {
+  /// Block [snowChatId]: on this device at once (what it sends is dropped
+  /// from now on), then on the server — sent again on the next connect when
+  /// it cannot be reached now (BlockList).
+  Future<void> blockContact(String snowChatId) async {
     updateContact(snowChatId, isBlocked: true);
-    // Also call server
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      apiClient.post('/users/block', data: {'snowchatId': snowChatId});
-    } catch (_) {}
     _purgeIdentityState(snowChatId);
+    await _ref.read(blockListProvider).block(snowChatId);
   }
 
   /// P2: clean up TOFU pin + Safety Number verification row.
@@ -197,40 +197,39 @@ class ContactNotifier extends StateNotifier<List<Contact>> {
     });
   }
 
-  void unblockContact(String snowChatId) {
+  /// Unblock [snowChatId] (what it sent while blocked does not come back).
+  Future<void> unblockContact(String snowChatId) async {
     updateContact(snowChatId, isBlocked: false);
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      apiClient.delete('/users/block/$snowChatId');
-    } catch (_) {}
+    await _ref.read(blockListProvider).unblock(snowChatId);
   }
 }
 
-/// Server-backed list of users the current user has blocked.
-///
-/// The main contact list (`/users`) filters blocked users out, so the local
-/// `contactProvider` cannot tell us who is blocked. This provider hits the
-/// dedicated `GET /users/blocked` endpoint and returns minimal info
-/// ({ snowchatId, displayName }) per blocked entry.
-///
-/// Invalidate this provider after `unblockContact` to refresh the list.
+/// The accounts this user blocked — this device's list (BlockList), so an
+/// unblock shows at once even while the server has not taken it — named
+/// from the server's list (`GET /users/blocked`, { snowchatId, displayName })
+/// when it can be had. Recomputed when the list changes.
 final blockedContactsProvider =
-    FutureProvider<List<Contact>>((ref) async {
+    FutureProvider.autoDispose<List<Contact>>((ref) async {
+  final blocked = await ref.watch(blockedAccountsProvider.future);
+  final names = <String, String?>{};
   try {
-    final apiClient = ref.read(apiClientProvider);
-    final res = await apiClient.get('/users/blocked');
+    final res = await ref.read(apiClientProvider).get(ApiEndpoints.blockedUsers);
     final list = (res.data?['blockedUsers'] as List?) ?? const [];
-    return list.map<Contact>((u) {
-      final m = u as Map;
-      return Contact(
-        snowChatId: (m['snowchatId'] as String?) ?? '',
-        displayName: m['displayName'] as String?,
+    for (final u in list) {
+      if (u is Map && u['snowchatId'] is String) {
+        names[u['snowchatId'] as String] = u['displayName'] as String?;
+      }
+    }
+  } catch (_) {
+    // Unnamed: the list itself is this device's.
+  }
+  return [
+    for (final id in blocked)
+      Contact(
+        snowChatId: id,
+        displayName: names[id],
         isBlocked: true,
         addedAt: DateTime.now(),
-      );
-    }).where((c) => c.snowChatId.isNotEmpty).toList();
-  } catch (e) {
-    debugPrint('[Contacts] Failed to load blocked list: $e');
-    return const [];
-  }
+      ),
+  ]..sort((a, b) => a.snowChatId.compareTo(b.snowChatId));
 });

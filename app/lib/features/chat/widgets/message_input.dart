@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-05-11 (Reverted voice mic disable in disappearing mode
+/// @lastUpdated 2026-11-22 (the input bar is one TextFieldTapRegion: its attach / record / send
+///              buttons keep the keyboard up under the app-wide tap-outside dismissal). Earlier
+///              2026-05-11 (Reverted voice mic disable in disappearing mode
 ///              — was based on wrong assumption that voice routes through
 ///              OpenFilex. Actually voice_message_bubble.dart plays via
 ///              audioplayers in-app (DeviceFileSource), same threat class as
@@ -112,172 +114,177 @@ class _MessageInputState extends State<MessageInput> {
       ),
       decoration: const BoxDecoration(
         color: SnowColors.background,
-        border: Border(
-          top: BorderSide(color: SnowColors.divider, width: 0.5),
-        ),
+        border: Border(top: BorderSide(color: SnowColors.divider, width: 0.5)),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // Attachment button
-          if (widget.onAttachment != null)
-            IconButton(
-              icon: const Icon(Icons.add_rounded),
-              color: SnowColors.textTertiary,
-              iconSize: 22,
-              onPressed: widget.onAttachment,
-            ),
-
-          // Disappearing timer button
-          if (widget.onTimerTap != null)
-            Stack(
-              clipBehavior: Clip.none,
+      child: // The attach / record / send buttons belong to the field: a tap on
+          // them is not "outside" and keeps the keyboard up (app-wide tap-outside
+          // dismissal, keyboard_behavior.dart).
+          TextFieldTapRegion(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                IconButton(
-                  icon: Icon(
-                    ttlLabel != null
-                        ? Icons.timer_rounded
-                        : Icons.timer_off_outlined,
+                // Attachment button
+                if (widget.onAttachment != null)
+                  IconButton(
+                    icon: const Icon(Icons.add_rounded),
+                    color: SnowColors.textTertiary,
+                    iconSize: 22,
+                    onPressed: widget.onAttachment,
                   ),
-                  color: ttlLabel != null
-                      ? SnowColors.primary
-                      : SnowColors.textTertiary,
-                  iconSize: 22,
-                  onPressed: widget.onTimerTap,
-                ),
-                if (ttlLabel != null)
-                  Positioned(
-                    right: 2,
-                    top: 2,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 4,
-                        vertical: 1,
+
+                // Disappearing timer button
+                if (widget.onTimerTap != null)
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      IconButton(
+                        icon: Icon(
+                          ttlLabel != null
+                              ? Icons.timer_rounded
+                              : Icons.timer_off_outlined,
+                        ),
+                        color: ttlLabel != null
+                            ? SnowColors.primary
+                            : SnowColors.textTertiary,
+                        iconSize: 22,
+                        onPressed: widget.onTimerTap,
                       ),
-                      decoration: BoxDecoration(
-                        color: SnowColors.primary,
-                        borderRadius: BorderRadius.circular(6),
+                      if (ttlLabel != null)
+                        Positioned(
+                          right: 2,
+                          top: 2,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: SnowColors.primary,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              ttlLabel,
+                              style: const TextStyle(
+                                color: SnowColors.background,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+
+                // Text input
+                Expanded(
+                  child: Container(
+                    constraints: const BoxConstraints(maxHeight: 120),
+                    decoration: BoxDecoration(
+                      color: SnowColors.surfaceVariant,
+                      borderRadius: BorderRadius.circular(
+                        SnowSizes.inputRadius,
                       ),
-                      child: Text(
-                        ttlLabel,
-                        style: const TextStyle(
-                          color: SnowColors.background,
-                          fontSize: 8,
-                          fontWeight: FontWeight.w700,
+                    ),
+                    child: TextField(
+                      controller: _controller,
+                      onChanged: (text) {
+                        setState(() => _hasText = text.trim().isNotEmpty);
+                        if (text.trim().isNotEmpty) {
+                          widget.onTypingChanged?.call();
+                        }
+                      },
+                      onSubmitted: (_) => _send(),
+                      maxLines: null,
+                      textInputAction: TextInputAction.newline,
+                      style: const TextStyle(
+                        color: SnowColors.textPrimary,
+                        fontSize: 15,
+                      ),
+                      decoration: const InputDecoration(
+                        hintText: 'Message...',
+                        border: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
                         ),
                       ),
                     ),
                   ),
+                ),
+
+                const SizedBox(width: 6),
+
+                // Send button (text) or Mic button (voice)
+                if (_hasText)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 40,
+                    height: 40,
+                    decoration: const BoxDecoration(
+                      color: SnowColors.primary,
+                      shape: BoxShape.circle,
+                    ),
+                    child: IconButton(
+                      icon: const Icon(
+                        Icons.send_rounded,
+                        size: 20,
+                        color: SnowColors.background,
+                      ),
+                      onPressed: _send,
+                      padding: EdgeInsets.zero,
+                    ),
+                  )
+                else if (widget.onVoiceRecording != null)
+                  GestureDetector(
+                    // Long-press swaps the input bar for the VoiceRecorder overlay
+                    // (see top of build()). Real recording is owned by the overlay;
+                    // this button just flips `_isRecording`.
+                    onLongPress: () {
+                      setState(() => _isRecording = true);
+                    },
+                    onTap: () {
+                      // Short-tap hint — WhatsApp/Telegram users expect long-press.
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Hold to record a voice message'),
+                          behavior: SnackBarBehavior.floating,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 40,
+                      height: 40,
+                      decoration: const BoxDecoration(
+                        color: SnowColors.surfaceLight,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.mic_rounded,
+                        size: 20,
+                        color: SnowColors.textTertiary,
+                      ),
+                    ),
+                  )
+                else
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 40,
+                    height: 40,
+                    decoration: const BoxDecoration(
+                      color: SnowColors.surfaceLight,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.send_rounded,
+                      size: 20,
+                      color: SnowColors.textTertiary,
+                    ),
+                  ),
               ],
             ),
-
-          // Text input
-          Expanded(
-            child: Container(
-              constraints: const BoxConstraints(maxHeight: 120),
-              decoration: BoxDecoration(
-                color: SnowColors.surfaceVariant,
-                borderRadius: BorderRadius.circular(SnowSizes.inputRadius),
-              ),
-              child: TextField(
-                controller: _controller,
-                onChanged: (text) {
-                  setState(() => _hasText = text.trim().isNotEmpty);
-                  if (text.trim().isNotEmpty) {
-                    widget.onTypingChanged?.call();
-                  }
-                },
-                onSubmitted: (_) => _send(),
-                maxLines: null,
-                textInputAction: TextInputAction.newline,
-                style: const TextStyle(
-                  color: SnowColors.textPrimary,
-                  fontSize: 15,
-                ),
-                decoration: const InputDecoration(
-                  hintText: 'Message...',
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
-                  ),
-                ),
-              ),
-            ),
           ),
-
-          const SizedBox(width: 6),
-
-          // Send button (text) or Mic button (voice)
-          if (_hasText)
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 40,
-              height: 40,
-              decoration: const BoxDecoration(
-                color: SnowColors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: IconButton(
-                icon: const Icon(
-                  Icons.send_rounded,
-                  size: 20,
-                  color: SnowColors.background,
-                ),
-                onPressed: _send,
-                padding: EdgeInsets.zero,
-              ),
-            )
-          else if (widget.onVoiceRecording != null)
-            GestureDetector(
-              // Long-press swaps the input bar for the VoiceRecorder overlay
-              // (see top of build()). Real recording is owned by the overlay;
-              // this button just flips `_isRecording`.
-              onLongPress: () {
-                setState(() => _isRecording = true);
-              },
-              onTap: () {
-                // Short-tap hint — WhatsApp/Telegram users expect long-press.
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Hold to record a voice message'),
-                    behavior: SnackBarBehavior.floating,
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                width: 40,
-                height: 40,
-                decoration: const BoxDecoration(
-                  color: SnowColors.surfaceLight,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.mic_rounded,
-                  size: 20,
-                  color: SnowColors.textTertiary,
-                ),
-              ),
-            )
-          else
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 40,
-              height: 40,
-              decoration: const BoxDecoration(
-                color: SnowColors.surfaceLight,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.send_rounded,
-                size: 20,
-                color: SnowColors.textTertiary,
-              ),
-            ),
-        ],
-      ),
     );
   }
 }

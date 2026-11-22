@@ -4,14 +4,13 @@
 
 # SnowChat
 
-**The first sovereign community stack on Solana.**
+**An end-to-end encrypted messenger that needs no phone number and can run on your own server.**
 
-E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund — one mobile app.
+E2EE messaging · Encrypted groups · Voice calls · On-device AI — one mobile app.
 
 [![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1001-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1001/snowchat-arm64-v8a.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
-[![Solana](https://img.shields.io/badge/Solana-Devnet-9945FF.svg)](https://solana.com)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B.svg?logo=flutter)](https://flutter.dev)
 
 </div>
@@ -20,11 +19,7 @@ E2EE messenger · Multi-wallet · On-chain NFT marketplace · Community fund —
 
 ## What is SnowChat
 
-SnowChat fuses an **E2EE messenger**, **encrypted community channels** (the Discord replacement), a **multi-wallet**, an **on-chain NFT marketplace** (a Tensor-fork Anchor program), and a **community fund** where 50% of every trade flows back to the creator-led community — into one mobile app.
-
-Web3 communities run on Discord — BAYC, MonkeyDAO, OpenSea, repeatedly hacked, millions in NFTs drained. Tensor stripped creator royalties to compete on price, and creators lost the income that funded their community. Two stories, one root cause: intermediaries capturing value Web3 was supposed to return to creators and communities.
-
-**SnowChat reclaims both sovereignties — by mechanism, not enforcement.**
+SnowChat is an end-to-end encrypted messenger for one-to-one chats, groups and voice calls. Sign-up asks for no phone number and no email, and the server never holds the keys to any conversation. An organization can run the server itself, so the little metadata a server must see stays inside it.
 
 ---
 
@@ -38,16 +33,14 @@ Side-load on Android 8.0 or later. Enable "Install from unknown sources" before 
 
 ### iOS
 
-TestFlight build available on request — email **kenntkim66@gmail.com** with your Apple ID and we'll send the invitation. App Store submission is pending Phase 0 (legal entity / KYC / mainnet audit).
+TestFlight build available on request — email **kenntkim66@gmail.com** with your Apple ID and we'll send the invitation.
 
 ---
 
 ## 🧪 Try It (5-minute walkthrough)
 
-Designed so a judge or first-time visitor can verify every claim in this README on real hardware in five minutes.
-
-### 1. First launch — no signup
-Open the app → **Create new wallet**. The app generates a BIP-39 mnemonic and a SnowChat ID (`"snow"` + 32 hex characters). **Save the mnemonic — it is the only recovery path.** No email, no phone, no centralized account. You're now on the Chats tab.
+### 1. First launch — no phone number, no email
+Open the app → **Create New Identity**. The app generates a recovery phrase and a SnowChat ID (`"snow"` + 32 hex characters). **Back up the recovery phrase — it is the only way to restore the account.** No email, no phone. You're now on the Chats tab.
 
 ### 2. Test the E2EE messenger (needs two peers)
 - **With a second device:** install the app on it with a separate SnowChat ID. On either device, Chats tab → ✏️ pencil icon → enter the other peer's SnowChat ID → start chatting.
@@ -55,26 +48,16 @@ Open the app → **Create new wallet**. The app generates a BIP-39 mnemonic and 
 
 To verify the **disappearing messages** flow: tap the timer icon in the message input → pick `1m` → send a message → watch it tick down and self-destruct on both peers.
 
-To verify **reply quotes**: long-press any message → Reply → send. The new message renders with the WhatsApp-style green quote box, persisted across restart.
+To verify **reply quotes**: long-press any message → Reply → send. The new message renders with the quote box, persisted across restart.
 
-### 3. Test the on-chain marketplace (Solana Devnet)
-- **Network:** the wallet defaults to Devnet in this build — no flag needed.
-- **Faucet:** Wallet tab → Receive → copy the Solana address → paste into [faucet.solana.com](https://faucet.solana.com) and request 1 SOL.
-- **List a cNFT:** Wallet tab → NFTs → tap any cNFT in your wallet → **List for sale** → set a price. Listing fee 0%.
-- **Buy a cNFT:** another wallet (or the second test device) opens the marketplace → buy → settlement is atomic. **50% of the sale price routes to the verified-creator community fund** in the same transaction. The community-fund address is shown on the listing detail.
-- **Verify on-chain:** the transaction signature shown after the buy resolves on [Solana Explorer (devnet)](https://explorer.solana.com/?cluster=devnet) and the community-fund split shows as a discrete transfer instruction.
-
-Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketplace) on branch `feature/snowchat-community-fee-share`. Program ID is also printed under Settings → About in the app.
-
-### 4. Test the on-device AI (optional, ≥ 8 GB RAM device only)
+### 3. Test the on-device AI (optional, ≥ 8 GB RAM device only)
 - Open the **SnowChat AI** tab. On a device with less than 8 GB RAM (e.g. iPhone 13) the app blocks the model download and shows an "AI unavailable on this device" dialog — that gate is the test. On a 8 GB+ device the model downloads on first tap and runs **fully on-device** (no server round-trip — verify with airplane mode).
 - iOS Korean translation uses the **Apple Translation API**; toggle it via the 🅰 icon in any chat.
 
-### 5. Test the VoIP voice call
+### 4. Test the VoIP voice call
 - From a 1:1 conversation, tap the 📞 phone icon. Both peers can receive on locked screen (CallKit on iOS, Telecom ConnectionService on Android). Decline / accept / end-call all work cold-launch.
 
 ### What's *not* in this build
-- Mainnet — pending Phase 0 (legal entity, KYC, third-party audit).
 - App Store iOS distribution — TestFlight only.
 - Korean UI — locked to English at the OS level for V1 (the CallKit banner stays consistent on Korean-locale devices).
 
@@ -85,34 +68,20 @@ Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketpl
 ### 🔐 E2EE Messaging — Pure Dart Signal Protocol
 - Direct Dart implementation of X3DH + Double Ratchet + Sealed Sender (1:1) and Sender Key (groups, group protocol v2).
 - Messaging protocols are pure Dart, no Platform Channel. One native exception: the first-party Rust crate [`native/snowchat_zkgroup`](native/snowchat_zkgroup) — libsignal's `zkgroup` anonymous credentials for groups, and the Argon2id key derivation of the app passcode.
-- Disappearing messages, read receipts, typing indicators, WhatsApp-style reply quotes.
+- Disappearing messages, read receipts, typing indicators, reply quotes.
 - Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library purpose-built in-house for SnowChat, now released as a reusable library for any Flutter project.
 
-### 🏘 Communities — Discord, but encrypted and on-chain
-- Persistent community channels — each channel is an E2EE group, server only ever sees ciphertext.
-- Group protocol v2 — membership changes only through a log signed by members and verified on every device; the server stores members as zkgroup ciphertexts and group sends name neither the sender nor the group.
-- One-tap channel invite links (`snowchat://invite/<code>`) — iOS Universal Links + Android App Links, no QR friction.
-- On-chain treasury baked in — every community is bound to a verified Metaplex collection that automatically receives the 50% marketplace-fee split on every trade. The treasury is on-chain and auditable; there is no multi-sig "trust us" layer.
-- No bot framework, no third-party server, no token to compromise — community membership lives in your wallet, channel content lives in your device. The Discord token-phishing vector that drained BAYC / MonkeyDAO / OpenSea is structurally absent.
+### 👥 Encrypted Groups — group protocol v2
+- Membership changes only through a log signed by members and verified on every device; the server cannot add anyone to a group.
+- The server stores members as zkgroup ciphertexts, and group sends name neither the sender nor the group.
+- One-tap invite links — iOS Universal Links + Android App Links.
 
-### 💼 Multi-Wallet (Solana, non-custodial)
-- BIP-39 mnemonic + SLIP-0010 derivation.
-- Phantom-compatible derivation path: `m/44'/501'/{account}'/0'`.
-- Multi-account, hide / unhide, biometric gate (`local_auth`).
-- iOS Keychain / Android Keystore for all key material — never on the server.
-
-### 🛍 On-Chain NFT Marketplace
-- Tensor-fork Anchor program with a custom `snowchat_vault` PDA and a 50% community-fee router.
-- See [`kennss/marketplace`](https://github.com/kennss/marketplace) (branch `feature/snowchat-community-fee-share`) for the on-chain program source.
-- Compressed NFTs (Bubblegum), Metaplex Token Metadata, SPL Token / ATA, Helius indexing.
-
-### 🏛 Community Fund — 50% On-Chain Split
-- Half of every trade flows directly to the creator-led community fund.
-- Verified Metaplex Collection + verified creator required.
-- Atomic settlement on Solana — no escrow, no opt-out, no enforcement layer.
+### 🔒 On-Device Protection
+- Chat history in a SQLCipher-encrypted database, its key in the iOS Keychain / Android Keystore.
+- App passcode (6 digits, custom numeric or alphanumeric) checked with Argon2id; auto-lock and optional biometric unlock.
 
 ### 📞 Voice Calls (VoIP)
-- WebRTC P2P, Sealed Sender signaling over Socket.IO.
+- WebRTC P2P, Sealed Sender signaling over Socket.IO; each call's DTLS fingerprint is signed and checked against the peer's account-bound identity key.
 - iOS CallKit + Android ConnectionService.
 - Cloudflare Realtime TURN, FCM Voice Push.
 
@@ -126,7 +95,7 @@ Anchor program source: [`kennss/marketplace`](https://github.com/kennss/marketpl
 
 ## Identity
 
-SnowChat IDs are **not phone numbers, not emails**. They are deterministic hashes of the user's Solana wallet — `"snow"` + 32 hex characters (36 total). No Web2 PII, no centralized account system. Recovery via the BIP-39 mnemonic only.
+SnowChat IDs are **not phone numbers, not emails**. They are derived from the account's public key, which comes from the recovery phrase — `"snow"` + 32 hex characters (36 total). Each device's encryption keys are signed by that account key, so knowing a contact's SnowChat ID is enough to detect a server swapping their keys. Recovery via the recovery phrase only.
 
 ---
 
@@ -136,12 +105,11 @@ SnowChat IDs are **not phone numbers, not emails**. They are deterministic hashe
 |-------|-------|
 | Mobile | Flutter 3.x · Dart · Riverpod · GoRouter · drift (SQLCipher-encrypted SQLite) · `flutter_secure_storage` |
 | E2EE | Pure Dart Signal Protocol · pinenacl · X25519 / Ed25519 / XSalsa20-Poly1305 / HMAC-SHA256 |
-| Solana | Anchor (Rust) · Tensor-fork marketplace · Compressed NFTs (Bubblegum) · Metaplex Token Metadata · SPL Token · Helius |
-| Wallet | BIP-39 · SLIP-0010 · `Ed25519HDKeyPair` · `local_auth` biometric gate |
+| Native crypto | Rust (`native/snowchat_zkgroup`): libsignal `zkgroup` · Argon2id (RustCrypto `argon2`) · `dart:ffi` |
 | VoIP | WebRTC · Socket.IO · CallKit · ConnectionService · Cloudflare TURN · FCM |
 | On-device AI | flutter_gemma · Gemma 4 E2B · llama.cpp / LiteRT-LM · Apple Translation API · ML Kit |
 
-The backend (Node.js · Express · Socket.IO · Prisma · PostgreSQL · Redis) is plaintext-blind by design — it relays ciphertext only — and its source is kept private. The E2EE security surface is fully open here.
+The backend (Node.js · Express · Socket.IO · Prisma · PostgreSQL · Redis) is plaintext-blind by design — it relays ciphertext only — and its source is kept private for now. The E2EE security surface is fully open here.
 
 ---
 
@@ -194,21 +162,17 @@ flutter build apk --release --dart-define=SERVER_ENV=prod
 | Repo | Purpose | License |
 |------|---------|---------|
 | [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) | Pure Dart Signal Protocol library — zero native dependencies, reusable. | AGPL-3.0 |
-| [`kennss/marketplace`](https://github.com/kennss/marketplace) (branch `feature/snowchat-community-fee-share`) | Tensor-fork Anchor program with `snowchat_vault` PDA + 50% community-fee router. | Apache-2.0 |
 
 ---
 
 ## Status
 
-- ✅ Wallet V2 Phase 1 — 1:1 chat asset transfers (SOL / SPL / NFT, drift persistence, in-flight recovery)
-- ✅ Wallet V2 Phase 2 — Tensor-fork marketplace + 50% community-fee split (devnet deployed)
-- ✅ E2EE messenger — Pure Dart Signal Protocol, three internal audits
+- ✅ E2EE messenger — Pure Dart Signal Protocol, internal audits (latest: 2026-11-22, build 1001)
 - ✅ Encrypted groups — group protocol v2 (signed membership log, zkgroup-hidden membership, sealed group sends)
-- ✅ Multi-Wallet V1 — BIP-39 + SLIP-0010, Phantom-compatible derivation
-- ✅ VoIP — WebRTC + CallKit / ConnectionService (Phase 8.2 A~D, G, H)
+- ✅ VoIP — WebRTC + CallKit / ConnectionService
 - ✅ On-device AI — Gemma 4 E2B + agentic Tool Use
-- 🟡 Third-party security audit — Sec3 / Neodyme / OtterSec (funded by Solana Frontier hackathon)
-- 🟡 Mainnet — after Phase 0 (entity / legal / KYC provider)
+- 🟡 Public beta — from build 1001
+- 🟡 Independent external security audit
 
 ---
 
@@ -223,5 +187,3 @@ If you fork or run a network-modified version of this app, you must publish your
 ## Author
 
 **Kennt Kim** — [Calida Lab](https://snowchat.calidalab.ai)
-
-Submitted to [Colosseum Frontier](https://www.colosseum.com/) (Solana hackathon, 2026).

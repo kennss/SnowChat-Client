@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (sealedSenderAutoInitProvider builds SealedSenderService from the server
+/// @lastUpdated 2026-11-22 (SC-18: after a group message is sent while the socket is down, the queue is fetched — this device's own row is acknowledged before the server's push grace runs out, so the sender's phone shows no notification of its own message. Also: sealedSenderAutoInitProvider builds SealedSenderService from the server
 ///              keys pinned in the build — no /auth/server-key fetch, SC-06; the session manager's
 ///              sessionResetNotifier is the handler's sealed sendSealedSessionReset, SC-05; CallService
 ///              gets the fingerprint signing seed and the peer's bound Ed25519 key, SC-10). Earlier 2026-11-22 (passcodeStoreProvider — the app passcode, salted Argon2id; startup asks it
@@ -73,6 +73,7 @@ import '../core/crypto/sealed_sender.dart';
 import '../core/crypto/sender_certificate_manager.dart';
 import '../features/chat/providers/expiring_message_manager.dart';
 import '../features/chat/providers/mark_read_helper.dart';
+import '../core/group_v2/gv2_outbox.dart' show Gv2MessageSent;
 import '../core/group_v2/gv2_pairwise_crypto.dart';
 import '../core/group_v2/gv2_runtime.dart';
 import '../core/group_v2/gv2_trusted_keys.dart';
@@ -1090,6 +1091,17 @@ final gv2RuntimeProvider = Provider<Gv2Runtime?>((ref) {
   final connection = socket.onConnectionChange.listen((connected) {
     if (connected) unawaited(runtime.pump());
   });
+  // SC-18: a message to a group comes back to this account too (the
+  // recipient set is the roster), and the server pushes every row not
+  // acknowledged a few seconds after the send — it is not told which row is
+  // the sender's. Over the socket that row arrives and is acknowledged at
+  // once; without one it is fetched here, so this phone shows no
+  // notification of its own message.
+  final sent = runtime.sendEvents.listen((event) {
+    if (event is Gv2MessageSent && !socket.isConnected) {
+      unawaited(queue.fetchPending());
+    }
+  });
   // What became of the messages this account queued (the row of a message
   // the server took reads "sent", one that will never go reads "failed" —
   // a group shows no "delivered", design §12) is written by the sink in the
@@ -1103,6 +1115,7 @@ final gv2RuntimeProvider = Provider<Gv2Runtime?>((ref) {
     queue.onGv2InviteKept = null;
     unawaited(rows.cancel());
     unawaited(connection.cancel());
+    unawaited(sent.cancel());
     runtime.dispose();
   });
   return runtime;

@@ -11,7 +11,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-21 (P5.6: integers that are hashed or signed are range-checked — revisions u32, a snapshot's joined / pending revisions no later than the snapshot, the version a u8). Earlier 2026-11-13
+/// @lastUpdated 2026-11-22 (SC-18: send() takes no noPush — it named the sender of every group message). Earlier 2026-11-21 (P5.6: integers that are hashed or signed are range-checked — revisions u32, a snapshot's joined / pending revisions no later than the snapshot, the version a u8). Earlier 2026-11-13
 ///
 /// @functions
 ///  - Gv2Transport.fetchServerKeys(): GET /zk/params (no login)
@@ -480,12 +480,10 @@ class Gv2Transport {
   // Sending (send token only: no presentation, no group id)
   // ---------------------------------------------------------------------------
 
-  /// Queue [entries]. [noPush] lists recipients that get no push (the sender's
-  /// own account). One result per entry, in order.
-  Future<List<Gv2SendResult>> send(
-    List<Gv2SendEntry> entries, {
-    List<Uint8List> noPush = const [],
-  }) async {
+  /// Queue [entries]. One result per entry, in order. Nothing in the request
+  /// says which recipient is this account: its own row is acknowledged as it
+  /// arrives, and the server pushes only rows still unacknowledged (SC-18).
+  Future<List<Gv2SendResult>> send(List<Gv2SendEntry> entries) async {
     final body = await _call('POST', '/gv2/send', data: {
       'entries': [
         for (final e in entries)
@@ -497,7 +495,6 @@ class Gv2Transport {
             if (e.expiresIn != null) 'expiresIn': e.expiresIn,
           },
       ],
-      if (noPush.isNotEmpty) 'noPush': [for (final r in noPush) base64Encode(r)],
     });
     final list = body['results'];
     if (list is! List || list.length != entries.length) {

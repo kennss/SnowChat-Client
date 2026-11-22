@@ -12,7 +12,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-20 (the credentials take the dev server keys this build trusts)
+/// @lastUpdated 2026-11-22 (SC-18: sends carry no noPush). Earlier 2026-11-20 (the credentials take the dev server keys this build trusts)
 ///
 /// @functions
 ///  - main(): one ordered scenario.
@@ -562,7 +562,6 @@ void main() {
           envelope: _random(256),
         ),
       ],
-      noPush: [alice.accountId],
     );
     expect(results.single.ok, isTrue);
     expect(results.single.delivered, 2);

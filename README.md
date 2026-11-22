@@ -8,7 +8,7 @@
 
 E2EE messaging · Encrypted groups · Voice calls · On-device AI — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1001-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1001/snowchat-arm64-v8a.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1002-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1002/snowchat-arm64-v8a.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B.svg?logo=flutter)](https://flutter.dev)
@@ -27,7 +27,7 @@ SnowChat is an end-to-end encrypted messenger for one-to-one chats, groups and v
 
 ### Android
 
-**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+1001)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1001/snowchat-arm64-v8a.apk)**
+**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+1002)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1002/snowchat-arm64-v8a.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 

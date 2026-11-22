@@ -14,7 +14,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (P5.6: the own key replaced after gv2OwnKeyMaxAge; P5.6: outcomes of a message written in the outbox's transaction; P5.6: endorsements for another revision — caught up in the same flush; a server that never agrees backs off). Earlier 2026-11-21 (P5.6: a member notice sealed again acts once; resets drop sessions at most once in ten minutes). Earlier 2026-11-21 (P5.6: a removed member's message after the change notice, on a device that had not synced, is judged after the sync). Earlier 2026-11-21 (a "busy" refusal fetches no endorsements). Earlier 2026-11-20 (P5.3: a point inside a batch is covered by the signed anchor; P5.2: a far-future place claimed on every envelope, a forged message far ahead on the sender's chain)
+/// @lastUpdated 2026-11-22 (SC-18: sends carry no noPush; SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (P5.6: the own key replaced after gv2OwnKeyMaxAge; P5.6: outcomes of a message written in the outbox's transaction; P5.6: endorsements for another revision — caught up in the same flush; a server that never agrees backs off). Earlier 2026-11-21 (P5.6: a member notice sealed again acts once; resets drop sessions at most once in ten minutes). Earlier 2026-11-21 (P5.6: a removed member's message after the change notice, on a device that had not synced, is judged after the sync). Earlier 2026-11-21 (a "busy" refusal fetches no endorsements). Earlier 2026-11-20 (P5.3: a point inside a batch is covered by the signed anchor; P5.2: a far-future place claimed on every envelope, a forged message far ahead on the sender's chain)
 ///
 /// @functions
 ///  - main(): the test groups below.
@@ -343,7 +343,7 @@ class _Device {
       keys: db.gv2SenderKeyStore,
       tokens: d.tokens,
       crypto: crypto,
-      send: (entries, {noPush = const []}) => world.send(d, entries, noPush),
+      send: (entries) => world.send(d, entries),
       mySnowId: () async => person.snowId,
       myDeviceId: () async => party.deviceId,
       memberKey: (_) async => person.memberKey,
@@ -441,8 +441,7 @@ class _Delivery {
 class _Request {
   final _Device from;
   final List<Gv2SendEntry> entries;
-  final List<Uint8List> noPush;
-  const _Request(this.from, this.entries, this.noPush);
+  const _Request(this.from, this.entries);
 
   bool get isGroup => entries.any((e) => e.recipients.length > 1);
 }
@@ -526,10 +525,9 @@ class _World implements Gv2TestDirectory {
   Future<List<Gv2SendResult>> send(
     _Device from,
     List<Gv2SendEntry> entries,
-    List<Uint8List> noPush,
   ) async {
     if (failSends) throw const Gv2NetworkException();
-    requests.add(_Request(from, entries, noPush));
+    requests.add(_Request(from, entries));
     final results = <Gv2SendResult>[];
     for (final e in entries) {
       final expected = Gv2TestTokens.tokenFor(group.id, [
@@ -759,8 +757,8 @@ void main() {
         {for (final r in message.recipients) 'snow${gv2Hex(r)}'},
         {alice.snowId, bob.snowId, carol.snowId, dave.snowId},
       );
-      // No push to the sender's own account.
-      expect(fromAlice[1].noPush.single, alice.person.accountId);
+      // The sender is one recipient among the others; nothing else in the
+      // request names it (SC-18: no noPush).
       expect(await alice.db.gv2OutboxStore.allRows(), isEmpty);
       expect((await alice.group()).myKeyRevision, 4);
       // Reading moved bob's stored copy of alice's chain past the message:

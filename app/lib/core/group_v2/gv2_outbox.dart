@@ -12,7 +12,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-21 (P5.6: the own Sender Key is replaced once older than gv2OwnKeyMaxAge (7 days); what became of a message (sent, given up) is recorded in the transaction that takes its row out of the queue — recordOutcome; a message could read "sending" for good; a row that waits behind an earlier row of its lane loses a time of its own that has passed — the app woke every second behind a row backing off; endorsements for another revision catch the group up and look again in the next pass, once per group and run — not a failed attempt with its backoff; Gv2Outbox.takeBackContent; takeBackContent(): queued content messages taken back (leaving that could not be made)). Earlier 2026-11-21 (P5.6: endorsements are refetched only when the server refused the token — not for its own trouble, "busy"). Earlier 2026-11-20 (a change of this device whose answer never came makes the log stale: the message syncs first). Earlier 2026-11-13
+/// @lastUpdated 2026-11-22 (SC-18: a message to the group asks for no push exemption — the noPush list named this account as the sender to the server; Gv2OutboxSend takes the entries only). Earlier 2026-11-21 (P5.6: the own Sender Key is replaced once older than gv2OwnKeyMaxAge (7 days); what became of a message (sent, given up) is recorded in the transaction that takes its row out of the queue — recordOutcome; a message could read "sending" for good; a row that waits behind an earlier row of its lane loses a time of its own that has passed — the app woke every second behind a row backing off; endorsements for another revision catch the group up and look again in the next pass, once per group and run — not a failed attempt with its backoff; Gv2Outbox.takeBackContent; takeBackContent(): queued content messages taken back (leaving that could not be made)). Earlier 2026-11-21 (P5.6: endorsements are refetched only when the server refused the token — not for its own trouble, "busy"). Earlier 2026-11-20 (a change of this device whose answer never came makes the log stale: the message syncs first). Earlier 2026-11-13
 ///
 /// @functions
 ///  - Gv2OutboxStore: the only writer of gv2_outbox
@@ -45,7 +45,9 @@
 ///    own inbox drops it: it does not unseal.
 ///  - A message to the group goes to every confirmed member AND to this
 ///    account itself (the recipient set is the roster, not the roster minus
-///    the sender); the request asks for no push to this account.
+///    the sender), and nothing in the request says which recipient sent it.
+///    This device acknowledges its own row as it arrives; the server pushes
+///    only rows still unacknowledged a few seconds after a send (SC-18).
 ///  - Before a message to the group is sent:
 ///      1. the group's log is fresh — a sync that reached the server's head
 ///         started within [gv2SendFreshness] (design §8) — and every member
@@ -131,12 +133,8 @@ const Duration gv2OwnKeyMaxAge = Duration(days: 7);
 const int _maxPasses = 1000;
 
 /// Queues entries; one result per entry, in order (Gv2Transport.send).
-/// [noPush]: account ids that get no push for this request.
 typedef Gv2OutboxSend =
-    Future<List<Gv2SendResult>> Function(
-      List<Gv2SendEntry> entries, {
-      List<Uint8List> noPush,
-    });
+    Future<List<Gv2SendResult>> Function(List<Gv2SendEntry> entries);
 
 /// A queued message to the group: the payload of a content row.
 ///   messageId(16) ‖ timestampMs(u64) ‖ expiresIn(u32) ‖ silent(1) ‖ plaintext
@@ -991,7 +989,7 @@ class Gv2Outbox {
 
     List<Gv2SendResult>? results;
     try {
-      results = await _send([sealed.entry], noPush: [gv2AccountIdOfSnowId(me)]);
+      results = await _send([sealed.entry]);
     } catch (_) {
       results = null;
     }

@@ -15,7 +15,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (X1: invites from a blocked account are dropped; P5.6: an invite row kept while an INVITE answer is unsettled; two changes of one group go one after the other; inviteMany; checkLeave). Earlier 2026-11-21 (P5.6: invites kept by the 1:1 queue are taken in by Gv2GroupActions.takeInvite on a drain). Earlier 2026-11-21 (P5.6: nothing is accepted by itself — acceptsInvites is a stand-in user who taps Accept; an invite passed on by someone else holds nothing). Earlier 2026-11-21 (the 256-account limit on create and invite). Earlier 2026-11-20 (P5.2: lost answers to REMOVE / LEAVE / role changes, the unanswered-change mark)
+/// @lastUpdated 2026-11-22 (SC-18: Gv2OutboxSend takes the entries only; SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (X1: invites from a blocked account are dropped; P5.6: an invite row kept while an INVITE answer is unsettled; two changes of one group go one after the other; inviteMany; checkLeave). Earlier 2026-11-21 (P5.6: invites kept by the 1:1 queue are taken in by Gv2GroupActions.takeInvite on a drain). Earlier 2026-11-21 (P5.6: nothing is accepted by itself — acceptsInvites is a stand-in user who taps Accept; an invite passed on by someone else holds nothing). Earlier 2026-11-21 (the 256-account limit on create and invite). Earlier 2026-11-20 (P5.2: lost answers to REMOVE / LEAVE / role changes, the unanswered-change mark)
 ///
 /// @functions
 ///  - main(): the test groups below.
@@ -564,7 +564,7 @@ class _Device {
         return true;
       },
       tokens: d.tokens,
-      send: (entries, {noPush = const []}) => world.send(entries),
+      send: (entries) => world.send(entries),
       myDeviceId: () async => party.deviceId,
       onQueued: () => d.queuedCalls++,
       nowMs: () => world.now,
@@ -578,7 +578,7 @@ class _Device {
       keys: db.gv2SenderKeyStore,
       tokens: d.tokens,
       crypto: crypto,
-      send: (entries, {noPush = const []}) => world.send(entries),
+      send: (entries) => world.send(entries),
       onMemberDeleted: (groupId, snowId) =>
           d.removals.add(d.groups.removeDeleted(groupId, snowId)),
       mySnowId: () async => d.snowId,

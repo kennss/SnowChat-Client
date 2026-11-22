@@ -13,7 +13,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (P5.6: key requests spaced by the wait; P5.6: a failed sync keeps rows waiting — the stand-in sync marks the group synced only when it does not fail). Earlier 2026-11-21 (head confirmers: max(3, ⌈√N⌉) and the inviter; advanceTo names inviters like the sync). Earlier 2026-11-20 (a point held without a signature is covered by the signed anchor)
+/// @lastUpdated 2026-11-22 (SC-18: Gv2OutboxSend takes the entries only; SealedSenderService takes trustedServerKeys). Earlier 2026-11-21 (P5.6: key requests spaced by the wait; P5.6: a failed sync keeps rows waiting — the stand-in sync marks the group synced only when it does not fail). Earlier 2026-11-21 (head confirmers: max(3, ⌈√N⌉) and the inviter; advanceTo names inviters like the sync). Earlier 2026-11-20 (a point held without a signature is covered by the signed anchor)
 ///
 /// @functions
 ///  - main(): the test groups below.
@@ -218,7 +218,7 @@ class _Device {
       keys: db.gv2SenderKeyStore,
       tokens: d.tokens,
       crypto: crypto,
-      send: (entries, {noPush = const []}) => world.send(d, entries),
+      send: (entries) => world.send(d, entries),
       mySnowId: () async => person.snowId,
       myDeviceId: () async => party.deviceId,
       memberKey: (_) async => person.memberKey,
@@ -1697,7 +1697,7 @@ void main() {
           keys: alice.db.gv2SenderKeyStore,
           tokens: alice.tokens,
           crypto: alice.crypto,
-          send: (entries, {noPush = const []}) => world.send(alice, entries),
+          send: (entries) => world.send(alice, entries),
           mySnowId: () async => alice.snowId,
           myDeviceId: () async => alice.party.deviceId,
           memberKey: (_) async => alice.person.memberKey,

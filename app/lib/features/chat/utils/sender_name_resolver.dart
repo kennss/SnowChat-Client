@@ -6,11 +6,17 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-08-03
-/// @lastUpdated 2026-11-20 (comment: a group's name comes from its change log, no GMK or channel room). Earlier 2026-08-03
+/// @lastUpdated 2026-11-22 (resolvePeerName(): the name of a 1:1 peer for the chat header and the
+///              Chats list — the friend list, then the chat's own name, then a certificate's, then
+///              the short snowId). Earlier 2026-11-22 (friend graph off the server — the name order of design §5.6: the friend
+///              list on this device, then the name from a verified name certificate, then the group
+///              roster; no server friend list). Earlier 2026-11-20 (comment: a group's name comes from its change log, no GMK or channel room). Earlier 2026-08-03
 ///
 /// @functions
 ///  - resolveSenderName(ref, snowId, {roomId, envelopeName}): best-effort name
-///    via envelope → group roster → contacts → friends → truncated snow-id.
+///    via envelope → contacts → name certificate → group roster → truncated snow-id.
+///  - resolvePeerName(ref, snowId, {conversationTitle}): a 1:1 peer's name via
+///    the friend list → the chat's title → name certificate → truncated snow-id.
 ///  - groupDisplayNameFallback(ref, roomId, {mySnowId}): roster-derived group
 ///    title ("Dave, Carol") when the group's name isn't known yet.
 ///  - truncateSnowId(snowId): short "snow1234...cdef" form (last-resort label).
@@ -18,16 +24,17 @@ library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/providers.dart' show nameCertServiceProvider;
 import '../../contacts/contact_provider.dart';
-import '../../channels/providers/channel_provider.dart';
 import '../../group/providers/group_detail_provider.dart';
 
 /// Resolve [snowId] to a display name.
 ///
-/// Order: [envelopeName] (server-supplied, non-sealed) → group roster member
-/// (when [roomId] is a group) → reachable contacts → friends → truncated
-/// snow-id. Uses `ref.watch`, so the label fills in reactively once a source
-/// loads (e.g. the roster arrives, or contacts refresh). Never returns empty.
+/// Order: [envelopeName] (a name stored with the message) → the friend list
+/// on this device → the name from the sender's verified name certificate →
+/// group roster member (when [roomId] is a group) → truncated snow-id. Uses
+/// `ref.watch` for the list and the roster, so the label fills in reactively.
+/// Never returns empty.
 String resolveSenderName(
   WidgetRef ref,
   String snowId, {
@@ -36,7 +43,18 @@ String resolveSenderName(
 }) {
   if (envelopeName != null && envelopeName.isNotEmpty) return envelopeName;
 
-  // 1. Group roster — authoritative for group members.
+  // 1. The friend list on this device.
+  for (final c in ref.watch(contactProvider)) {
+    if (c.snowChatId == snowId && (c.displayName?.isNotEmpty ?? false)) {
+      return c.displayName!;
+    }
+  }
+
+  // 2. The sender's verified name certificate (a 1:1 peer's name).
+  final certified = ref.read(nameCertServiceProvider).cachedName(snowId);
+  if (certified != null && certified.isNotEmpty) return certified;
+
+  // 3. Group roster member.
   if (roomId != null && roomId.isNotEmpty) {
     final detail = ref.watch(groupDetailProvider(roomId));
     for (final m in detail.members) {
@@ -46,22 +64,29 @@ String resolveSenderName(
     }
   }
 
-  // 2. Contacts (already scoped to the reachable set server-side).
+  // 4. Last resort — a short, non-identifying snow-id form.
+  return truncateSnowId(snowId);
+}
+
+/// The name of the 1:1 peer [snowId] (design §5.6, the order for a 1:1):
+/// the friend list on this device → [conversationTitle] (the 1:1 room's
+/// name, kept in step with the peer's verified name certificate) → a name
+/// certificate's → a short snowId. Watches the friend list. Never asks the
+/// server; never returns empty.
+String resolvePeerName(
+  WidgetRef ref,
+  String snowId, {
+  String? conversationTitle,
+}) {
   for (final c in ref.watch(contactProvider)) {
     if (c.snowChatId == snowId && (c.displayName?.isNotEmpty ?? false)) {
       return c.displayName!;
     }
   }
-
-  // 3. Friends.
-  final friends = ref.watch(friendListProvider).valueOrNull ?? const [];
-  for (final f in friends) {
-    if (f.snowchatId == snowId && (f.displayName?.isNotEmpty ?? false)) {
-      return f.displayName!;
-    }
-  }
-
-  // 4. Last resort — a short, non-identifying snow-id form.
+  final title = conversationTitle?.trim();
+  if (title != null && title.isNotEmpty && title != snowId) return title;
+  final certified = ref.read(nameCertServiceProvider).cachedName(snowId);
+  if (certified != null && certified.isNotEmpty) return certified;
   return truncateSnowId(snowId);
 }
 

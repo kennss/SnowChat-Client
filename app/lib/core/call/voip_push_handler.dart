@@ -19,7 +19,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-21
-/// @lastUpdated 2026-05-05 (Z-fix: prefer data['callId'] over data['nonce']
+/// @lastUpdated 2026-11-23 (IOSParams.includesCallsInRecents: false (§7.1); the anonymous
+///              name is CallKitManager's kAnonymousCallName). Earlier 2026-05-05 (Z-fix: prefer data['callId'] over data['nonce']
 ///              for CallKitParams.id. Unifies Telecom Connection id with the
 ///              main isolate's socket-path registration → fork same-id dedup
 ///              gate prevents zombie Connection. Falls back to nonce when the
@@ -34,6 +35,8 @@ import 'dart:io' show Platform;
 
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+
+import 'callkit_manager.dart' show kAnonymousCallName;
 
 /// Same 32-byte base64url regex (43 chars) as the server `routes/calls.ts` /
 /// `PushNotificationService.sendVoipIncomingCall`.
@@ -93,7 +96,7 @@ class VoipPushHandler {
 
     final params = CallKitParams(
       id: unifiedId,
-      nameCaller: 'SnowChat Call', // Anonymous (Signal pattern, §25.3)
+      nameCaller: kAnonymousCallName, // Anonymous (Signal pattern, §25.3)
       handle: '', // No phone number / snow ID exposure
       type: 0, // audio only
       duration: 30000, // 30s ringer timeout
@@ -126,6 +129,7 @@ class VoipPushHandler {
         supportsHolding: false,
         supportsGrouping: false,
         supportsUngrouping: false,
+        includesCallsInRecents: false, // §7.1
         ringtonePath: 'system_ringtone_default',
       ),
       android: const AndroidParams(

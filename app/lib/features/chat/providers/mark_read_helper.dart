@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-07-15 (read receipts now sealed E2EE: _markRead sends via EncryptedMessageHandler.sendSealedReadReceipt using directPeerResolver (null → group → suppressed); dropped plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-01)
+/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-07-15 (read receipts now sealed E2EE: _markRead sends via EncryptedMessageHandler.sendSealedReadReceipt using directPeerResolver (null → group → suppressed); dropped plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-01)
 ///
 /// @functions
 ///  - MarkReadHelper: Signal-pattern read processing (drift DB + debounce + Sticky Thread)
@@ -21,6 +21,7 @@ import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/storage/daos/message_dao.dart';
 import '../../../core/storage/database.dart';
 import 'expiring_message_manager.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 /// Dart implementation of Signal's MarkReadHelper.
 /// Bound to the ChatScreen Widget lifecycle (initState/dispose).
@@ -76,13 +77,13 @@ class MarkReadHelper {
   /// Called in ChatScreen.initState. Marks this conversation as actively viewed.
   void activate() {
     _activeConversations.add(conversationId);
-    debugPrint('[MarkReadHelper] Activated: $conversationId');
+    debugPrint('[MarkReadHelper] Activated: ${logRef(conversationId)}');
   }
 
   /// Called in ChatScreen.dispose. Marks this conversation as no longer viewed.
   void deactivate() {
     _activeConversations.remove(conversationId);
-    debugPrint('[MarkReadHelper] Deactivated: $conversationId');
+    debugPrint('[MarkReadHelper] Deactivated: ${logRef(conversationId)}');
   }
 
   /// Mark all messages as read on chat room entry.

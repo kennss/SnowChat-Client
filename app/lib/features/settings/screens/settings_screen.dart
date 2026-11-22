@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (Security: Change Passcode, Auto-Lock (default 1 min); biometric unlock
+/// @lastUpdated 2026-11-23 (Privacy: "Show caller name on calls" — whether the system call
+///              screens show the name this phone knows for the other party; default on).
+///              Earlier 2026-11-22 (Security: Change Passcode, Auto-Lock (default 1 min); biometric unlock
 ///              wording). Earlier 2026-11-20 (group protocol v2 has no build flag: the retention tile shows where groups can run, and account deletion always goes through deleteAccountWithProof). Earlier 2026-11-20 (group protocol v2: "Offline group messages" — how long the server keeps group messages for this account; a progress dialog while the account leaves its groups and is deleted; account deletion with group protocol v2 on: leave every v2 group first, then delete with the account key's deletion proof — core/network/account_deletion.dart). Earlier 2026-11-12 (account deletion: removed the marketplace-listing warning copy). Earlier 2026-11-11 (at-rest protection level 1: _performReset closes + deletes the encrypted drift DB and its SQLCipher key BEFORE the secure-storage wipe — files first, key last). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
 ///              chevron) and pushes /settings/profile → ProfileEditScreen to
 ///              edit the nickname. Previously 2026-05-11: Privacy section: added read-only status tile
@@ -138,6 +140,17 @@ class SettingsScreen extends ConsumerWidget {
             value: settings.linkPreviews,
             onChanged: (v) =>
                 ref.read(settingsProvider.notifier).setLinkPreviews(v),
+          ),
+          _buildSwitchTile(
+            icon: Icons.contact_phone_rounded,
+            title: 'Show caller name on calls',
+            subtitle: 'On: your phone\'s call screen (also on the lock screen) '
+                'shows the name this phone knows for the caller — it comes '
+                'from this phone, never from the server. Off: it shows only '
+                '"SnowChat Call".',
+            value: settings.callShowCallerName,
+            onChanged: (v) =>
+                ref.read(settingsProvider.notifier).setCallShowCallerName(v),
           ),
           _buildNavTile(
             icon: Icons.block_rounded,

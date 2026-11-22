@@ -8,7 +8,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (v18: nickname — the blocked-list screen asks no server; this
+///              device's list is the source of truth, the server holds only tags)
 ///
 /// @functions
 ///  - BlockedAccounts: one row per account this user blocked, or unblocked while the server
@@ -34,6 +35,10 @@ class BlockedAccounts extends Table {
 
   /// When this device last changed the row (local clock, ms).
   IntColumn get updatedAtMs => integer()();
+
+  /// The account's name when it was blocked (contact list / conversation
+  /// title), or null. Shown by the blocked-list screen.
+  TextColumn get nickname => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {snowId};

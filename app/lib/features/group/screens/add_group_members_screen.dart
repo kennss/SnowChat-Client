@@ -1,13 +1,15 @@
 /// @file        add_group_members_screen.dart
-/// @description Add-group-members screen — select contacts excluding existing members and invite them.
-///              The contacts this user chose by an action of their own (vouched) are listed as
-///              known; the others only after a warning (AccountPickerList) — the contact list is
+/// @description Add-group-members screen — select from this user's friends and chosen 1:1 peers
+///              (design 2026-11-22-friend-graph-off-server §5.6), excluding existing members, and
+///              invite them. The accounts this user chose by an action of their own (vouched) are
+///              listed as known; the others only after a warning (AccountPickerList) — a name is
 ///              the server's word and an invite gives an account the group's key for good. At
 ///              most as many as the group has room for (gv2GroupSizeLimit).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-11-21 (P5.6: the room left counts every place taken — placesTaken; invites go up to 64 in one change — inviteMany; earlier the same day: known / not verified contacts and the warning). Earlier 2026-11-20 (v1 groups removed: the selected contacts are always invited — an INVITE in
+/// @lastUpdated 2026-11-22 (the empty and error texts speak of friends — no server contact list).
+///              Earlier 2026-11-21 (P5.6: the room left counts every place taken — placesTaken; invites go up to 64 in one change — inviteMany; earlier the same day: known / not verified contacts and the warning). Earlier 2026-11-20 (v1 groups removed: the selected contacts are always invited — an INVITE in
 ///              the group's change log each; no server add; says so when groups are not ready).
 ///              Earlier same day (group protocol v2: invites for a v2 group).
 ///              Earlier 2026-04-26 (header English translation)
@@ -191,7 +193,8 @@ class _AddGroupMembersScreenState
                   onToggle: _toggleMember,
                   onSelectAllKnown: () => _selectAllKnown(list),
                   allKnownTaken: _picked.allKnownTaken(list),
-                  emptyText: 'No contacts available to add',
+                  emptyText: 'No one else to add. Add friends first, or write '
+                      'to someone in a 1:1 chat.',
                 );
               },
               loading: () => const Center(
@@ -199,7 +202,7 @@ class _AddGroupMembersScreenState
               ),
               error: (_, _) => const Center(
                 child: Text(
-                  "Couldn't load your contacts.",
+                  "Couldn't load your friends.",
                   style: TextStyle(color: SnowColors.textTertiary),
                 ),
               ),

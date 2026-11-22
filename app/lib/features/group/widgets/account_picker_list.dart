@@ -6,11 +6,14 @@
 ///              others under "Not verified", listed only after a warning
 ///              that an invite gives an account the group's key for good.
 ///              Every account shows its snowId (the name is the server's
-///              word).
+///              word). The lists: this user's friends and chosen 1:1 peers
+///              (design 2026-11-22-friend-graph-off-server §5.6), or a
+///              community roster.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (the warning no longer says every list is kept by the server — the
+///              friend list is this device's; a roster and every name still are the server's word)
 ///
 /// @functions
 ///  - AccountPickerList: the sections, the rows and the warning
@@ -72,11 +75,12 @@ class _AccountPickerListState extends State<AccountPickerList> {
           style: TextStyle(color: SnowColors.textPrimary),
         ),
         content: const Text(
-          'These accounts come from a list the server keeps, and you have '
-          'not chosen them yourself on this device — no friend request, no '
-          'message from you, no safety number checked. An invite gives an '
-          "account this group's key for good: it keeps the key even if it "
-          'never joins or you remove it later. Invite only people you know.',
+          'You have not chosen these accounts yourself on this device — no '
+          'friend request, no message from you, no safety number checked. A '
+          "community's member list and every name come from the server. An "
+          "invite gives an account this group's key for good: it keeps the "
+          'key even if it never joins or you remove it later. Invite only '
+          'people you know.',
           style: TextStyle(color: SnowColors.textSecondary, height: 1.4),
         ),
         actions: [

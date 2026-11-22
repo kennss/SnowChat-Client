@@ -9,7 +9,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-21 (v16 → v17: direct_outbox and local_messages.peer_client_id with its
+/// @lastUpdated 2026-11-22 (v17 → v18 marks the contact restore done with the block replace due — an
+///              install upgraded in place has no backup). Earlier 2026-11-22 (v17 → v18: the contacts table goes; contact_list, peer_names and
+///              contact_sync_state come; blocked_accounts.nickname). Earlier 2026-11-21 (v16 → v17: direct_outbox and local_messages.peer_client_id with its
 ///              unique index). Earlier 2026-11-21 (v15 → v16: blocked_accounts; v14 → v15: gv2_backup_state.write_due_at_ms). Earlier 2026-11-20 (v13 → v14: only conversations keyed by a snowId or a v2 group id stay,
 ///              with their messages and attachment rows; the v10 case keeps a 1:1 room keyed by
 ///              its peer). Earlier same day (v12 → v13: gv2_groups.change_sent_at_ms)
@@ -170,10 +172,17 @@ void main() {
       'gv2_backup_state',
       'blocked_accounts',
       'direct_outbox',
+      'contact_list',
+      'peer_names',
+      'contact_sync_state',
     });
-    // Everything v10 had is unchanged, but for the one column v17 added to
-    // local_messages (the receiver's duplicate guard).
+    // v18 dropped the never-written contacts table.
+    expect(before.keys, contains('contacts'));
+    expect(now.keys, isNot(contains('contacts')));
+    // Everything else v10 had is unchanged, but for the one column v17
+    // added to local_messages (the receiver's duplicate guard).
     for (final e in before.entries) {
+      if (e.key == 'contacts') continue;
       if (e.key == 'local_messages') {
         expect(now[e.key]!.where((c) => !c.startsWith('peer_client_id ')),
             e.value);
@@ -378,11 +387,13 @@ void main() {
     expect(head.storedAtMs, 0);
   });
 
-  test('v15 → v16 adds the blocked accounts, empty', () async {
+  // (Validated at the current version: the table is created with its
+  // current columns — v18 added nickname — so it does not match v16's.)
+  test('v15 → current adds the blocked accounts, empty', () async {
     final schema = await verifier.schemaAt(15);
     final db = SnowDatabase(schema.newConnection());
     addTearDown(db.close);
-    await verifier.migrateAndValidate(db, 16);
+    await verifier.migrateAndValidate(db, GeneratedHelper.versions.last);
     expect(await db.blockListDao.allRows(), isEmpty);
   });
 
@@ -416,5 +427,58 @@ void main() {
           "UPDATE local_messages SET peer_client_id = 'msg_1' WHERE id = 'm2'"),
       throwsA(anything),
     );
+  });
+
+  test('v17 → v18 drops the contacts table, adds the contact list tables '
+      'empty, keeps the blocks (with no name) and marks the restore done',
+      () async {
+    final schema = await verifier.schemaAt(17);
+    final raw = schema.rawDatabase;
+    const peer = 'snow0123456789abcdef0123456789abcdef';
+    raw.execute(
+        'INSERT INTO blocked_accounts (snow_id, blocked, synced, updated_at_ms) '
+        'VALUES (?, 1, 1, 5)',
+        [peer]);
+    final db = SnowDatabase(schema.newConnection());
+    addTearDown(db.close);
+    await verifier.migrateAndValidate(db, 18);
+
+    final tables = {
+      for (final r in await db.customSelect(listNames,
+          variables: [Variable.withString('table')]).get())
+        r.read<String>('name'),
+    };
+    expect(tables, isNot(contains('contacts')));
+    expect(await db.contactDao.allRows(), isEmpty);
+    expect(await db.contactDao.allPeerNames(), isEmpty);
+    final block = (await db.blockListDao.allRows()).single;
+    expect(block.snowId, peer);
+    expect(block.blocked, isTrue);
+    expect(block.nickname, isNull);
+
+    // An install upgraded in place never restores (it has no backup) and
+    // puts its whole block list on the server at the first sync (§5.10).
+    final state = (await db.contactDao.syncState())!;
+    expect(state.restored, isTrue);
+    expect(state.blocksReplacePending, isTrue);
+    expect(state.restoreNoticeDue, isFalse);
+    expect(state.periodMs,
+        inInclusiveRange(const Duration(hours: 6).inMilliseconds,
+            const Duration(hours: 24).inMilliseconds));
+    // ensureSyncState keeps it as it is.
+    final again = await db.contactDao.ensureSyncState(periodMs: 7, nowMs: 100);
+    expect(again.restored, isTrue);
+    expect(again.periodMs, state.periodMs);
+  });
+
+  test('a new install (no upgrade) makes the sync state on first use: not '
+      'restored, replace pending', () async {
+    final db = SnowDatabase(NativeDatabase.memory());
+    addTearDown(db.close);
+    expect(await db.contactDao.syncState(), isNull);
+    final state = await db.contactDao.ensureSyncState(periodMs: 7, nowMs: 100);
+    expect(state.restored, isFalse);
+    expect(state.blocksReplacePending, isTrue);
+    expect(state.nextWriteAtMs, 107);
   });
 }

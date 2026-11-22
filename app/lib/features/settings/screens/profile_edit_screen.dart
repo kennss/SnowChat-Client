@@ -5,11 +5,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-08-03
-/// @lastUpdated 2026-08-03
+/// @lastUpdated 2026-11-22 (a rename the server took drops this account's cached name
+///              certificate — NameCertService.invalidateOwn — so the next message to each peer
+///              carries the new name; the server sends no profile_updated any more)
 ///
 /// @functions
 ///  - ProfileEditScreen: nickname edit form
-///  - _ProfileEditScreenState._save(): validate + PUT /users/profile + persist locally + pop
+///  - _ProfileEditScreenState._save(): validate + PUT /users/profile + drop the own name
+///    certificate + persist locally + pop
 ///  - _ProfileEditScreenState._load(): pre-fill the field with the current nickname
 
 import 'package:dio/dio.dart';
@@ -78,8 +81,11 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
         ApiEndpoints.userProfile,
         data: {'displayName': name},
       );
-      // Persist locally so the Settings header / PIN screen reflect it offline;
-      // the server also broadcasts `profile_updated` so contacts refresh live.
+      // The cached name certificate names the old nickname: the next send
+      // fetches a new one, and each peer gets it with its next message
+      // (design 2026-11-22 §5.6 — the server tells no one).
+      await ref.read(nameCertServiceProvider).invalidateOwn();
+      // Persist locally so the Settings header / PIN screen reflect it offline.
       await ref.read(secureStorageProvider).storeDisplayName(name);
       // Push into the reactive display-name state so the Settings header (and
       // anything else watching it) updates immediately on pop instead of only

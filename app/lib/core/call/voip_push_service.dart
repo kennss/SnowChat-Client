@@ -8,7 +8,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-29
-/// @lastUpdated 2026-04-29 (Phase E-2 #2 fix: poll loop retries on upload
+/// @lastUpdated 2026-11-22 (the device id travels in the body: PUT /devices/voip-token { deviceId, voipPushToken } — contract §12.1). Earlier 2026-04-29 (Phase E-2 #2 fix: poll loop retries on upload
 ///              failure instead of exiting; window extended 30s → 60s + slow
 ///              retry 30min. Release-build race fix where the first PUT lost
 ///              the token forever.)
@@ -124,8 +124,8 @@ class VoipPushService {
     }
     try {
       await _apiClient.put(
-        ApiEndpoints.deviceVoipToken(deviceId),
-        data: {'voipPushToken': token},
+        ApiEndpoints.deviceVoipToken,
+        data: {'deviceId': deviceId, 'voipPushToken': token},
       );
       _lastUploadedToken = token;
       debugPrint('[VoipPush] uploaded token len=${token.length}');

@@ -22,7 +22,8 @@ features/call/
 └── screens/
     ├── outgoing_call_screen.dart  # 발신 중
     ├── incoming_call_screen.dart  # 수신 알림
-    └── active_call_screen.dart    # 통화 중 (SAS 표시)
+    ├── active_call_screen.dart    # 통화 중 (SAS 표시)
+    └── call_screen_for.dart       # 상태 → 화면 매핑 (/call 라우트와 앱 잠금이 공유)
 ```
 
 `models/`와 `widgets/` 폴더는 **만들지 않는다**. 이유:
@@ -280,6 +281,10 @@ GoRoute(
 
 `/call` 라우트는 통화 상태에 따라 다른 화면을 표시한다. 별도 `/call/outgoing`, `/call/incoming` 라우트는 만들지 않는다.
 
+상태 → 화면 매핑은 `screens/call_screen_for.dart`의 `callScreenFor()` 하나뿐이다 (위 예시는 개념도). `/call` 라우트(`_CallRouteHost`)와 앱 잠금(`app/app_lock_gate.dart`)이 같은 함수를 쓴다.
+
+**앱 잠금 중 통화 (SC-19, 2026-11-22)**: 통화는 앱 잠금을 풀지 않는다. 잠금이 걸려 있으면 앱이 직접 그리는 통화 화면(`appDrawnCallScreen()`)만 잠금 위에 올라가고, 나머지 앱은 패스코드 전까지 잠긴 채로 남는다. CallKit/ConnectionService가 수신 UI를 맡는 동안(`inAppIncoming` false)은 앱이 아무것도 그리지 않으므로 잠금만 보인다. 통화 상태가 idle이 아니라는 이유로 잠금을 걷어내지 말 것 — 그렇게 하면 시스템 배너가 울리는 동안 앱 전체가 열린다.
+
 ---
 
 ## 6. 보안 검증 체크리스트 (UI 계층 PR)
@@ -317,3 +322,6 @@ VoIP UI 관련 PR 시 다음을 모두 확인:
 | 2026-04-07 | 초판 작성 |
 | 2026-04-21 | Phase J (Audio UX) 반영 — §3.3 OutgoingCallScreen에 Ringback tone 필수 요소, §3.5 종료 사유 표에 Audio 컬럼 + busy tone 재생 규칙, §6 PR 체크리스트에 AudioPlayer 소유/wipe 4항목 추가. 상세 Phase 8.2 §26. |
 | 2026-11-21 | V3 — iOS 앱 안 수신 화면 예외(§3.2): CallKit 창이 안 뜬 통화만. 설계 `Documentation/TO-DO/2026-11-21-voip-ring-end-design.md`. |
+| 2026-11-22 | 수신 화면·통화 화면의 상대 이름은 거는 쪽이 보낸 값을 쓰지 않는다 — 기기의 이름(연락처 → 이름 증명서 캐시 → 짧은 snowId, `CallService`의 `peerName`). `startCall`은 `senderDisplayName`을 받지 않는다. |
+| 2026-11-22 | SC-19 — 통화 중에도 앱 잠금 유지, 통화 화면만 잠금 위에(§5). 상태 → 화면 매핑을 `call_screen_for.dart`로 분리. |
+| 2026-11-23 | 설정 "Show caller name on calls"(Privacy, 기본 켜짐, `call_show_caller_name`) — 시스템 통화 화면(CallKit/Telecom/알림)에 이 기기가 아는 이름을 붙일지. `CallNotifier`가 결정한다: 모든 창은 익명으로 뜨고, 초대 복호 뒤 켜져 있으면 그 통화의 창(PushKit nonce, FCM/소켓 callId)마다 `CallKitManager.updateCallerName` 한 번(`_nameSystemCallWindow`); 꺼지면 아무것도 보내지 않는다. 설정은 `SettingsNotifier.callShowCallerNameForCall`로 통화마다 읽는다(저장값을 기다림, 못 읽으면 꺼짐). iOS 발신 창 이름도 같은 결정(`CallService.startCall(systemCallName:)`). 앱 안 화면은 늘 이름을 보인다. 정책: `core/call/CLAUDE.md` §2.6.1. |

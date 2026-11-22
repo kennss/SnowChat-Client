@@ -7,12 +7,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-20
-/// @lastUpdated 2026-11-21 (X1: the invites list leaves out invites from blocked accounts; P5.6: member and invitee views carry their ciphertext; one that names no account can be removed or taken back, and counts as a place taken; P5.6: the group rows are read without the runtime — gv2GroupsOnDeviceProvider; a group shown while groups are not running is notReady, never gone). Earlier 2026-11-21 (text for Gv2GroupFailure.rateLimited). Earlier 2026-11-21 (text for Gv2GroupFailure.full). Earlier 2026-11-20 (where the server's keys differ from the ones this build trusts, and whether a group's title commits to them)
+/// @lastUpdated 2026-11-22 (gv2KnownNamesProvider: the names of the friend list on this device — no
+///              server friend list). Earlier 2026-11-22 (gv2InviteNotifierProvider: an invite that arrives while the app is open is notified — the server's push is not shown in the foreground). Earlier 2026-11-21 (X1: the invites list leaves out invites from blocked accounts; P5.6: member and invitee views carry their ciphertext; one that names no account can be removed or taken back, and counts as a place taken; P5.6: the group rows are read without the runtime — gv2GroupsOnDeviceProvider; a group shown while groups are not running is notReady, never gone). Earlier 2026-11-21 (text for Gv2GroupFailure.rateLimited). Earlier 2026-11-21 (text for Gv2GroupFailure.full). Earlier 2026-11-20 (where the server's keys differ from the ones this build trusts, and whether a group's title commits to them)
 ///
 /// @functions
 ///  - gv2GroupsOnDeviceProvider: whether this device's groups can be read
 ///  - gv2GroupsProvider: every v2 group row, as it changes
 ///  - gv2InvitesProvider: the invites waiting for this account's answer
+///  - gv2InviteNotifierProvider: a local notification for an invite that
+///    arrives while the app is open
 ///  - gv2GroupViewProvider(groupId): one group for a screen (Gv2GroupView)
 ///  - Gv2GroupView: the group, its members, its open invites and what this
 ///    account may do (the permission table of the change log, design §5.3)
@@ -40,6 +43,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
@@ -48,7 +52,6 @@ import '../../../core/group_v2/gv2_groups.dart';
 import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../../core/storage/database.dart';
 import '../../../core/storage/tables/gv2_tables.dart';
-import '../../channels/providers/channel_provider.dart';
 import '../../contacts/contact_provider.dart';
 
 /// A member of a group, for a list.
@@ -316,15 +319,10 @@ String gv2DisplayName(
   return gv2ShortSnowId(snowId);
 }
 
-/// The names this account gave to accounts, or its friends gave themselves:
-/// contacts first, then friends.
+/// The names of the accounts in this user's friend list (from their name
+/// certificates, or the lookup that found them).
 final gv2KnownNamesProvider = Provider<Map<String, String>>((ref) {
   final names = <String, String>{};
-  final friends = ref.watch(friendListProvider).valueOrNull ?? const [];
-  for (final f in friends) {
-    final name = f.displayName;
-    if (name != null && name.isNotEmpty) names[f.snowchatId] = name;
-  }
   for (final c in ref.watch(contactProvider)) {
     final name = c.displayName;
     if (name != null && name.isNotEmpty) names[c.snowChatId] = name;
@@ -373,6 +371,40 @@ final gv2InvitesProvider = Provider<List<Gv2InviteView>>((ref) {
           inviterName: gv2DisplayName(g.invitedBySnowId, known: known),
         ),
   ];
+});
+
+/// Notifies of an invite that arrives while the app is open. In the
+/// background the server's push ("New message") covers it, and an open app
+/// shows no push — before this, an invite that came while the app was open
+/// told nobody. Invites already listed when the list becomes readable (on a
+/// start) and those that came while the app was in the background raise
+/// nothing. app.dart watches this.
+final gv2InviteNotifierProvider = Provider<void>((ref) {
+  Set<String>? seen;
+  ref.listen<List<Gv2InviteView>>(gv2InvitesProvider, (_, invites) {
+    // Readable only once the groups and the block list are read: until then
+    // the list is empty for want of data, not for want of invites.
+    if (!ref.read(gv2GroupsProvider).hasValue ||
+        !ref.read(blockedAccountsProvider).hasValue) {
+      return;
+    }
+    final ids = {for (final i in invites) i.groupId};
+    final before = seen;
+    seen = ids;
+    if (before == null) return;
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    final notifications = ref.read(notificationServiceProvider);
+    for (final invite in invites) {
+      if (before.contains(invite.groupId)) continue;
+      unawaited(notifications.showGroupInviteNotification(
+        inviterName: invite.inviterName,
+        groupTitle: invite.title,
+        groupId: invite.groupId,
+      ));
+    }
+  }, fireImmediately: true);
 });
 
 /// The rows a group view is made of, as they change. Null while this device

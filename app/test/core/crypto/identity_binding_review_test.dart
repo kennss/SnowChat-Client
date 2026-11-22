@@ -12,7 +12,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-22 (SignalSessionManager takes no socket). Earlier 2026-11-21 (legacy TOFU removed: M1 is the bound-only key-change notice; M2's held queue is gone). Earlier 2026-11-20 (bindings always mandatory: the legacy blocked-notice case is gone, and the
+/// @lastUpdated 2026-11-22 (the directory and the bundle are POST /keys/identity/fetch and POST
+///              /keys/prekeys/fetch with the snowId in the body; no batch call — the route is gone).
+///              Earlier 2026-11-22 (SignalSessionManager takes no socket). Earlier 2026-11-21 (legacy TOFU removed: M1 is the bound-only key-change notice; M2's held queue is gone). Earlier 2026-11-20 (bindings always mandatory: the legacy blocked-notice case is gone, and the
 ///              M4 legacy key change case is now an unbound directory device refused before any
 ///              bundle fetch. refreshPeerIdentity: a peer registered again is admitted from the directory and its old session put aside, before a group invite)
 ///
@@ -232,7 +234,7 @@ void main() {
       alice.store.events.listen(events.add);
 
       // The invite link pinned bob's account key; his first binding follows.
-      expect(await alice.store.pinFromInviteLink(bobOld.snowId, bobOld.accountPub),
+      expect(await alice.store.pinAccountKey(bobOld.snowId, bobOld.accountPub),
           isTrue);
       await alice.signal.createSession(
         recipientId: bobOld.snowId,
@@ -350,14 +352,16 @@ void main() {
       final forged = IdentityBinding(
           signature: Uint8List.fromList(good.signature)..[3] ^= 1,
           epoch: 1000);
-      api.handlers['GET /keys/identity/${bob.snowId}'] =
-          (_) => _directoryJson(bob, binding: forged);
-      api.handlers['GET /keys/prekeys/${bob.snowId}'] = (_) => throw StateError(
+      api.handlers['POST /keys/identity/fetch'] = (d) {
+        expect(d, {'snowchatId': bob.snowId}, reason: 'the id travels in the body');
+        return _directoryJson(bob, binding: forged);
+      };
+      api.handlers['POST /keys/prekeys/fetch'] = (_) => throw StateError(
           'consuming bundle endpoint must not be called');
       final a = await _localAccount(api);
       await expectLater(a.mgr.ensureSession(bob.snowId),
           throwsA(isA<IdentityBindingInvalidException>()));
-      expect(api.calls, ['GET /keys/identity/${bob.snowId}']);
+      expect(api.calls, ['POST /keys/identity/fetch']);
       await expectLater(a.mgr.ensureSession(bob.snowId),
           throwsA(isA<IdentityBindingInvalidException>()));
       expect(api.calls.length, 1, reason: 'memoized — no further network');
@@ -368,28 +372,16 @@ void main() {
       final api = FakeApiClient();
       final bob = await TestParty.create(seedByte: 5, deviceId: _devB2);
       final a = await _localAccount(api);
-      api.handlers['GET /keys/identity/${bob.snowId}'] =
+      api.handlers['POST /keys/identity/fetch'] =
           (_) => _directoryJson(bob);
-      api.handlers['GET /keys/prekeys/${bob.snowId}'] = (_) => throw StateError(
+      api.handlers['POST /keys/prekeys/fetch'] = (_) => throw StateError(
           'consuming bundle endpoint must not be called');
       await expectLater(
           a.mgr.ensureSession(bob.snowId),
           throwsA(isA<IdentityBindingInvalidException>().having(
               (e) => e.reason, 'reason', IdentityBindingFailure.bindingRequired)));
-      expect(api.calls.where((c) => c.startsWith('GET /keys/prekeys/')),
+      expect(api.calls.where((c) => c == 'POST /keys/prekeys/fetch'),
           isEmpty);
-    });
-
-    test('batch: a rejected member is dropped before the consuming batch call',
-        () async {
-      final api = FakeApiClient();
-      final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
-      final forged = IdentityBinding(signature: Uint8List(64), epoch: 1);
-      api.handlers['GET /keys/identity/${bob.snowId}'] =
-          (_) => _directoryJson(bob, binding: forged);
-      final a = await _localAccount(api);
-      await a.mgr.ensureSessionBatch([bob.snowId]);
-      expect(api.calls.where((c) => c.contains('/batch')), isEmpty);
     });
   });
 
@@ -418,7 +410,7 @@ void main() {
         deviceId: _devB2,
       );
       expect(again.snowId, bob.snowId);
-      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) =>
+      api.handlers['POST /keys/identity/fetch'] = (_) =>
           _directoryJson(again, binding: again.bindingFor(epoch: 2000));
       await a.mgr.refreshPeerIdentity(bob.snowId);
       // Looked at first: hasSession() itself puts aside what does not match
@@ -426,7 +418,7 @@ void main() {
       expect(a.mgr.signal.getRemoteIdentityKey(bob.snowId), again.identityKey);
       expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isFalse);
       // Nothing was consumed: no bundle was fetched.
-      expect(api.calls.where((c) => c.startsWith('GET /keys/prekeys/')), isEmpty);
+      expect(api.calls.where((c) => c == 'POST /keys/prekeys/fetch'), isEmpty);
     });
 
     test('an unchanged peer keeps its session', () async {
@@ -434,7 +426,7 @@ void main() {
       final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
       final a = await _localAccount(api);
       await connect(a.mgr, bob, 1000);
-      api.handlers['GET /keys/identity/${bob.snowId}'] =
+      api.handlers['POST /keys/identity/fetch'] =
           (_) => _directoryJson(bob, binding: bob.bindingFor(epoch: 1000));
       await a.mgr.refreshPeerIdentity(bob.snowId);
       expect(await a.mgr.signal.hasSession(bob.snowId, _devB), isTrue);
@@ -446,7 +438,7 @@ void main() {
       final a = await _localAccount(api);
       await connect(a.mgr, bob, 1000);
       final other = await TestParty.create(seedByte: 9, deviceId: _devB2);
-      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) => _directoryJson(
+      api.handlers['POST /keys/identity/fetch'] = (_) => _directoryJson(
         other,
         binding: IdentityBinding(signature: Uint8List(64), epoch: 3000),
       );
@@ -463,7 +455,7 @@ void main() {
       final bob = await TestParty.create(seedByte: 2, deviceId: _devB);
       final a = await _localAccount(api);
       await connect(a.mgr, bob, 1000);
-      api.handlers['GET /keys/identity/${bob.snowId}'] = (_) =>
+      api.handlers['POST /keys/identity/fetch'] = (_) =>
           throw DioException.connectionError(
             requestOptions: RequestOptions(path: '/keys/identity'),
             reason: 'offline',

@@ -3,11 +3,12 @@
 ///              key for that call (fpSig), and a received one is checked: the peer's own
 ///              signature for this call verifies; a signature of another call, of another
 ///              fingerprint, by another key, malformed, or with no key for the peer is refused;
-///              no signature at all is a build-1000 peer and is accepted.
+///              no signature at all is refused too — fpSig is mandatory (Part 3 E).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-22
-/// @lastUpdated 2026-11-22
+/// @lastUpdated 2026-11-22 (signatureField throws when it cannot sign — no unsigned SDP is sent).
+///              Earlier 2026-11-22 (Part 3 E: an SDP without fpSig is refused). Earlier 2026-11-22
 ///
 /// @functions
 ///  - main(): the cases above
@@ -111,22 +112,28 @@ void main() {
     );
   });
 
-  test('no signature at all: a build-1000 peer, accepted', () async {
-    expect(await check(null, noKey: true), RemoteFingerprintCheck.unsigned);
+  test('no signature at all: refused — the signature is mandatory', () async {
+    expect(await check(null, noKey: true), RemoteFingerprintCheck.refused);
+    expect(await check(null), RemoteFingerprintCheck.refused);
   });
 
-  test('nothing to sign with, no call id or no fingerprint: no fpSig field', () {
+  test('nothing to sign with, no call id or no fingerprint: no unsigned field — '
+      'it throws (the caller ends the call)', () {
+    final cannot = throwsA(isA<CallVerificationException>());
     expect(
-      CallVerification.signatureField(callId: _callId, sdp: _sdp(_fp), signingKeySeed: null),
-      isEmpty,
+      () => CallVerification.signatureField(
+          callId: _callId, sdp: _sdp(_fp), signingKeySeed: null),
+      cannot,
     );
     expect(
-      CallVerification.signatureField(callId: null, sdp: _sdp(_fp), signingKeySeed: seed),
-      isEmpty,
+      () => CallVerification.signatureField(
+          callId: null, sdp: _sdp(_fp), signingKeySeed: seed),
+      cannot,
     );
     expect(
-      CallVerification.signatureField(callId: _callId, sdp: 'v=0\r\n', signingKeySeed: seed),
-      isEmpty,
+      () => CallVerification.signatureField(
+          callId: _callId, sdp: 'v=0\r\n', signingKeySeed: seed),
+      cannot,
     );
   });
 }

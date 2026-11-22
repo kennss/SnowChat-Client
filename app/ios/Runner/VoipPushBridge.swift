@@ -15,13 +15,20 @@
 //                   with fromPushKit:true. completion() must fire within ~5s or iOS kills app.
 //
 //              Zero-Knowledge / §2.6.1: payload from server is nonce-only.
-//              CallKit displays "SnowChat Call" anonymous. After accept, Dart
-//              foregrounds + fetches the real envelope via socket.
+//              CallKit displays "SnowChat Call" anonymous. Once the main
+//              isolate has decrypted the invite, CallNotifier may rename the
+//              window with the name this phone knows for the caller
+//              (updateCallerName; setting "Show caller name on calls").
+//              includesCallsInRecents is false (core/call/CLAUDE.md §7.1): this
+//              report is often the first CallKit call of the process, and it
+//              is the one that creates the plugin's CXProvider configuration.
 //
 // @author      Kennt Kim
 // @company     Calida Lab
 // @created     2026-04-29
-// @lastUpdated 2026-04-29
+// @lastUpdated 2026-11-23 (ios.includesCallsInRecents = false — the PushKit report
+//              created the CXProvider with the plugin's default (true), so calls went to
+//              the Phone app's Recents)
 //
 
 import Foundation
@@ -109,8 +116,9 @@ import flutter_callkit_incoming
         NSLog("[VoipPushBridge] didReceive nonce=\(nonce.prefix(8))…")
 
         // Build the plugin's expected NSDictionary. Anonymous display per §2.6.1
-        // ("SnowChat Call" / handle:""). Real caller name resolves after accept
-        // when Flutter foregrounds and fetches the envelope.
+        // ("SnowChat Call" / handle:""). The push carries no caller; the main
+        // isolate names the window after it decrypts the invite, if the user
+        // lets it (CallNotifier → CallKitManager.updateCallerName).
         // iconName intentionally OMITTED — `Unable to load icon` warning during
         // the deadline window slows the cold-launch path. CallKit falls back
         // to default icon, which is fine for nonce-only display.
@@ -141,6 +149,8 @@ import flutter_callkit_incoming
                 "supportsHolding": false,
                 "supportsGrouping": false,
                 "supportsUngrouping": false,
+                // §7.1: never write SnowChat calls to the Phone app's Recents.
+                "includesCallsInRecents": false,
                 "ringtonePath": "system_ringtone_default"
             ]
         ]

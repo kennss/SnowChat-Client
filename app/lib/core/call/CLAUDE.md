@@ -248,13 +248,23 @@ await FlutterCallkitIncoming.showCallkitIncoming(CallKitParams(
   handle: callerSnowchatId,      // ❌
 ));
 
-// ✓ 필수 — 익명 표시 (수락 후 메인 isolate에서 실제 이름으로 update)
+// ✓ 필수 — 익명 표시 (메인 isolate가 초대를 복호한 뒤에만 이름을 붙일 수 있다 — 아래)
 await FlutterCallkitIncoming.showCallkitIncoming(CallKitParams(
   id: nonce,
-  nameCaller: 'SnowChat Call',   // 익명 (Signal 패턴)
+  nameCaller: 'SnowChat Call',   // 익명 (Signal 패턴) — kAnonymousCallName
   handle: '',                    // ID/전화번호 노출 0
 ));
 ```
+
+**시스템 통화 화면의 이름 — 설정 "Show caller name on calls" (2026-11-23 오너 결정, 기본 켜짐)**:
+
+- **처음 띄울 때는 모든 경로가 익명**이다: iOS PushKit 보고(`VoipPushBridge.swift`), Android FCM 백그라운드 isolate(`voip_push_handler.dart`), 메인 isolate의 `CallKitManager.showIncoming(callId)`(이름 인자가 아예 없다). 플러그인은 띄울 때의 파라미터를 Android `SharedPreferences`(ACTIVE_CALLS)에 저장하므로 이름은 여기에 절대 넣지 않는다.
+- **켜짐**: 메인 isolate가 call_invite를 복호하면 `CallNotifier._nameSystemCallWindow`가 그 통화의 모든 창(PushKit nonce, FCM/소켓 callId)에 `CallKitManager.updateCallerName(callId, name)`으로 이름을 붙인다. 이름은 이 기기가 아는 이름(`CallNotifier.deviceCallerName` — 연락처 → 이름 증명서 캐시, 없으면 앱 안 화면과 같은 짧은 snowId)이며 거는 쪽이나 서버가 보낸 값이 아니다. 울리는 중에도, 받은 뒤 통화 중에도 바뀐다.
+  - iOS: `CXCallUpdate`에 `localizedCallerName`만 — `remoteHandle`은 건드리지 않아 보고 때의 generic/빈 값이 남는다. UUID 모양이 아닌 id, 이 provider가 갖고 있지 않은 통화는 무시.
+  - Android: self-managed Telecom `Connection.setCallerDisplayName`, 수신·통화 중 알림, 전체 화면 수신 화면. 이름은 플러그인 **메모리에만**(`CallerDisplayNames`) — 저장된 통화 목록에도 Telecom extras에도 들어가지 않고, 통화가 끝나면(end/decline/timeout, `endCall`/`endAllCalls`) 지운다.
+- **꺼짐**: 어떤 시스템 통화 화면도 "SnowChat Call"만 보인다(전엔 Android 메인 isolate 경로가 이름을 보였다). iOS 발신 창도 마찬가지. 앱 안 화면(Incoming/ActiveCallScreen)은 설정과 무관하게 이름을 보인다.
+- 설정 값을 읽을 수 없으면(부팅 후 첫 잠금 해제 전) 꺼짐으로 다룬다(`SettingsNotifier.callShowCallerNameForCall`). 콜드 스타트에서 저장값을 읽기 전의 기본값(켜짐)이 저장된 "꺼짐"을 대신하지 않도록 저장값을 기다린다.
+- 이름·id는 로그에 남기지 않는다(네이티브 포함).
 
 **Redis pending envelope 가드** (서버 측):
 
@@ -412,7 +422,7 @@ socket.on('sealed_call_signaling', async (payload: {
 
 메시징 `sealed_message` 이벤트와 동일한 불투명 relay 패턴. 서버는 "누가 누구에게 통화 시그널링을 보냈는지"를 **저장·기록하지 않는다** — 봉투에는 수신자 ID만 있다. (보내는 소켓은 인증돼 있어 서버가 중계하는 순간 거는 쪽을 알기는 한다: 같은 이유로 `senderHash`를 계산한다. 그 순간 외에는 남기지 않는다.)
 
-**차단 (X1, 2026-11-21)**: 수신자가 거는 쪽을 차단했으면(`user_blocks`) 서버는 그 순간 확인해 중계·푸시·큐 저장 없이 버리고, 로그도 남기지 않는다. 거는 쪽에는 "오프라인 수신자에게 푸시함"과 같은 ack(`offline: true, pushed: true`)를 준다 — 차단 사실을 알리지 않는다(거는 쪽은 응답 없음 시간까지 울린다). 수신자 앱도 `CallSignaling`에서 복호한 뒤 차단한 계정의 신호를 흘려보내지 않는다(세션은 맞춰 둠, 복구 신호도 보내지 않음, 받기·거절 경로의 `parseEnvelope`는 null). 설계: `Documentation/TO-DO/2026-11-21-x1-blocked-accounts-design.md`.
+**차단 (X1, 2026-11-21; 2026-11-22부터 `block_tags`)**: 수신자가 거는 쪽을 차단했으면(서버의 차단 태그 — 기기 목록이 원본, 서버는 환경 키로만 대조되는 태그를 둔다) 서버는 그 순간 확인해 중계·푸시·큐 저장 없이 버리고, 로그도 남기지 않는다. 거는 쪽에는 "오프라인 수신자에게 푸시함"과 같은 ack(`offline: true, pushed: true`)를 준다 — 차단 사실을 알리지 않는다(거는 쪽은 응답 없음 시간까지 울린다). 수신자 앱도 `CallSignaling`에서 복호한 뒤 차단한 계정의 신호를 흘려보내지 않는다(세션은 맞춰 둠, 복구 신호도 보내지 않음, 받기·거절 경로의 `parseEnvelope`는 null). 설계: `Documentation/TO-DO/2026-11-21-x1-blocked-accounts-design.md`.
 
 ---
 
@@ -427,7 +437,7 @@ socket.on('sealed_call_signaling', async (payload: {
 - **필드**: `rtc_offer`·`rtc_answer`·ICE 재시작 offer 안쪽 payload의 `fpSig`(base64 64바이트).
 - **받는 쪽** (`CallVerification.checkRemote`, `setRemoteDescription` 전):
   - `fpSig` 있음 → 반드시 검증돼야 한다. 상대 키 없음·형식 오류·다른 통화/지문/키의 서명 → **통화 종료**(상대에게 `call_end` reason `failed`, 이쪽도 `failed`).
-  - `fpSig` 없음 → 빌드 1000 상대로 보고 받아들인다(SAS는 그대로). 신호가 Sealed + DR이라 서버가 서명을 지우거나 SDP를 바꿀 수 없다. 빌드 1000 지원 종료 시 필수로 바꾼다(`Documentation/TO-DO/2026-11-22-audit-remainder-design.md` §8).
+  - `fpSig` 없음 → **통화 종료**(`failed`). 2026-11-22부터 필수다 — 빌드 1000 호환은 친구 그래프 설계의 한 번 전환과 함께 없앴다(`Documentation/TO-DO/2026-11-22-friend-graph-off-server-design.md` §7). (이전 문구: 빌드 1000 상대로 보고 받아들였다 — `Documentation/TO-DO/2026-11-22-audit-remainder-design.md` §8).
 - 서명·키는 로그에 남기지 않는다.
 
 ### 4.2 SAS 표시 (사용자 검증)
@@ -523,10 +533,12 @@ if (Platform.isAndroid) {
 
 | 설정 | 값 | 사유 |
 |------|:--:|------|
-| `includesCallsInRecents` | **`false`** | 시스템 Phone 앱 노출 차단 |
+| `includesCallsInRecents` | **`false`** | 시스템 Phone 앱 노출 차단 — 모든 경로가 명시(아래) |
 | `supportsVideo` | `false` | MVP는 음성만 |
 | `maximumCallGroups` | `1` | 동시 통화 차단 |
 | `maximumCallsPerCallGroup` | `1` | 동일 |
+
+**모든 iOS CallKit 경로가 `false`를 명시한다** (2026-11-23): PushKit 보고(`VoipPushBridge.swift`의 `ios` dict), `CallKitManager.showIncoming`·`startOutgoing`의 `IOSParams`, `voip_push_handler.dart`의 `IOSParams`(iOS에선 실행되지 않지만 같은 값). 포크의 기본값도 `false`(`Call.swift` `Data` init 세 곳 — 업스트림은 `true`)라 키가 빠져도 Recents로 가지 않는다. 플러그인의 `CXProvider`는 프로세스에서 **처음 한 번** 그 첫 통화의 `Data`로 만들어지므로(`initCallkitProvider`) 어느 경로가 먼저 오든 같은 값이어야 한다. 2026-11-23 전엔 아무 경로도 넘기지 않아 기본값 `true`로 통화가 Phone 앱 최근 기록에 남았다(정책 위반).
 
 ### 7.2 Android ConnectionService
 
@@ -537,11 +549,7 @@ if (Platform.isAndroid) {
 
 ### 7.3 flutter_callkit_incoming 사용 시
 
-패키지가 `includesCallsInRecents = false`를 노출하지 않으면:
-1. 패키지 PR 제출
-2. 또는 native 코드 직접 통합
-
-**기본값 그대로 사용 금지**.
+포크(`external/flutter_callkit_incoming`)가 `IOSParams.includesCallsInRecents`를 노출하고(2026-11-23 추가 — 업스트림 Dart 엔티티엔 없었다) 네이티브 기본값을 `false`로 바꿨다. 그래도 **기본값에 기대지 말고 모든 경로에서 명시**한다.
 
 ---
 
@@ -630,17 +638,12 @@ Future<void> handleIncomingCall(CallInvitePayload payload) async {
 }
 ```
 
-### 9.4 권한 거부 fallback
+### 9.4 마이크 권한 (2026-11-22 개정)
 
-```dart
-Future<bool> _ensureMicrophonePermission() async {
-  final status = await Permission.microphone.request();
-  if (status.isGranted) return true;
-
-  // UI에서 설정 이동 다이얼로그 표시
-  return false;
-}
-```
+- **첫 실행에 한 번 묻는다** — `core/permissions/microphone_permission.dart`의 `askMicrophoneOnce()`. 시작 때 권한 창은 `askStartupPrompts()` 한 곳에서만 차례로 띄운다(알림 → 마이크, `PushService.initialize`). 안드로이드는 권한 창이 떠 있는 동안 들어온 두 번째 요청을 창 없이 "거부"로 답한다 — 1005 첫 실행에서 알림 요청이 두 곳(FirebaseMessaging·로컬 알림 플러그인)에서 동시에 나가 마이크가 보이지 않는 거부로 끝났다. 잠금 화면에서 CallKit으로 받는 첫 통화는 앱이 앞에 없어 권한 창을 띄울 수 없다: `getUserMedia`가 아무도 못 보는 창을 기다리고, `call_answer`가 안 가서 거는 쪽은 타임아웃까지 울렸다(1003 TestFlight 실기 시험).
+- **받을 때 마이크를 못 열면 바로 끝낸다** — `CallService._acceptCallImpl`: 권한이 없으면 `call_end` reason `permission_denied`, 그 밖의 실패는 `failed`(`microphoneGranted()`로 구분). 거는 쪽 OutgoingCallScreen이 사유를 보여 준다.
+- 권한 창은 `record` 패키지(`AudioRecorder.hasPermission`)로 띄운다 — 음성 메시지와 같은 권한. **통화 코드(core/call, features/call)는 `record`를 import하지 않는다**(§2.3): 헬퍼는 core/permissions에 있고 통화 코드는 `microphoneGranted()`만 부른다. 녹음은 하지 않는다.
+- `permission_handler`는 쓰지 않는다: iOS에서 권한마다 Podfile 매크로(`PERMISSION_MICROPHONE=1`)로 켜야 하고, 없으면 묻지도 않고 거부를 돌려준다.
 
 ### 9.5 ICE Restart (네트워크 전환)
 
@@ -695,7 +698,10 @@ grep -rn "emit.*'call_signaling'" app/lib/                   # ❌ (구설계, s
 grep -rn "senderSnowchatId" server/src/handlers/callHandler  # ❌ (Sealed Sender 우회 — 발신자 ID 평문 첨부 금지)
 
 # CallKit 위반 패턴
-grep -rn "includesCallsInRecents.*true" app/ios/             # ❌
+grep -rn --include='*.swift' --include='*.dart' "includesCallsInRecents.*true" app/ios/ app/lib/ external/flutter_callkit_incoming/  # ❌ (포크 기본값 포함 — `?? true`도 걸린다)
+grep -c "includesCallsInRecents: false" app/lib/core/call/callkit_manager.dart  # ⚠ 2 (showIncoming, startOutgoing) — 줄면 누락
+grep -c "\"includesCallsInRecents\": false" app/ios/Runner/VoipPushBridge.swift  # ⚠ 1 (PushKit 보고)
+grep -rn --include='*.dart' "showIncoming(.*callerName\|nameCaller: callerName" app/lib/  # ❌ (§2.6.1: 띄울 때는 익명, 이름은 updateCallerName으로만)
 grep -rn "CAPABILITY_CALL_PROVIDER" app/android/             # ❌ (self-managed 아님)
 
 # 평문 푸시 페이로드
@@ -844,4 +850,8 @@ Phase E (PushKit/CallKit/ConnectionService)
 | 2026-05-05 | Z-fix — **§2.6.2 신설**: FCM voip data 에 envelope `callId` echo 허용. Galaxy 21:04:47 logcat 에서 BG isolate(FCM nonce) + main isolate(socket envelope callId) 가 각자 다른 UUID 로 `showCallkitIncoming` 호출 → Telecom 에 Connection 2개 등록 → endCall 1개만 처리 → TC@222 좀비 7분 잔존 발견. 단일 source-of-truth (envelope callId) 통일 시 fork dedup gate 가 두 번째 등록 silent skip → 단일 Connection. callId 는 caller-side random UUID, nonce 와 동일 threat class, 서버 영속화 없음 — Zero-Trace 매트릭스 무영향. §10 lint 의 `sendVoipIncomingCall.*callId` 차단 항목을 §2.6.2 예외로 표시. |
 | 2026-11-21 | X1 — 차단한 계정의 통화: 서버가 중계 순간 `user_blocks`를 확인해 버림(중계·푸시·저장·로그 없음, 거는 쪽엔 오프라인 수신자와 같은 ack), 클라이언트 `CallSignaling`도 복호 뒤 버림. §3.5 문구 정정: 서버는 거는 쪽을 "모르는" 게 아니라 "저장·기록하지 않는" 것(인증된 소켓). Zero-Trace 매트릭스 무영향 — 새로 저장·기록하는 것 없음. |
 | 2026-11-21 | 벨이 끝나지 않던 문제 (실기 시험) — V1: 거는 쪽 30초 응답 없음 타임아웃도 정리 전에 `call_end`(reason `timeout`)를 보낸다(전엔 `_cleanup`만 해서 받는 쪽이 계속 울림). V2: 받는 쪽 자체 벨 제한 `CallService.incomingRingTimeout` 65초(시스템 UI 60초 뒤의 안전망) — 만료 시 `declineCall('timeout')`. V3: iOS 앱이 켜져 있는데 CallKit 창이 안 뜨면(VoIP 푸시 미도착) 3초 뒤 앱 안 수신 화면(`CallState.inAppIncoming`); 늦게 뜬 CallKit 창은 아직 울리면 넘겨받고, 이미 앱에서 받았거나 끝났으면 닫고 그 이벤트를 무시. Dart에서 iOS CallKit은 여전히 띄우지 않는다. 설계: `Documentation/TO-DO/2026-11-21-voip-ring-end-design.md`. |
+| 2026-11-22 | 시작 권한 창을 `askStartupPrompts()` 한 곳으로 — 알림 요청이 두 곳에서 동시에 나가 안드로이드가 마이크를 창 없이 거부한 문제(1005 갤럭시 첫 실행). |
+| 2026-11-22 | 마이크 권한 — 첫 실행에 한 번 묻고(`askMicrophoneOnce`), 받을 때 마이크를 못 열면 `call_end`(`permission_denied`/`failed`)로 바로 끝낸다. §9.4 개정. 1003 TestFlight 실기 시험에서 잠금 화면 첫 수신이 연결되지 않던 문제. |
+| 2026-11-22 | 친구 그래프를 서버에서 내림(`Documentation/TO-DO/2026-11-22-friend-graph-off-server-design.md`) — `fpSig` 필수(없으면 `failed`), 수신 전화 이름은 거는 쪽이 보낸 값이 아니라 기기의 이름(연락처 → 이름 증명서 캐시 → 짧은 snowId; 초대에 `senderDisplayName`을 싣지 않는다), X1의 서버 차단은 `block_tags`. |
 | 2026-11-22 | SC-10 (2026-11-10 보안 보고서 A-5) — DTLS 지문 서명 구현: 보내는 모든 SDP(offer·answer·ICE 재시작)에 `fpSig` = 통화 id에 묶인 지문의 Ed25519 서명(Signal 계층 키), 받은 `fpSig`는 상대의 계정에 묶인 키로 검증 — 틀리거나 검증할 수 없으면 통화 종료(`failed`). `fpSig` 없는 SDP는 빌드 1000 상대로 받아들임(최소 지원 빌드 이후 필수). §3.2·§4.1 갱신. 설계: `Documentation/TO-DO/2026-11-22-audit-remainder-design.md` §4. |
+| 2026-11-23 | **`includesCallsInRecents` 위반 수정**(§7.1·§7.3·§10) — iOS의 어느 경로도 값을 넘기지 않았고 포크 기본값이 `true`여서 통화가 Phone 앱 최근 기록에 남았다. PushKit dict·모든 `IOSParams`에 `false` 명시, 포크 `Call.swift` 기본값 `false`, 포크 Dart `IOSParams`에 필드 추가. **시스템 통화 화면의 이름 설정**(§2.6.1, 오너 결정, 기본 켜짐) — 모든 창은 익명으로 띄우고, 메인 isolate가 복호한 뒤 켜져 있으면 기기의 이름으로 `updateCallerName`(포크 새 메서드: iOS `CXCallUpdate.localizedCallerName`, Android Telecom 표시 이름·알림·전체 화면, 이름은 메모리에만). 꺼지면 "SnowChat Call"만(Android 메인 isolate 경로 포함). iOS 발신 창도 설정을 따르고 handle은 비운다(snowId 없음). 포크의 Telecom 로그에서 이름 제거. |

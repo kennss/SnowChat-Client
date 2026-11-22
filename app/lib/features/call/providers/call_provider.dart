@@ -5,7 +5,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-21 (V3: iOS in-app incoming screen when no CallKit window came up —
+/// @lastUpdated 2026-11-23 ("Show caller name on calls": a system call UI is always raised
+///              anonymous ("SnowChat Call"); once this isolate has decrypted the invite and the
+///              user's setting is on, every window of the call — PushKit nonce, FCM / socket call
+///              id — is renamed with the name this device knows (CallKitManager.updateCallerName);
+///              off, it stays anonymous. The iOS outgoing window gets the callee's name only when
+///              the setting is on. Missed-call / cold-fallback logs carry logRef, not ids).
+///              Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (startCall takes no own name — the callee names the caller from what it
+///              knows, never from the invite). Earlier 2026-11-21 (V3: iOS in-app incoming screen when no CallKit window came up —
 ///              CallState.inAppIncoming after inAppIncomingGrace (3 s) in the foreground, re-armed
 ///              on resume; a late CallKit window takes over a call still ringing in-app; one that
 ///              comes after the call was handled in-app is closed and its events ignored
@@ -110,6 +117,8 @@
 ///  - CallNotifier._onCallKitEvent(): Phase E-1 system UI action routing
 ///  - CallNotifier._maybeInsertMissedCallMessage(): V1.0.1 missed-call system message
 ///  - CallNotifier.acceptPendingVoipCall(): Phase I FCM Voice Push — nonce path accept
+///  - CallNotifier._nameSystemCallWindow(windowId): name the caller on a system call UI (setting on)
+///  - CallNotifier.deviceCallerName(displayName, snowId): the name in-app call screens show
 
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -128,6 +137,7 @@ import '../../../core/call/callkit_manager.dart';
 import '../../../core/diagnostics/diag_log.dart';
 import '../../../core/network/api_client.dart';
 import '../../settings/settings_provider.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 /// Phase 8.2 v2.1 (v204) — Bidirectional nonce alias map.
 ///
@@ -325,9 +335,11 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
     required CallService callService,
     CallKitManager? callKitManager,
     Ref? ref,
+    Future<bool> Function()? showCallerNameOnSystemUi,
   })  : _callService = callService,
         _callKitManager = callKitManager,
         _ref = ref,
+        _showCallerNameOnSystemUi = showCallerNameOnSystemUi,
         super(const CallState.idle()) {
     _serviceSub = _callService.events.listen(_onServiceEvent);
     _sasSub = _callService.sasEvents.listen(_onSasEvent);
@@ -365,6 +377,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
           debugPrint('[DIAG:CallNotifier] late-bound alias on incomingShown: '
               'nonce=$nonce ↔ callId=$cid');
         }
+        // The window came up after the invite was decrypted: name it now.
+        if (cid != null) unawaited(_nameSystemCallWindow(nonce));
         // V3: a late CallKit window for a call still ringing on the in-app
         // screen takes over — the in-app screen closes (_CallRouteHost).
         _inAppIncomingTimer?.cancel();
@@ -654,6 +668,15 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
 
   final CallService _callService;
   final CallKitManager? _callKitManager;
+
+  /// "Show caller name on calls" (SettingsNotifier.callShowCallerNameForCall),
+  /// read per call. Null (the idle placeholder notifier): never a name.
+  final Future<bool> Function()? _showCallerNameOnSystemUi;
+
+  /// System call UI ids (PushKit nonce, FCM / socket call id) already handled
+  /// by [_nameSystemCallWindow] for the current call — each is named once.
+  /// Cleared when a call starts ringing and when it ends.
+  final Set<String> _namedSystemWindows = {};
   /// V1.0.1: Riverpod ref for dao access (missed call system message insert).
   /// nullable — for _IdleCallNotifier compatibility (idle dummy is created
   /// without a ref).
@@ -689,6 +712,59 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   // defaultTargetPlatform (not dart:io Platform) so tests can run the iOS
   // branch; in an app build it is the real platform.
   bool get _isIOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  bool get _isAndroid =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  /// Whether this call's system UI may show the caller's name. A reader that
+  /// fails counts as no: the UI stays [kAnonymousCallName].
+  Future<bool> _systemUiShowsName() async {
+    final read = _showCallerNameOnSystemUi;
+    if (read == null) return false;
+    try {
+      return await read();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// The name the in-app call screens show for a peer: the name this device
+  /// knows ([displayName] — contact, then name certificate; never one the
+  /// peer sent), else the short snowId. Null when neither is known.
+  static String? deviceCallerName(String? displayName, String? snowId) {
+    if (displayName != null && displayName.isNotEmpty) return displayName;
+    if (snowId == null || snowId.isEmpty) return null;
+    return snowId.length > 12 ? snowId.substring(0, 12) : snowId;
+  }
+
+  /// Name the caller on the system call UI [windowId] of the current call —
+  /// iOS CallKit (PushKit nonce) or Android Telecom / notification (FCM or
+  /// socket call id). Every such window is raised anonymous; this runs once
+  /// the invite is decrypted on this isolate, so the name is the device's
+  /// ([deviceCallerName]). Setting off: nothing is sent, the window stays
+  /// [kAnonymousCallName]. Each window id is handled once per call; a call
+  /// that ended while the setting was read is left alone. Nothing is logged.
+  Future<void> _nameSystemCallWindow(String windowId) async {
+    final ckm = _callKitManager;
+    final callId = state.callId;
+    if (ckm == null || callId == null || windowId.isEmpty) return;
+    if (_strayCallKitIds.contains(windowId)) return;
+    if (!_namedSystemWindows.add(windowId)) return;
+    if (!await _systemUiShowsName()) return;
+    if (!mounted || state.callId != callId) return;
+    final status = state.status;
+    if (status != CallStatus.incoming &&
+        status != CallStatus.connecting &&
+        status != CallStatus.active) {
+      return;
+    }
+    final name = deviceCallerName(state.remoteDisplayName, state.remoteSnowchatId);
+    if (name == null) return;
+    try {
+      await ckm.updateCallerName(callId: windowId, callerName: name);
+    } catch (e) {
+      diagLog('callerName', 'update failed ${e.runtimeType}');
+    }
+  }
 
   /// Start the grace timer for [callId] (iOS, app in the foreground). When it
   /// ends with the call still ringing and no CallKit window shown for it, the
@@ -727,9 +803,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   /// When `acceptPendingVoipCall` injects the envelope, CallService emits
   /// `handleRemote(call_invite)` → `_emit(incoming)`. At that point the
   /// `_onServiceEvent(incoming)` branch tries to raise **another CallKit
-  /// (socket-path one, real caller name)**, but the FCM-path "SnowChat
-  /// Call" CallKit is already alive (user Accepted), so we'd see duplicate
-  /// UI. While this flag is true, the socket-path CallKit display is
+  /// (the socket-path one)**, but the FCM-path "SnowChat Call" CallKit is
+  /// already alive (user Accepted), so we'd see duplicate UI. While this flag is true, the socket-path CallKit display is
   /// suppressed. Cleared after acceptCall completes.
   bool _voipResumeInProgress = false;
 
@@ -752,12 +827,10 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
   /// Start a new call. Only allowed in `idle` state.
   ///
   /// [remoteDisplayName]: peer nickname — for caller UI display
-  /// [senderDisplayName]: own nickname — attached to call_invite payload, used for callee UI display
   Future<void> startCall({
     required String recipientSnowchatId,
     required bool alwaysRelay,
     String? remoteDisplayName,
-    String? senderDisplayName,
   }) async {
     if (state.status != CallStatus.idle) {
       throw StateError('Already in a call');
@@ -770,13 +843,17 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
       alwaysRelay: alwaysRelay,
     );
     try {
+      // The iOS CallKit outbound window shows the callee's name only when the
+      // user lets system call screens show names.
+      final systemCallName = await _systemUiShowsName()
+          ? (deviceCallerName(remoteDisplayName, recipientSnowchatId) ??
+              kAnonymousCallName)
+          : kAnonymousCallName;
       await _callService.startCall(
         recipientSnowchatId: recipientSnowchatId,
         alwaysRelay: alwaysRelay,
-        senderDisplayName: senderDisplayName,
-        // v204 (2026-05-03): forward callee name so CallService can register
-        // the iOS CallKit outbound window with the right display name.
         remoteDisplayName: remoteDisplayName,
+        systemCallName: systemCallName,
       );
     } catch (_) {
       // Rollback state on failure — so next attempt isn't stuck on
@@ -872,8 +949,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
           status: CallStatus.incoming,
           callId: event.callId,
           remoteSnowchatId: event.remoteSnowchatId,
-          // displayName is extracted from call_invite payload's senderDisplayName,
-          // stored in CallService._remoteDisplayName, then passed via event.remoteDisplayName.
+          // The name this device knows for the caller (CallService.peerName),
+          // passed via event.remoteDisplayName; null → the UI's short snowId.
           remoteDisplayName: event.remoteDisplayName,
         );
         // V3: wait briefly for a CallKit window; without one the in-app
@@ -881,6 +958,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
         _incomingStartedAt = DateTime.now();
         _inAppCallId = null;
         _strayCallKitIds.clear();
+        _namedSystemWindows.clear();
         final ringingId = event.callId;
         if (ringingId != null) _armInAppIncoming(ringingId);
         // Phase 8.2 v2.3 — auto-register alias when CallKit incoming UI was
@@ -901,6 +979,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
               debugPrint('[DIAG:CallNotifier] auto-registered alias on '
                   'incoming: nonce=$nonce ↔ callId=$cid');
             }
+            // The push-raised window (anonymous) is up: name it.
+            if (nonce != null) unawaited(_nameSystemCallWindow(nonce));
           }
         }
         // Show the system incoming UI on Android via CallKitManager
@@ -918,21 +998,21 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
         // simultaneously we get duplicate UI and OS re-launch, causing
         // the "back to lockscreen" symptom (Image 8/9). Skip socket-path
         // CallKit while resume is in progress.
+        //
+        // 2026-11-23: raised anonymous like every other path, then named
+        // (setting on) — the plugin stores the raise parameters on disk, the
+        // name it only keeps in memory. With the same id as an FCM window
+        // (Z-fix), the raise is skipped by the plugin and the name reaches
+        // that window.
         final cm = _callKitManager;
         final cid = event.callId;
-        final snowId = event.remoteSnowchatId;
         if (!_voipResumeInProgress &&
             cm != null &&
             cid != null &&
-            snowId != null &&
-            Platform.isAndroid) {
-          final caller = event.remoteDisplayName ??
-              (snowId.length > 12 ? snowId.substring(0, 12) : snowId);
-          unawaited(cm.showIncoming(
-            callId: cid,
-            callerName: caller,
-            handle: caller,
-          ));
+            event.remoteSnowchatId != null &&
+            _isAndroid) {
+          unawaited(cm.showIncoming(callId: cid));
+          unawaited(_nameSystemCallWindow(cid));
         }
         break;
 
@@ -997,6 +1077,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
         // Wipe the alias map before the unawaited dismiss so a late CallKit
         // event after this point sees the stale guard correctly.
         _aliasMap.clear();
+        _namedSystemWindows.clear();
         // v214 (2026-05-03): clear CallKitManager._lastShownIncomingId too.
         // 1차 통화 종료 후 60s TTL 안에 잔존하면 다음 통화의 alias auto-
         // register (CallServiceStatus.incoming branch L619-624) 가 stale
@@ -1041,7 +1122,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
             event.remoteSnowchatId != null &&
             event.remoteSnowchatId!.isNotEmpty) {
           debugPrint('[DIAG:CallNotifier] cold_fallback missed-call insert '
-              'peer=${event.remoteSnowchatId}');
+              'peer=${logRef(event.remoteSnowchatId)}');
           _maybeInsertMissedCallMessage(
             event.remoteSnowchatId!,
             event.remoteDisplayName,
@@ -1230,6 +1311,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
       _aliasMap.register(event.callId, state.callId);
       debugPrint('[DIAG:CallNotifier] cold-launch alias bind on accept: '
           'nonce=${event.callId} ↔ callId=${state.callId}');
+      unawaited(_nameSystemCallWindow(event.callId));
     }
 
     if (!_aliasMap.isAliasMatch(event.callId, state.callId)) {
@@ -1363,6 +1445,9 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
         debugPrint('[DIAG:CallNotifier] post-inject alias re-register: '
             'nonce=$nonce ↔ callId=$cidAfterInject');
       }
+      // The PushKit window (id = nonce) was raised anonymous before the
+      // invite could be read; name it now that it is decrypted.
+      unawaited(_nameSystemCallWindow(nonce));
 
       // v195+ fix: read _callService.status (sync), not state.status (stream-async).
       if (_callService.status != CallServiceStatus.incoming) {
@@ -1481,6 +1566,9 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
       }
 
       diagLog('acceptPending', 'post-inject PASSED → calling acceptCall');
+      // The push-raised window (id = nonce) is anonymous; name it now that
+      // the invite is decrypted.
+      unawaited(_nameSystemCallWindow(nonce));
       await acceptCall(localAlwaysRelay: localAlwaysRelay);
       diagLog(
         'acceptPending',
@@ -1718,7 +1806,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
     final last = _lastMissedByPeer[peerSnowId];
     if (last != null &&
         now.difference(last) < const Duration(seconds: 60)) {
-      debugPrint('[CallNotifier] missed call dedupe — peer=$peerSnowId within 60s');
+      debugPrint('[CallNotifier] missed call dedupe — peer=${logRef(peerSnowId)} within 60s');
       return;
     }
     _lastMissedByPeer[peerSnowId] = now;
@@ -1728,7 +1816,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
         final convDao = ref.read(conversationDaoProvider);
         final conv = await convDao.findDirectByParticipant(peerSnowId);
         if (conv == null) {
-          debugPrint('[CallNotifier] no 1:1 conversation with $peerSnowId — skip missed call message (V1.0.1)');
+          debugPrint('[CallNotifier] no 1:1 conversation with ${logRef(peerSnowId)} — skip missed call message (V1.0.1)');
           return;
         }
         final caller = (peerName != null && peerName.isNotEmpty)
@@ -1752,7 +1840,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
               },
               expiresInSeconds: 300, // 5min forced TTL
             );
-        debugPrint('[CallNotifier] inserted missed call system message convId=${conv.id}');
+        debugPrint('[CallNotifier] inserted missed call system message '
+            'conv=${logRef(conv.id)}');
       } catch (e) {
         debugPrint('[CallNotifier] missed call insert failed: $e');
       }
@@ -1784,7 +1873,7 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
     if (last != null &&
         now.difference(last) < const Duration(seconds: 60)) {
       debugPrint(
-          '[CallNotifier] outgoing call result dedupe — peer=$peerSnowId within 60s');
+          '[CallNotifier] outgoing call result dedupe — peer=${logRef(peerSnowId)} within 60s');
       return;
     }
     _lastMissedByPeer[dedupKey] = now;
@@ -1822,8 +1911,8 @@ class CallNotifier extends StateNotifier<CallState> with WidgetsBindingObserver 
               },
               expiresInSeconds: 300,
             );
-        debugPrint(
-            '[CallNotifier] inserted outgoing call $reason message convId=${conv.id}');
+        debugPrint('[CallNotifier] inserted outgoing call $reason message '
+            'conv=${logRef(conv.id)}');
       } catch (e) {
         debugPrint('[CallNotifier] outgoing call result insert failed: $e');
       }

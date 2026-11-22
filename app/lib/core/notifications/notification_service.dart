@@ -3,14 +3,25 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (asks no permission: the notification prompt is askStartupPrompts only — requestPermissions() removed). Earlier 2026-11-22 (route payloads are `route:<path>` — the group invite notification opens the chat list, where invites wait, instead of /chat/<groupId>; a tap that launched the app — getNotificationAppLaunchDetails — is
+///              delivered once its callback is set, so a friend notification tapped after the app was
+///              closed still opens the Friends tab (and a message one its chat); handleTapPayload()
+///              routes a payload). Earlier 2026-11-22 (showFriendNotification(): a friend request
+///              received or accepted while the
+///              app is open — the tap opens the Friends tab (onRouteTap, payload friendsPayload) instead
+///              of a chat; a friend request used to open `/chat/__friend_request__…`, a room that does
+///              not exist). Earlier 2026-11-22 (showGroupInviteNotification(): an invite that arrives while the app is open — the server's push is not shown in the foreground, and nothing else told the user)
 ///
 /// @functions
 ///  - NotificationService: local notification initialization and management class
 ///  - NotificationService.initialize(): initialize notification plugin and request permissions
 ///  - NotificationService.showMessageNotification(): show 1:1 message local notification
 ///  - NotificationService.showGroupNotification(): show group message local notification
-///  - NotificationService.requestPermissions(): request iOS notification permission
+///  - NotificationService.showGroupInviteNotification(): an invite that arrived while the app is open
+///  - NotificationService.showFriendNotification(): a friend request received / accepted (tap → Friends tab)
+///  - NotificationService.friendsPayload / onRouteTap: a notification that opens a tab, not a chat
+///  - NotificationService.handleTapPayload(): route a tapped notification's payload (a tap that
+///    launched the app waits for its callback)
 
 import 'dart:async';
 import 'dart:io';
@@ -42,8 +53,35 @@ class NotificationService {
 
   bool _initialized = false;
 
+  NotificationTapCallback? _onNotificationTap;
+  void Function(String route)? _onRouteTap;
+
+  /// The payload of the notification whose tap launched the app, until the
+  /// callback that takes it is set.
+  String? _launchPayload;
+
   /// Callback invoked when user taps a notification.
-  NotificationTapCallback? onNotificationTap;
+  NotificationTapCallback? get onNotificationTap => _onNotificationTap;
+  set onNotificationTap(NotificationTapCallback? callback) {
+    _onNotificationTap = callback;
+    _deliverLaunchTap();
+  }
+
+  /// Callback invoked when the user taps a notification that opens a screen
+  /// of the app rather than a chat (the route, e.g. `/friends`).
+  void Function(String route)? get onRouteTap => _onRouteTap;
+  set onRouteTap(void Function(String route)? callback) {
+    _onRouteTap = callback;
+    _deliverLaunchTap();
+  }
+
+  /// The payload of a friend notification: its tap opens the Friends tab.
+  /// Never a conversation id (those are snowIds or 64-hex group ids).
+  static const String _routePrefix = 'route:';
+  static const String friendsPayload = '${_routePrefix}/friends';
+
+  /// The chat list, where group invites wait for an answer.
+  static const String chatListPayload = '${_routePrefix}/chat';
 
   /// Initialize the local notification plugin and request permissions.
   Future<void> initialize() async {
@@ -52,10 +90,13 @@ class NotificationService {
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
+    // No prompt here: the notification prompt is asked in one place,
+    // askStartupPrompts (core/permissions/microphone_permission.dart) — two
+    // requests at once make Android answer the second "denied" unseen.
     const iosSettings = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
     );
 
     const initSettings = InitializationSettings(
@@ -68,42 +109,24 @@ class NotificationService {
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
 
-    // Request permissions on iOS and Android 13+
-    await requestPermissions();
+    // A tap on one of this app's notifications after the app was closed
+    // launches it without a response event: its payload is taken here and
+    // delivered once the app set the callback for it.
+    try {
+      final launch = await _plugin.getNotificationAppLaunchDetails();
+      final payload = launch?.notificationResponse?.payload;
+      if ((launch?.didNotificationLaunchApp ?? false) &&
+          payload != null &&
+          payload.isNotEmpty) {
+        _launchPayload = payload;
+        _deliverLaunchTap();
+      }
+    } catch (e) {
+      debugPrint('[NotificationService] launch details not read: ${e.runtimeType}');
+    }
 
     _initialized = true;
     debugPrint('[NotificationService] Initialized');
-  }
-
-  /// Request notification permissions (iOS and Android 13+).
-  Future<bool> requestPermissions() async {
-    if (Platform.isIOS) {
-      final iosPlugin =
-          _plugin.resolvePlatformSpecificImplementation<
-              IOSFlutterLocalNotificationsPlugin>();
-      if (iosPlugin == null) return false;
-
-      final granted = await iosPlugin.requestPermissions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-      debugPrint('[NotificationService] iOS permissions granted: $granted');
-      return granted ?? false;
-    }
-
-    if (Platform.isAndroid) {
-      final androidPlugin =
-          _plugin.resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
-      if (androidPlugin == null) return false;
-
-      final granted = await androidPlugin.requestNotificationsPermission();
-      debugPrint('[NotificationService] Android permissions granted: $granted');
-      return granted ?? false;
-    }
-
-    return true;
   }
 
   /// Show a local notification for a 1:1 message.
@@ -217,15 +240,121 @@ class NotificationService {
     );
   }
 
-  /// Handle notification tap — navigate to the conversation.
-  void _onNotificationResponse(NotificationResponse response) {
-    final conversationId = response.payload;
-    if (conversationId != null && conversationId.isNotEmpty) {
-      debugPrint(
-        '[NotificationService] Notification tapped: $conversationId',
-      );
-      onNotificationTap?.call(conversationId);
+  /// An invite to a group, shown while the app is open (in the background
+  /// the server's push covers it). The tap opens the chat list, where the
+  /// invite waits for an answer ([groupId] names no conversation yet).
+  Future<void> showGroupInviteNotification({
+    required String inviterName,
+    required String? groupTitle,
+    required String groupId,
+  }) async {
+    if (!_initialized) {
+      debugPrint('[NotificationService] Not initialized, skipping notification');
+      return;
     }
+
+    const androidDetails = AndroidNotificationDetails(
+      'snowchat_group_invites',
+      'Group Invitations',
+      channelDescription: 'Invitations to join a group',
+      importance: Importance.high,
+      priority: Priority.high,
+      showWhen: true,
+      playSound: true,
+      enableVibration: true,
+    );
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBanner: true,
+      presentList: true,
+      presentBadge: false,
+      presentSound: true,
+    );
+    const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+
+    final title = (groupTitle == null || groupTitle.isEmpty) ? 'a group' : groupTitle;
+    await _plugin.show(
+      groupId.hashCode,
+      'Group invitation',
+      '$inviterName invited you to $title',
+      details,
+      payload: chatListPayload,
+    );
+  }
+
+  /// A friend request received ([accepted] false: "[name] sent you a friend
+  /// request") or this user's request accepted ("[name] accepted your
+  /// friend request"), shown while the app is open (in the background the
+  /// server's "New message" push covers it — the two cannot be told apart
+  /// there, by design). The tap opens the Friends tab. One notification per
+  /// account ([peer]): a newer one replaces it.
+  Future<void> showFriendNotification({
+    required String name,
+    required String peer,
+    required bool accepted,
+  }) async {
+    if (!_initialized) {
+      debugPrint('[NotificationService] Not initialized, skipping notification');
+      return;
+    }
+    const androidDetails = AndroidNotificationDetails(
+      'snowchat_friends',
+      'Friends',
+      channelDescription: 'Friend requests and acceptances',
+      importance: Importance.high,
+      priority: Priority.high,
+      showWhen: true,
+      playSound: true,
+      enableVibration: true,
+    );
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBanner: true,
+      presentList: true,
+      presentBadge: false,
+      presentSound: true,
+    );
+    const details = NotificationDetails(android: androidDetails, iOS: iosDetails);
+    await _plugin.show(
+      'friend:$peer'.hashCode,
+      'SnowChat',
+      accepted
+          ? '$name accepted your friend request'
+          : '$name sent you a friend request',
+      details,
+      payload: friendsPayload,
+    );
+  }
+
+  /// Handle notification tap — open the screen it names, or the
+  /// conversation.
+  void _onNotificationResponse(NotificationResponse response) =>
+      handleTapPayload(response.payload);
+
+  /// Route the payload of a tapped notification: the Friends tab for a
+  /// friend notification ([friendsPayload]), else the conversation it names.
+  void handleTapPayload(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    if (payload.startsWith(_routePrefix)) {
+      _onRouteTap?.call(payload.substring(_routePrefix.length));
+      return;
+    }
+    debugPrint('[NotificationService] Notification tapped');
+    _onNotificationTap?.call(payload);
+  }
+
+  /// Hand the launching tap's payload to its callback once that is set.
+  void _deliverLaunchTap() {
+    final payload = _launchPayload;
+    if (payload == null) return;
+    final ready = payload.startsWith(_routePrefix)
+        ? _onRouteTap != null
+        : _onNotificationTap != null;
+    if (!ready) return;
+    _launchPayload = null;
+    // Not inside the caller's frame: the callbacks are set while the app's
+    // widget tree builds, and a tap navigates.
+    scheduleMicrotask(() => handleTapPayload(payload));
   }
 
   /// Cancel all notifications.

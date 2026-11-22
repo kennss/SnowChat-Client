@@ -3,7 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (P5.6: a sync of a v2 group's row that a removal or a later sync overtook applies nothing — it put a removed chat back). Earlier 2026-11-21 (a peer's deletion of a 1:1 comes only from the sealed delete_chat control (no socket chat_deleted); onPeerDeletedChat tells an open chat; removeConversation is a no-op after dispose). Earlier 2026-11-20 (v1 groups removed: no server group list, no pending v1 invites, no
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef; a pending chat
+///              deletion the server answers with 404 USER_NOT_FOUND — the peer is gone — or 400 —
+///              it will never take it — is settled instead of tried on every start). Earlier 2026-11-22 (friend graph off the server: a 1:1 peer's name comes from this device —
+///              its contact row or its verified name certificate (NameCertService) — never from
+///              GET /users/:sender, which told the server who had just written; the list follows a
+///              name a certificate changes (onNameChanged); no friend_request_received listener (a
+///              request is a sealed contact notice); no live non-sealed socket listener (every 1:1
+///              envelope is sealed — onSealedMessageDecoded covers the list); a tombstoned deletion
+///              is retried with POST /conversations/delete). Earlier 2026-11-21 (P5.6: a sync of a v2 group's row that a removal or a later sync overtook applies nothing — it put a removed chat back). Earlier 2026-11-21 (a peer's deletion of a 1:1 comes only from the sealed delete_chat control (no socket chat_deleted); onPeerDeletedChat tells an open chat; removeConversation is a no-op after dispose). Earlier 2026-11-20 (v1 groups removed: no server group list, no pending v1 invites, no
 ///              GMK answers, no Sender Key pre-broadcast or rotation, no mis-typed-row heal
 ///              or phantom dedupe — a 1:1 room is keyed by the peer's snowId, so the live
 ///              listener matches the sender's room by id, never a conversation the server
@@ -37,27 +45,28 @@
 ///  - addDeletedConvId(storage, id): add a deleted conversation-ID tombstone (top-level)
 ///  - removeDeletedConvId(storage, id): remove a conversation ID from the tombstone (top-level)
 ///  - _retryPendingDeletions(): retry server DELETE for conversations remaining in the tombstone
-///  - _listenForIncomingMessages(): T0-pattern socket message reception — auto create/update the conversation list (+ drift dual-write)
 ///  - _persistIncomingToDrift(): transactional persistence of received messages into the drift DB (SSoT)
-///  - _resolveSenderDisplayName(): fetch and update the sender display name from the server
+///  - _applyKnownName(): a 1:1 peer's name known on this device (contact row, name certificate)
 ///  - _listenForCommunityEvents(): a kick from a community refreshes the community list
 
 import 'dart:async';
 import 'dart:convert';
-
+import 'package:dio/dio.dart' show DioException;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
+import '../../../core/contacts/name_cert_service.dart';
+import '../../../core/network/api_endpoints.dart';
 import '../../channels/providers/channel_provider.dart' show myChannelsProvider;
 // Phase 6: drift import is needed only for the drift-generated Conversation
 // row type, aliased as `db` to avoid colliding with the in-memory model
 // `Conversation` from models/conversation.dart.
 import '../../../core/storage/database.dart' as db show Conversation;
-import '../../../shared/services/message_banner_service.dart';
 import '../models/conversation.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/group_v2/gv2_codec.dart' show gv2IsGroupId;
 import 'mark_read_helper.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 // ---------------------------------------------------------------------------
 // Top-level tombstone helpers for locally-deleted conversation IDs.
@@ -85,7 +94,7 @@ Future<void> addDeletedConvId(SecureStorageService storage, String id) async {
     final ids = await loadDeletedConvIds(storage);
     ids.add(id);
     await storage.write(_tombstoneKey, jsonEncode(ids.toList()));
-    debugPrint('[Tombstone] ADDED: $id (total=${ids.length})');
+    debugPrint('[Tombstone] ADDED (total=${ids.length})');
   } catch (e) {
     debugPrint('[Tombstone] addDeletedConvId failed: $e');
   }
@@ -163,20 +172,25 @@ final conversationListProvider =
 class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   final Ref _ref;
   bool _serverLoaded = false;
-  StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   StreamSubscription<Map<String, dynamic>>? _channelMemberLeftSubscription;
-  StreamSubscription<Map<String, dynamic>>? _friendRequestSubscription;
   /// The 1:1 rooms a peer deleted (their snowIds) — an open chat closes.
   final _peerDeletedChats = StreamController<String>.broadcast();
   Stream<String> get onPeerDeletedChat => _peerDeletedChats.stream;
   StreamSubscription<bool>? _connectionSub; // socket reconnect → reload guard
   bool _loading = false; // in-flight guard for loadFromServer (anti-hammer)
 
+  /// Names from name certificates (read once: a disposed notifier must not
+  /// read providers).
+  late final NameCertService _names = _ref.read(nameCertServiceProvider);
+
+  void _onNameChanged(String peer) => _applyKnownName(peer, peer);
+
   ConversationListNotifier(this._ref) : super([]) {
-    _listenForIncomingMessages();
     _listenForCommunityEvents();
-    _listenForFriendRequests();
     _listenForReconnect();
+    // A peer's name changed (a newer name certificate): the drift title is
+    // written by NameCertService; the in-memory entry follows.
+    _names.onNameChanged = _onNameChanged;
     // Offline-first: show locally-cached conversations immediately, before and
     // independent of the network loadFromServer(). Without this the list starts
     // empty and a slow/failed server fetch on an unstable network leaves the
@@ -190,7 +204,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       final exists = state.any((c) => c.id == convId);
       if (!exists) {
         final mySnowId = _ref.read(currentSnowIdProvider) ?? '';
-        debugPrint('[DIAG:ConvList] onNewConversation: adding $convId from $senderSnowId');
+        debugPrint('[DIAG:ConvList] onNewConversation: adding ${logRef(convId)} from ${logRef(senderSnowId)}');
         final newConv = Conversation(
           id: convId,
           type: ConversationType.direct,
@@ -203,14 +217,13 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           createdAt: DateTime.now(),
         );
         state = [newConv, ...state];
-        _resolveSenderDisplayName(convId, senderSnowId);
+        _applyKnownName(convId, senderSnowId);
       }
     };
 
-    // Sealed Sender 1:1 — the live socket listener can't update unread /
-    // preview because the wire-level envelope hides the sender. MessageQueue
-    // fires this callback after unseal + drift insert so the in-memory
-    // state mirrors what _listenForIncomingMessages does for non-sealed.
+    // Sealed Sender 1:1 — the wire-level envelope hides the sender, so the
+    // list cannot follow the socket. MessageQueue fires this callback after
+    // unseal + drift insert so the in-memory state follows.
     _ref.read(messageQueueProvider).onSealedMessageDecoded =
         (convId, senderSnowId, preview, msgTime) {
       // A 1:1 room is keyed by the peer's snowId (convId is the sender's).
@@ -222,8 +235,8 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       if (idx < 0) {
         // First message in a brand-new conversation — surface it now.
         final mySnowId = _ref.read(currentSnowIdProvider) ?? '';
-        debugPrint('[DIAG:ConvList] onSealedMessageDecoded: NEW conv $convId '
-            'from $senderSnowId');
+        debugPrint('[DIAG:ConvList] onSealedMessageDecoded: NEW conv ${logRef(convId)} '
+            'from ${logRef(senderSnowId)}');
         final newConv = Conversation(
           id: convId,
           type: ConversationType.direct,
@@ -236,7 +249,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
           createdAt: DateTime.now(),
         );
         state = [newConv, ...state];
-        _resolveSenderDisplayName(convId, senderSnowId);
+        _applyKnownName(convId, senderSnowId);
         return;
       }
       final existing = state[idx];
@@ -252,7 +265,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       newList.sort((a, b) => (b.lastMessageTime ?? b.createdAt)
           .compareTo(a.lastMessageTime ?? a.createdAt));
       state = newList;
-      debugPrint('[DIAG:ConvList] onSealedMessageDecoded: $convId '
+      debugPrint('[DIAG:ConvList] onSealedMessageDecoded: ${logRef(convId)} '
           'unread=${updated.unreadCount} viewing=$isViewing');
     };
 
@@ -290,8 +303,8 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
         (peerSnowId, roomId) async {
       // Drift + Signal session were already wiped by MessageQueue (it must not
       // depend on this callback being wired yet). Only in-memory state left.
-      debugPrint('[ConversationList] sealed delete_chat from $peerSnowId '
-          '(room=$roomId)');
+      debugPrint('[ConversationList] sealed delete_chat from ${logRef(peerSnowId)} '
+          '(room=${logRef(roomId)})');
       removeConversation(roomId);
     };
 
@@ -338,9 +351,8 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
 
   @override
   void dispose() {
-    _messageSubscription?.cancel();
+    if (_names.onNameChanged == _onNameChanged) _names.onNameChanged = null;
     _channelMemberLeftSubscription?.cancel();
-    _friendRequestSubscription?.cancel();
     _peerDeletedChats.close();
     _connectionSub?.cancel();
     super.dispose();
@@ -625,7 +637,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       );
     } catch (e) {
       debugPrint('[ConversationList] addConversation drift mirror failed for '
-          '${conversation.id}: $e');
+          '${logRef(conversation.id)}: $e');
     }
   }
 
@@ -657,7 +669,10 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   Future<void> _removeDeletedConvId(String id) => removeDeletedConvId(_storage, id);
 
   /// Retry server DELETE for each tombstoned conversation ID.
-  /// On success, remove the tombstone. On failure, leave it for next retry.
+  /// On success, remove the tombstone. When the server will never take it —
+  /// 404 (the peer's account is gone: nothing of the pair is left to delete)
+  /// or 400 (not a request it takes) — the tombstone goes too. Any other
+  /// failure (no network, a server hiccup) leaves it for the next retry.
   Future<void> _retryPendingDeletions() async {
     final ids = await _loadDeletedConvIds();
     if (ids.isEmpty) return;
@@ -665,11 +680,22 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
     final apiClient = _ref.read(apiClientProvider);
     for (final id in ids.toList()) {
       try {
-        await apiClient.delete('/conversations/$id');
+        await apiClient.post(
+          ApiEndpoints.conversationDelete,
+          data: {'peerSnowchatId': id},
+        );
         await _removeDeletedConvId(id);
-        debugPrint('[ConversationList] retry DELETE success: $id');
+        debugPrint('[ConversationList] retry DELETE success');
+      } on DioException catch (e) {
+        final status = e.response?.statusCode;
+        if (status == 404 || status == 400) {
+          await _removeDeletedConvId(id);
+          debugPrint('[ConversationList] retry DELETE settled ($status)');
+        } else {
+          debugPrint('[ConversationList] retry DELETE failed: ${e.type}');
+        }
       } catch (e) {
-        debugPrint('[ConversationList] retry DELETE failed for $id: $e');
+        debugPrint('[ConversationList] retry DELETE failed: ${e.runtimeType}');
       }
     }
   }
@@ -703,7 +729,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       await sessionMgr.deleteSessionForPeer(peerSnowId);
     } catch (e) {
       debugPrint('[ConversationList] chat_deleted signal session wipe '
-          'for $peerSnowId failed: $e');
+          'for ${logRef(peerSnowId)} failed: $e');
     }
 
     // Remove from in-memory state
@@ -779,7 +805,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       );
       state = [newConv, ...state];
       if (otherSnowId.isNotEmpty) {
-        _resolveSenderDisplayName(conversationId, otherSnowId);
+        _applyKnownName(conversationId, otherSnowId);
       }
     }
   }
@@ -828,31 +854,8 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
   }
 
   // ---------------------------------------------------------------------------
-  // Friend and community event listeners
+  // Community event listener
   // ---------------------------------------------------------------------------
-
-  /// Phase 9.1: Global listener for friend_request_received socket events.
-  /// Updates the badge counter so the Friends tab shows a notification dot
-  /// even when the user is on a different tab.
-  /// 2026-04-28: also fire MessageBannerService for in-app foreground toast
-  /// (immediate notice even on screens other than the Friends tab).
-  void _listenForFriendRequests() {
-    final sm = _ref.read(socketManagerProvider);
-    _friendRequestSubscription = sm.onFriendRequestReceived.listen((data) {
-      final current = _ref.read(pendingFriendBadgeProvider);
-      _ref.read(pendingFriendBadgeProvider.notifier).state = current + 1;
-
-      final fromSnowchatId = data['fromSnowchatId'] as String? ?? '';
-      final fromDisplayName = data['fromDisplayName'] as String? ?? '';
-      if (fromSnowchatId.isNotEmpty) {
-        MessageBannerService.instance.showFriendRequest(
-          fromSnowchatId: fromSnowchatId,
-          fromDisplayName: fromDisplayName,
-        );
-      }
-      debugPrint('[ConversationList] friend_request_received — badge=${current + 1}');
-    });
-  }
 
   /// A kick from a community (real-time). The server notifies the KICKED
   /// user directly with youWereRemoved:true (its member broadcast can't reach
@@ -867,125 +870,9 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
       final youWereRemoved = data['youWereRemoved'] as bool? ?? false;
       final channelId = data['channelId'] as String?;
       if (!youWereRemoved || channelId == null) return;
-      debugPrint('[ConversationList] Kicked from community $channelId '
+      debugPrint('[ConversationList] Kicked from community ${logRef(channelId)} '
           '— invalidating myChannelsProvider');
       _ref.invalidate(myChannelsProvider);
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Global incoming message listener
-  // ---------------------------------------------------------------------------
-
-  /// Listen for incoming Socket.IO messages globally (T0 pattern).
-  /// Auto-creates and updates conversations even when chat screen is not open.
-  ///
-  /// Phase 6: This listener does NOT decrypt or persist messages — that is the
-  /// responsibility of MessageQueue (single global processor). It only updates
-  /// the conversation list UI state (preview placeholder, optimistic unread).
-  /// Real preview text appears once the queue inserts into drift and the
-  /// conversations table watch fires.
-  void _listenForIncomingMessages() {
-    final sm = _ref.read(socketManagerProvider);
-    debugPrint('[DIAG:ConvList] _listenForIncomingMessages SUBSCRIBED to socket onMessage');
-    _messageSubscription = sm.onMessage.listen((data) async {
-      final id = data['id'] ?? data['messageId'];
-      final senderSnowchatId =
-          (data['senderSnowchatId'] ?? data['senderId']) as String?;
-      final mySnowId = _ref.read(currentSnowIdProvider);
-      if (senderSnowchatId == null || senderSnowchatId == mySnowId) {
-        debugPrint('[DIAG:ConvList] $id SKIP own/null '
-            '(sender=$senderSnowchatId mySnowId=$mySnowId)');
-        return;
-      }
-
-      final msgType = data['type'] as String?;
-
-      // Ghost-conversation fix: session_reset is a control message that must
-      // never create or update a conversation entry.
-      if (msgType == 'session_reset') {
-        debugPrint('[DIAG:ConvList] $id SKIP session_reset (control message)');
-        return;
-      }
-      // Backward compat: old clients send type='e2ee_text' with metadata
-      // containing isSessionReset: true.
-      if (data['metadata'] != null) {
-        try {
-          final meta = data['metadata'] is String
-              ? jsonDecode(data['metadata'] as String) as Map<String, dynamic>
-              : data['metadata'] as Map<String, dynamic>;
-          if (meta['isSessionReset'] == true) {
-            debugPrint('[DIAG:ConvList] $id SKIP session_reset via metadata');
-            return;
-          }
-        } catch (_) {
-          // malformed metadata — not a session reset
-        }
-      }
-
-      final msgTime = data['createdAt'] != null
-          ? DateTime.parse(data['createdAt'] as String)
-          : DateTime.now();
-
-      // The room of a 1:1 message is its sender's: a 1:1 room is keyed by
-      // the peer's snowId. Never a conversation id the server names.
-      final roomId = senderSnowchatId;
-
-      debugPrint('[DIAG:ConvList] $id LIVE listener fire: '
-          'from=$senderSnowchatId type=$msgType');
-
-      // Phase 10 P2: Do NOT create conversations here. Conversation creation
-      // is the responsibility of MessageQueue after successful decryption.
-      // Creating conversations optimistically from encrypted socket events
-      // caused phantom "[New message]" entries for messages that later fail
-      // to decrypt (session corruption, retry fallback, etc.).
-      //
-      // Only UPDATE conversations that already exist in state (created by
-      // MessageQueue or server load). New conversations surface through the
-      // drift merge step after MessageQueue drain.
-      final preview = (data['text'] ?? '[New message]') as String;
-
-      // The sender's 1:1 room. A group id (64 hex) never equals a snowId, so
-      // a group row can't match.
-      final existingIndex = state.indexWhere(
-          (c) => c.type == ConversationType.direct && c.id == roomId);
-
-      if (existingIndex >= 0) {
-        final existing = state[existingIndex];
-        debugPrint('[DIAG:ConvList] $id UPDATE existing conv $roomId');
-        final isViewing = MarkReadHelper.isConversationActive(existing.id);
-        final updated = existing.copyWith(
-          lastMessageText: preview,
-          lastMessageTime: msgTime,
-          lastMessageSenderId: senderSnowchatId,
-          unreadCount: isViewing
-              ? existing.unreadCount
-              : existing.unreadCount + 1,
-        );
-        final newList = [...state];
-        newList[existingIndex] = updated;
-        newList.sort((a, b) => (b.lastMessageTime ?? b.createdAt)
-            .compareTo(a.lastMessageTime ?? a.createdAt));
-        state = newList;
-      } else {
-        // E2EE messages arrive with text=null (encrypted). Use placeholder;
-        // MessageQueue decryption will update preview via updatePreview().
-        final displayPreview = (data['text'] as String?) ?? 'New message';
-        debugPrint('[DIAG:ConvList] $id IN-MEMORY new conv $roomId');
-        final newConv = Conversation(
-          id: roomId,
-          type: ConversationType.direct,
-          participantIds: [mySnowId ?? '', senderSnowchatId],
-          title: senderSnowchatId,
-          lastMessageText: displayPreview,
-          lastMessageTime: msgTime,
-          lastMessageSenderId: senderSnowchatId,
-          unreadCount: 1,
-          createdAt: DateTime.now(),
-        );
-        state = [newConv, ...state];
-        _resolveSenderDisplayName(roomId, senderSnowchatId);
-      }
     });
   }
 
@@ -1057,7 +944,7 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
               orElse: () => '',
             );
             if (peer.isNotEmpty) {
-              _resolveSenderDisplayName(conv.id, peer);
+              _applyKnownName(conv.id, peer);
             }
           }
         }
@@ -1071,44 +958,23 @@ class ConversationListNotifier extends StateNotifier<List<Conversation>> {
     }
   }
 
-  /// Fetch the sender's display name from the server and update the
-  /// conversation title. Also persists to drift — survives app restart so
-  /// the VoIP outbound screen shows the nickname correctly (previously only
-  /// in-memory was updated, so it regressed to a truncated snow ID after
-  /// restart).
-  Future<void> _resolveSenderDisplayName(
-    String convId,
-    String senderSnowchatId,
-  ) async {
+  /// The name this device knows for the 1:1 peer [peer] (its contact row or
+  /// its newest verified name certificate — NameCertService.nameOf) becomes
+  /// the title of the room [convId], in memory and in drift (the VoIP screen
+  /// reads it after a restart). Nothing is asked of the server: the name
+  /// arrives with the peer's messages. No name known: the title stays.
+  Future<void> _applyKnownName(String convId, String peer) async {
     try {
-      final apiClient = _ref.read(apiClientProvider);
-      final res = await apiClient.get('/users/$senderSnowchatId');
-      final data = res.data as Map?;
-      final name = data?['displayName'] as String?;
-      if (name != null && name.isNotEmpty) {
-        if (mounted) {
-          state = state.map((c) {
-            if (c.id == convId) {
-              return c.copyWith(title: name);
-            }
-            return c;
-          }).toList();
-        }
-        // Persist to drift — restored as conversation.title on next boot.
-        try {
-          await _ref.read(conversationDaoProvider).updateTitle(convId, name);
-        } catch (e) {
-          debugPrint(
-            '[ConversationList] Failed to persist resolved title for '
-            '$convId: $e',
-          );
-        }
+      final name = await _names.nameOf(peer);
+      if (name == null || name.isEmpty) return;
+      if (mounted) {
+        state = [
+          for (final c in state) c.id == convId ? c.copyWith(title: name) : c,
+        ];
       }
+      await _ref.read(conversationDaoProvider).updateTitle(convId, name);
     } catch (e) {
-      debugPrint(
-        '[ConversationList] Failed to resolve display name for '
-        '$senderSnowchatId: $e',
-      );
+      debugPrint('[ConversationList] name not applied: ${e.runtimeType}');
     }
   }
 }

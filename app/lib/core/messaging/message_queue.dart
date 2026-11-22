@@ -1,6 +1,6 @@
 /// @file        message_queue.dart
 /// @description Phase 6 — Single serial processing queue for incoming 1:1 messages
-///              (non-sealed, sealed, sealed control). Group messages are rows of the group
+///              (sealed, sealed control). Group messages are rows of the group
 ///              queue (core/group_v2); this queue hands them to it (onGv2Rows) and runs the
 ///              follow-ups of a stored v2 message. Eliminates race conditions by ensuring
 ///              every message goes through one worker, in order, with atomic state mutation.
@@ -8,7 +8,22 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-07
-/// @lastUpdated 2026-11-22 (SC-05: a sealed message that fails to decrypt resets the session and
+/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (review fixes: a contact notice is handed on with whether it answers one of
+///              this user's (onContactNotice's isAnswer), and its row id is remembered for a while —
+///              wasContactNotice() — so a tap on its "New message" push opens the Friends tab; a read
+///              receipt flips only this user's messages in the room of its authenticated sender; a
+///              message whose room has no name yet is shown under the name this device knows for the
+///              sender (peerName — the contact list, name certificates) before the short snowId; no
+///              account id in a log line). Earlier 2026-11-22 (friend graph off the server — design 2026-11-22 §5.2, §12.4: a sealed
+///              contact_added / contact_removed goes to onContactNotice (the contact store) and is
+///              consumed — no room, no bubble, no unread; a message's name certificate is handed to
+///              onPeerNameCert before the message is stored, so the room and the notification carry
+///              the verified name; an inner type this build does not know is consumed and never
+///              shown; a wallet transfer notice on the control path is consumed. Part 3 E: the
+///              non-sealed 1:1 path (`e2ee_text`, `session_reset`, _processPrivate1to1) is gone — an
+///              envelope of any other wire type is acknowledged and dropped — and so are the retry
+///              request and the retry answer's placeholder fill (the server relays no retry
+///              requests)). Earlier 2026-11-22 (SC-05: a sealed message that fails to decrypt resets the session and
 ///              sends no message_retry_request — the server refused it and it only named the sender;
 ///              a sealed session_reset control is consumed). Earlier 2026-11-21 (a 1:1 message whose sender's own id (`cid`) is stored already — the
 ///              sender's outbox sent it again after a lost ack — is acked and not stored again;
@@ -39,12 +54,15 @@
 ///  - fetchPending(): Pull all pending+delivered messages from server queue and enqueue
 ///  - _processNext(): Worker loop — drains queue serially
 ///  - _processOne(envelope): Dispatch a single envelope by type
-///  - _processPrivate1to1(envelope): Decrypt 1:1 e2ee_text via Double Ratchet
 ///  - _processSealedMessage(envelope): Sealed Sender unseal + DR decrypt → drift insert
+///  - _processSealedControl(envelope): silent sealed controls (receipts, unsend, delete chat,
+///    session reset, contact_removed)
+///  - _applyContactNotice(): a contact notice to the contact store (onContactNotice)
+///  - wasContactNotice(): whether a row id was a contact notice handled lately (push taps)
 ///  - _processIncomingAttachments(): Insert attachment rows + trigger encrypted-blob download
 ///  - _downloadAttachment(): Download + decrypt + persist a single file attachment
 ///  - _insertDecryptionFailedPlaceholder(): insert placeholder row on dead-letter (required before ACK)
-///  - _emitRetryRequest(): after dead-letter, reset the session; a retry request only for a non-sealed (build-1000) message — never for a sealed one
+///  - _resetAfterFailedDecrypt(): after dead-letter, reset the session with the authenticated sender
 ///  - _enqueueAck(messageId): Buffer ACK for batch send
 ///  - _flushAcks(): Flush pending ACKs to server (debounced)
 
@@ -80,6 +98,7 @@ import '../storage/database.dart';
 import '../storage/tables/attachments_table.dart';
 import '../../shared/services/message_banner_service.dart';
 import '../../shared/widgets/message_banner.dart';
+import '../diagnostics/log_ref.dart';
 
 /// Type alias for the message envelope JSON map.
 typedef Envelope = Map<String, dynamic>;
@@ -164,6 +183,39 @@ class MessageQueue {
   /// Group protocol v2: a group changed on this device (wired by the
   /// conversation list to ConversationListNotifier.syncGv2Group).
   void Function(String groupId)? onGv2GroupChanged;
+
+  /// A contact notice ([notice]: contact_added / contact_removed) from
+  /// [senderSnowId] (the certified sender of its sealed envelope), with the
+  /// name certificate it carried and whether it is the answer to one of this
+  /// user's ([isAnswer]). Wired by providers when the queue is made (the
+  /// contact store); awaited before the envelope is acknowledged.
+  Future<void> Function(
+    String senderSnowId,
+    String notice,
+    String? nameCert,
+    bool isAnswer,
+  )? onContactNotice;
+
+  /// The name this device knows for an account (the contact list, its
+  /// name certificates — NameCertService.nameOf), or null. Wired by
+  /// providers; used when a message's room has no name yet.
+  Future<String?> Function(String snowId)? peerName;
+
+  /// Server row ids of the contact notices handled lately (newest last,
+  /// at most [_noticeIdsKept]): a tap on the "New message" push of one finds
+  /// no message row — it opens the Friends tab instead.
+  final Set<String> _contactNoticeIds = {};
+  static const int _noticeIdsKept = 64;
+
+  /// Whether the server row [messageId] was a contact notice handled by
+  /// this queue lately.
+  bool wasContactNotice(String messageId) =>
+      _contactNoticeIds.contains(messageId);
+
+  /// A name certificate [cert] (base64) a message of [senderSnowId]
+  /// carried: checked and applied (NameCertService.receive) before the
+  /// message is stored and notified. Wired by providers.
+  Future<void> Function(String senderSnowId, String cert)? onPeerNameCert;
   final FileService _fileService;
   final ExpiringMessageManager _expiringManager;
   final ApiClient _apiClient;
@@ -516,12 +568,12 @@ class MessageQueue {
           final isRatchetCorruption =
               errStr.contains('could decrypt the message');
           if (isRatchetCorruption && item.retryCount == 2) {
-            final senderSnow = (item.envelope['senderSnowchatId'] ??
-                item.envelope['senderId'] ??
-                authedSender) as String?;
+            // The sender is known only from the unsealed certificate: an
+            // envelope names none (every 1:1 row is sealed).
+            final senderSnow = authedSender;
             if (senderSnow != null && senderSnow.isNotEmpty) {
               debugPrint('[DIAG:Queue] $messageId ratchet corruption '
-                  'detected for $senderSnow → triggering session reset');
+                  'detected for ${logRef(senderSnow)} → triggering session reset');
               // Fire-and-forget reset; the next retry attempt will hit a
               // freshly established X3DH session.
               unawaited(_sessionMgr.resetSession(senderSnow).catchError((err) {
@@ -535,8 +587,7 @@ class MessageQueue {
             _deadLetters.add(messageId);
 
             // Session corruption ("forged or malformed", "shared secret")
-            // is unrecoverable — retry request would trigger a pairwise
-            // fallback that also fails, creating phantom conversations.
+            // is unrecoverable — a reset would fail the same way.
             final isSessionCorruption = errStr.contains('forged') ||
                 errStr.contains('malformed') ||
                 errStr.contains('shared secret');
@@ -548,8 +599,7 @@ class MessageQueue {
               // keygen. This heals the account for FUTURE receive-first messages
               // (server now advertises an SPK we hold); it does NOT recover this
               // specific stuck message — that's covered by the visible
-              // placeholder below (INV-4), since the sealed retry channel is
-              // server-rejected (see _emitRetryRequest).
+              // placeholder below (INV-4): there is no retry channel.
               if (isMissingLocalSpk) {
                 debugPrint('[DIAG:Queue] $messageId missing local signed prekey '
                     '→ SPK self-heal (background)');
@@ -569,14 +619,13 @@ class MessageQueue {
                 errStr,
                 authedSender: authedSender,
               );
-              // Phase 10 P0-D: Emit retry request — but SKIP for session
-              // corruption (unrecoverable; pairwise fallback would also fail).
+              // Reset the session with the sender — but not for session
+              // corruption (unrecoverable; a reset would fail the same way).
               if (!isSessionCorruption) {
-                await _emitRetryRequest(item.envelope, messageId, errStr,
-                    authedSender: authedSender);
+                await _resetAfterFailedDecrypt(messageId, authedSender);
               } else {
                 debugPrint('[DIAG:Queue] $messageId session corruption '
-                    '— skip retry request (pairwise would also fail)');
+                    '— no session reset');
               }
             }
             // ACK so the server stops re-delivering it.
@@ -623,16 +672,11 @@ class MessageQueue {
   Future<void> _processOne(Envelope envelope) async {
     final messageId =
         (envelope['id'] ?? envelope['messageId']) as String;
-    final type = (envelope['type'] ?? 'e2ee_text') as String;
-    final senderSnow = (envelope['senderSnowchatId'] ?? envelope['senderId'])
-        as String?;
+    final type = (envelope['type'] ?? '') as String;
 
-    // Skip own messages echoed back.
-    final myId = _myIdResolver();
-    if (senderSnow != null && senderSnow == myId) {
-      debugPrint('[DIAG:Queue] $messageId SKIP (own echo from=$senderSnow myId=$myId)');
-      return;
-    }
+    // A row names no sender (every 1:1 row is sealed; the server keeps
+    // neither its sender nor its reply fields): who sent it is known only
+    // after the unseal.
 
     // Dedup BEFORE decryption — same message via socket + REST fetch must
     // not consume two ratchet steps.
@@ -647,7 +691,7 @@ class MessageQueue {
     // this queue that names a v2 group id in any field is the server's word
     // about that group: terminal, acknowledged, nothing stored. (A 1:1
     // message is stored in its authenticated sender's room whatever the
-    // envelope names — see _processPrivate1to1 — so this is a second line.)
+    // envelope names — see _processSealedMessage — so this is a second line.)
     if (gv2IsGroupId(envelope['groupChatId']) ||
         gv2IsGroupId(envelope['groupId']) ||
         gv2IsGroupId(envelope['conversationId'])) {
@@ -664,17 +708,12 @@ class MessageQueue {
       case 'sealed_control':
         await _processSealedControl(envelope);
         break;
-      case 'system':
-        // The server writes no system lines any more (v1 groups are gone),
-        // and a line the server writes in a conversation it names is not
-        // shown: acknowledged, nothing stored.
-        debugPrint('[DIAG:Queue] $messageId REFUSED (server system line)');
-        envelope['_refused'] = true;
-        break;
-      case 'session_reset':
-      case 'e2ee_text':
       default:
-        await _processPrivate1to1(envelope);
+        // Every 1:1 envelope is sealed (Part 3 E — the non-sealed path is
+        // gone on both sides). Anything else — a server system line, an old
+        // `e2ee_text` row — is acknowledged and nothing is stored.
+        debugPrint('[DIAG:Queue] $messageId REFUSED (wire type $type)');
+        envelope['_refused'] = true;
         break;
     }
   }
@@ -691,202 +730,10 @@ class MessageQueue {
     return _messageDao.hasMessageFromPeer(senderId, peerClientId);
   }
 
-  Future<void> _processPrivate1to1(Envelope envelope) async {
-    final messageId =
-        (envelope['id'] ?? envelope['messageId']) as String;
-    final senderSnow = (envelope['senderSnowchatId'] ?? envelope['senderId'])
-        as String;
-    // The room of a 1:1 message is its sender's: the message decrypts only
-    // on the session with that sender, which authenticates it. Never a
-    // conversation id the envelope (the server) names — that could put the
-    // message into a group chat or another peer's room.
-    final convId = senderSnow;
-
-    debugPrint('[DIAG:1to1] $messageId start: from=$senderSnow');
-    final decrypted = await _e2eeHandler.decryptIncomingMessage(envelope);
-    debugPrint('[DIAG:1to1] $messageId decrypted (type=${decrypted.type.name})');
-
-    // Phase 10 P1-A: Silently consume session_reset notifications.
-    // The peer sent this after archiveAndResetSession() to establish the new
-    // session on our side. The prekey message processing already advanced our
-    // ratchet — no drift insert needed.
-    if (decrypted.metadata != null &&
-        decrypted.metadata!['isSessionReset'] == true) {
-      debugPrint('[DIAG:1to1] $messageId SESSION_RESET from $senderSnow — consumed silently');
-      // ACK directly — no drift row, so verify check would fail.
-      _enqueueAck(messageId);
-      // Throw a sentinel so _drain skips the verify-after-commit block.
-      // A flag on the envelope tells _drain to skip it.
-      envelope['_consumed'] = true;
-      return;
-    }
-
-    // Wallet V2 Phase B (D2 P0-1 fix): skip transfer control messages.
-    // EncryptedMessageHandler's transfer_* dispatcher already emitted to TransferEventBus.
-    // No drift insert (avoids empty system bubble + last preview / unread badge noise).
-    if (decrypted.metadata != null &&
-        decrypted.metadata!['_isTransferControl'] == true) {
-      debugPrint('[DIAG:1to1] $messageId TRANSFER_CONTROL from $senderSnow — drift skip');
-      _enqueueAck(messageId);
-      envelope['_consumed'] = true;
-      return;
-    }
-
-    // Phase 10 P0-F: Check if this is a retry response from the original sender.
-    // If so, try to update the existing placeholder row instead of inserting
-    // a new message. The originalMessageId matches the placeholder's row ID.
-    if (decrypted.metadata != null &&
-        decrypted.metadata!['isRetry'] == true) {
-      final originalId =
-          decrypted.metadata!['originalMessageId'] as String?;
-      if (originalId != null) {
-        final updated = await _messageDao.updatePlaceholder(
-          originalId,
-          decrypted.plaintext,
-          decrypted.type.name,
-          fromSender: senderSnow,
-        );
-        if (updated) {
-          debugPrint('[DIAG:1to1] $messageId RETRY resolved placeholder '
-              '$originalId');
-          // The answer lives on as the placeholder's row, not its own.
-          envelope['_consumed'] = true;
-          return;
-        }
-        // Placeholder not found — fall through to normal insert path.
-        debugPrint('[DIAG:1to1] $messageId RETRY no placeholder for '
-            '$originalId, inserting as new');
-      }
-    }
-
-    // The same message sent again by the sender's outbox (its ack was lost):
-    // stored already under the first copy's id — this copy is only acked.
-    if (await _isRepeatFromPeer(senderSnow, decrypted.peerClientId)) {
-      debugPrint('[DIAG:1to1] $messageId repeat of a stored message — ACK, not stored');
-      envelope['_consumed'] = true;
-      return;
-    }
-
-    final tsStr = (envelope['serverTimestamp'] ?? envelope['createdAt']) as String?;
-    final timestamp =
-        tsStr != null ? DateTime.parse(tsStr) : DateTime.now();
-    final ttl = decrypted.ttlSeconds;
-
-    // Ensure the conversation row exists in drift before inserting the
-    // message. Without this, offline-recovered messages for brand-new 1:1
-    // conversations end up as orphan rows in localMessages and the
-    // ConversationListNotifier never sees them — the user can't tell a
-    // message even arrived. The live socket path
-    // (conversation_list_provider._listenForIncomingMessages) handles this
-    // for online deliveries, but REST fetchPending bypasses that listener.
-    final myId = _myIdResolver();
-    await _conversationDao.findOrCreate(
-      id: convId,
-      type: 'direct',
-      participantIds: [myId, senderSnow],
-      title: senderSnow,
-    );
-    debugPrint('[DIAG:1to1] $messageId conversation findOrCreate done convId=$convId myId=$myId');
-    onNewConversation?.call(convId, senderSnow);
-
-    final companion = LocalMessagesCompanion(
-      id: Value(messageId),
-      conversationId: Value(convId),
-      senderSnowchatId: Value(senderSnow),
-      plaintext: Value(decrypted.plaintext),
-      dateSent: Value(timestamp.millisecondsSinceEpoch),
-      dateReceived: Value(DateTime.now().millisecondsSinceEpoch),
-      type: Value(decrypted.type.name),
-      metadata:
-          Value(decrypted.metadata != null ? jsonEncode(decrypted.metadata) : null),
-      expiresIn: Value(ttl ?? 0),
-      // Signal pattern: receiver starts the timer upon read (expireStarted=0 → waiting)
-      expireStarted: const Value(0),
-      read: const Value(false),
-      outgoingStatus: const Value('delivered'),
-      senderDisplayName: Value(envelope['senderDisplayName'] as String?),
-      replyToId: Value(decrypted.replyToId),
-      replyToPreview: Value(decrypted.replyToPreview),
-      replyToSenderId: Value(decrypted.replyToSenderId),
-      peerClientId: Value(decrypted.peerClientId),
-    );
-
-    // Check if the conversation is currently being viewed by the user
-    final isViewing = MarkReadHelper.isConversationActive(convId);
-    debugPrint('[DIAG:ReadReceipt] msgId=$messageId convId=$convId isViewing=$isViewing activeSet=${MarkReadHelper.debugActiveSet}');
-
-    // If viewing → mark read + start expiry timer immediately
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final insertCompanion = isViewing
-        ? companion.copyWith(
-            read: const Value(true),
-            expireStarted: Value(ttl != null ? now : 0),
-          )
-        : companion;
-
-    await _messageDao.insertIncomingMessage(
-      message: insertCompanion,
-      conversationId: convId,
-      snippetText: decrypted.plaintext,
-      receivedTimestamp: now,
-      senderId: senderSnow,
-      mentionsSelf: false,
-      isCurrentlyViewing: isViewing,
-    );
-    debugPrint('[DIAG:1to1] $messageId INSERTED into drift convId=$convId viewing=$isViewing');
-    _maybeShowMessageBanner(
-      isViewing: isViewing,
-      conversationId: convId,
-      senderId: senderSnow,
-      plaintext: decrypted.plaintext,
-    );
-
-    // Live-read receipt: user is viewing this conversation, so the message
-    // is read the moment it lands. Travels as a sealed E2EE control —
-    // fire-and-forget (a lost receipt only costs a blue check).
-    if (isViewing) {
-      unawaited(_e2eeHandler
-          .sendSealedReadReceipt(recipientId: senderSnow, readIds: [messageId])
-          .catchError((Object e) {
-        debugPrint('[DIAG:1to1] live read receipt failed (dropped): $e');
-      }));
-    }
-
-    // Disappearing-message TTL: schedule only if already read (viewing).
-    // Otherwise, timer starts when markAsRead() is called (Signal pattern).
-    if (ttl != null && ttl > 0 && isViewing) {
-      _expiringManager.schedule(messageId, ttl);
-    }
-
-    // File / voice / image (carried as MessageType.file with image mime):
-    // create attachment row + trigger encrypted-blob download. Without this,
-    // the bubble has no attachment row and shows a non-tappable download icon
-    // (or shimmer for images) — file body never lands locally.
-    if (decrypted.metadata != null &&
-        (decrypted.type == MessageType.file ||
-            decrypted.type == MessageType.voice)) {
-      _processIncomingAttachments(messageId, decrypted.metadata!);
-    }
-
-    // Show local notification with decrypted plaintext preview.
-    // Triggered here (post-decryption) instead of PushService (pre-decryption)
-    // so we get actual message content and correct active-conversation check.
-    if (!isViewing) {
-      final senderName = (envelope['senderDisplayName'] as String?)
-          ?? _truncateSnowId(senderSnow);
-      NotificationService().showMessageNotification(
-        senderName: senderName,
-        preview: _notificationPreview(decrypted),
-        conversationId: convId,
-      );
-    }
-  }
-
   /// Sealed control (2026-07-15): process a silent E2EE control envelope
-  /// (wire type 'sealed_control'). Currently the only inner control is
-  /// 'read_receipt' — the peer read our messages; flip our own rows to
-  /// 'read' (blue double-check). Controls never insert a drift message,
-  /// bump unread, show a banner, or fire a notification.
+  /// (wire type 'sealed_control'): a read receipt, an unsend, a chat
+  /// deletion, a session reset, a contact_removed. Controls never insert a
+  /// drift message, bump unread, show a banner, or fire a notification.
   ///
   /// Decrypt failures are ACKed and dropped — a lost receipt only costs a
   /// blue check, and routing a status flip into the retry/session-reset
@@ -897,7 +744,8 @@ class MessageQueue {
     try {
       final decrypted = await _e2eeHandler.decryptSealedMessage(envelope);
       if (decrypted.metadata?['_isReadReceipt'] == true) {
-        await _applyReadReceipt(decrypted.metadata!, messageId);
+        await _applyReadReceipt(
+            decrypted.metadata!, decrypted.senderSnowchatId, messageId);
       } else if (decrypted.metadata?['_isUnsend'] == true) {
         await _applyUnsend(
             decrypted.metadata!, decrypted.senderSnowchatId, messageId);
@@ -912,9 +760,15 @@ class MessageQueue {
         // The peer deleted this 1:1 on their side — the only signal of it
         // (the server sends none). Queued like a message, so this also fires
         // for a delete that happened while we were offline.
-        debugPrint('[DIAG:SealedControl] $messageId delete_chat from '
-            '${decrypted.senderSnowchatId}');
+        debugPrint('[DIAG:SealedControl] $messageId delete_chat');
         await _applyDeleteChat(decrypted.senderSnowchatId);
+      } else if (decrypted.metadata?['_isContactNotice'] == true) {
+        await _applyContactNotice(decrypted, messageId);
+      } else if (decrypted.metadata?['_isTransferControl'] == true ||
+          decrypted.metadata?['_isUnknownType'] == true) {
+        // A wallet notice (dispatched by the decrypt) or a type this build
+        // does not know: consumed, nothing shown.
+        debugPrint('[DIAG:SealedControl] $messageId consumed (no row)');
       } else {
         debugPrint('[DIAG:SealedControl] $messageId unknown control type — dropped');
       }
@@ -934,13 +788,18 @@ class MessageQueue {
   /// 'read'. Zero matched rows is a benign no-op (already read, expired, or
   /// racing the local→server id swap) — never an error.
   Future<void> _applyReadReceipt(
-      Map<String, dynamic> metadata, String messageId) async {
+      Map<String, dynamic> metadata, String sender, String messageId) async {
     final rawIds = metadata['readIds'];
     final readIds =
         rawIds is List ? rawIds.whereType<String>().toList() : <String>[];
     if (readIds.isEmpty) return;
-    final updated =
-        await _messageDao.markOutgoingAsRead(readIds, myId: _myIdResolver());
+    // A 1:1 room's id is the peer's snowId: only this user's messages to
+    // the receipt's authenticated sender are flipped.
+    final updated = await _messageDao.markOutgoingAsRead(
+      readIds,
+      myId: _myIdResolver(),
+      conversationId: sender,
+    );
     debugPrint('[DIAG:SealedControl] $messageId read receipt applied '
         '($updated/${readIds.length} rows -> read)');
   }
@@ -983,15 +842,15 @@ class MessageQueue {
     final roomId = peerSnowchatId;
     try {
       await _conversationDao.deleteConversation(roomId);
-      debugPrint('[DIAG:SealedControl] delete_chat wiped room $roomId');
+      debugPrint('[DIAG:SealedControl] delete_chat wiped the room');
     } catch (e) {
       debugPrint('[DIAG:SealedControl] delete_chat drift cleanup failed: $e');
     }
     try {
       await _sessionMgr.deleteSessionForPeer(peerSnowchatId);
     } catch (e) {
-      debugPrint('[DIAG:SealedControl] delete_chat session wipe failed '
-          'for $peerSnowchatId: $e');
+      debugPrint('[DIAG:SealedControl] delete_chat session wipe failed: '
+          '${e.runtimeType}');
     }
     await onPeerDeletedChat?.call(peerSnowchatId, roomId);
   }
@@ -1018,6 +877,41 @@ class MessageQueue {
     }
   }
 
+  /// A contact notice: handed to the contact store (onContactNotice) with
+  /// the name certificate it carried. Whatever becomes of it, the envelope
+  /// is consumed — a lost notice only leaves a label behind (§5.3).
+  Future<void> _applyContactNotice(Message decrypted, String messageId) async {
+    _contactNoticeIds.add(messageId);
+    if (_contactNoticeIds.length > _noticeIdsKept) {
+      _contactNoticeIds.remove(_contactNoticeIds.first);
+    }
+    final notice = decrypted.metadata?['notice'];
+    final apply = onContactNotice;
+    if (apply == null || notice is! String) return;
+    try {
+      await apply(
+        decrypted.senderSnowchatId,
+        notice,
+        decrypted.peerNameCert,
+        decrypted.metadata?['answer'] == true,
+      );
+    } catch (e) {
+      debugPrint('[Queue] contact notice not applied: ${e.runtimeType}');
+    }
+  }
+
+  /// A message's name certificate: checked and applied (onPeerNameCert).
+  /// Never throws — the message is stored either way.
+  Future<void> _applyNameCert(String sender, String cert) async {
+    final apply = onPeerNameCert;
+    if (apply == null) return;
+    try {
+      await apply(sender, cert);
+    } catch (e) {
+      debugPrint('[Queue] name certificate not applied: ${e.runtimeType}');
+    }
+  }
+
   Future<void> _applyUnsend(Map<String, dynamic> metadata,
       String unsendSender, String messageId) async {
     final rawIds = metadata['deleteIds'];
@@ -1035,8 +929,7 @@ class MessageQueue {
         if (row == null) continue; // already gone / id-swap race
         if (row.senderSnowchatId != unsendSender) {
           debugPrint('[DIAG:SealedControl] unsend $id rejected — sender '
-              'mismatch (row from ${row.senderSnowchatId}, unsend from '
-              '$unsendSender)');
+              'mismatch');
           continue;
         }
         // Delete decrypted attachment blobs. localPath is stored RELATIVE to
@@ -1125,14 +1018,14 @@ class MessageQueue {
     // conversation id the sender embedded is its own perspective and never
     // used.
     final convId = senderId;
-    debugPrint('[DIAG:Sealed] $messageId decrypted: from=$senderId convId=$convId');
+    debugPrint('[DIAG:Sealed] $messageId decrypted');
 
     // Wallet V2 Phase B (D2 P0-1 fix): skip transfer control messages (Sealed path).
     // EncryptedMessageHandler's transfer_* dispatcher already emitted to TransferEventBus.
     // No drift insert (avoids empty system bubble + noise).
     if (decrypted.metadata != null &&
         decrypted.metadata!['_isTransferControl'] == true) {
-      debugPrint('[DIAG:Sealed] $messageId TRANSFER_CONTROL from $senderId — drift skip');
+      debugPrint('[DIAG:Sealed] $messageId TRANSFER_CONTROL — drift skip');
       _enqueueAck(messageId);
       envelope['_consumed'] = true;
       return;
@@ -1145,7 +1038,8 @@ class MessageQueue {
     if (decrypted.metadata != null &&
         decrypted.metadata!['_isReadReceipt'] == true) {
       debugPrint('[DIAG:Sealed] $messageId READ_RECEIPT via sealed path — drift skip');
-      await _applyReadReceipt(decrypted.metadata!, messageId);
+      await _applyReadReceipt(
+          decrypted.metadata!, decrypted.senderSnowchatId, messageId);
       _enqueueAck(messageId);
       envelope['_consumed'] = true;
       return;
@@ -1186,30 +1080,24 @@ class MessageQueue {
       return;
     }
 
-    // Phase 10 P0-F: a retry response (RetryHandler) — sealed since
-    // 2026-11-22, with isRetry / originalMessageId in the inner payload's
-    // metadata: it fills the placeholder of the message that failed.
+    // A contact notice (contact_added — pushed like a message): to the
+    // contact store. No conversation row, no message row, no unread.
     if (decrypted.metadata != null &&
-        decrypted.metadata!['isRetry'] == true) {
-      final originalId =
-          decrypted.metadata!['originalMessageId'] as String?;
-      if (originalId != null) {
-        final updated = await _messageDao.updatePlaceholder(
-          originalId,
-          decrypted.plaintext,
-          decrypted.type.name,
-          fromSender: senderId,
-        );
-        if (updated) {
-          debugPrint('[DIAG:Sealed] $messageId RETRY resolved placeholder '
-              '$originalId');
-          // The answer lives on as the placeholder's row, not its own.
-          envelope['_consumed'] = true;
-          return;
-        }
-        debugPrint('[DIAG:Sealed] $messageId RETRY no placeholder for '
-            '$originalId, inserting as new');
-      }
+        decrypted.metadata!['_isContactNotice'] == true) {
+      await _applyContactNotice(decrypted, messageId);
+      _enqueueAck(messageId);
+      envelope['_consumed'] = true;
+      return;
+    }
+
+    // An inner type this build does not know: consumed, never shown — no
+    // room, no bubble, no notification (contract §12.4).
+    if (decrypted.metadata != null &&
+        decrypted.metadata!['_isUnknownType'] == true) {
+      debugPrint('[DIAG:Sealed] $messageId unknown inner type — consumed');
+      _enqueueAck(messageId);
+      envelope['_consumed'] = true;
+      return;
     }
 
     // The same message sent again by the sender's outbox (its ack was lost):
@@ -1225,7 +1113,7 @@ class MessageQueue {
         tsStr != null ? DateTime.parse(tsStr) : DateTime.now();
     final ttl = decrypted.ttlSeconds;
 
-    // Ensure conversation row exists (same as _processPrivate1to1).
+    // Ensure the conversation row exists.
     // Note: in-memory state sync is handled exclusively by
     // onSealedMessageDecoded below — firing onNewConversation here as well
     // would double-count unread (the new-conv branch sets unreadCount=1,
@@ -1237,6 +1125,11 @@ class MessageQueue {
       participantIds: [myId, senderId],
       title: senderId,
     );
+    // The sender's name certificate (first message, or a renamed sender):
+    // checked and applied before the room, the banner and the notification
+    // read the name — never a lookup on the server.
+    final cert = decrypted.peerNameCert;
+    if (cert != null) await _applyNameCert(senderId, cert);
 
     final companion = LocalMessagesCompanion(
       id: Value(messageId),
@@ -1274,23 +1167,20 @@ class MessageQueue {
       mentionsSelf: false,
       isCurrentlyViewing: isViewing,
     );
-    debugPrint('[DIAG:Sealed] $messageId INSERTED into drift convId=$convId');
+    debugPrint('[DIAG:Sealed] $messageId INSERTED into drift');
 
-    // Sealed envelopes carry no senderDisplayName (zero-knowledge), so the
-    // banner / notification would fall back to a truncated snow id and the
-    // recipient sees a hex string instead of a nickname. After the convId
-    // remap the canonical drift row already holds the resolved display name
-    // (set by ConversationListNotifier's _resolveSenderDisplayName when the
-    // peer was first surfaced) — reuse it. Treat title == senderId as
-    // unresolved (the initial placeholder findOrCreate writes the snow id
-    // as a title until the server lookup completes).
+    // Sealed envelopes carry no senderDisplayName (zero-knowledge). The
+    // room's title holds the name from the sender's verified name
+    // certificate (NameCertService, applied above) — reuse it. A title equal
+    // to the snowId is unresolved (findOrCreate writes the snowId until a
+    // certificate names the sender).
     final convRow = await _conversationDao.getConversation(convId);
     final convTitle = convRow?.title;
     final resolvedSenderName = (convTitle != null &&
             convTitle.isNotEmpty &&
             convTitle != senderId)
         ? convTitle
-        : _truncateSnowId(senderId);
+        : (await _knownName(senderId) ?? _truncateSnowId(senderId));
 
     _maybeShowMessageBanner(
       isViewing: isViewing,
@@ -1338,6 +1228,17 @@ class MessageQueue {
         preview: _notificationPreview(decrypted),
         conversationId: convId,
       );
+    }
+  }
+
+  /// The name this device knows for [snowId] (peerName), or null. Never
+  /// throws.
+  Future<String?> _knownName(String snowId) async {
+    try {
+      final name = await peerName?.call(snowId);
+      return (name != null && name.isNotEmpty) ? name : null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1480,16 +1381,12 @@ class MessageQueue {
     String? authedSender,
   }) async {
     try {
-      // Extract sender and conversation info from the envelope. authedSender is
-      // the certificate-authenticated sender from a sealed unseal (the wire
-      // envelope carries no senderSnowchatId for sealed messages).
-      final senderSnow = (envelope['senderSnowchatId'] ??
-          envelope['senderId'] ??
-          authedSender ??
-          '') as String;
+      // The sender is the certificate-authenticated one of a sealed unseal
+      // (authedSender): the envelope names none.
+      final senderSnow = authedSender ?? '';
 
       // The placeholder goes into the sender's 1:1 room — never into a
-      // conversation the envelope names (see _processPrivate1to1).
+      // conversation the envelope names (see _processSealedMessage).
       final conversationId = senderSnow;
 
       final tsStr =
@@ -1499,33 +1396,23 @@ class MessageQueue {
       final dateSent = timestamp?.millisecondsSinceEpoch ??
           DateTime.now().millisecondsSinceEpoch;
 
-      // Skip placeholder if the conversation doesn't already exist in drift.
-      // Phantom conversations from retry-request fallbacks or session resets
-      // should not create new 1:1 entries.
-      // Only add placeholders to conversations the user has already interacted
-      // with — EXCEPT when authedSender is set: a sealed message that unsealed
-      // to a certificate-authenticated sender is a genuine first-contact, not a
-      // phantom, so we allow creating the direct conversation + placeholder
-      // (INV-4: the loss must be visible, never silent).
-      if (authedSender == null) {
-        final existing = await _conversationDao.getConversation(conversationId);
-        if (existing == null) {
-          debugPrint('[DIAG:Queue] $messageId skip phantom placeholder '
-              '(no existing conv $conversationId)');
-          return;
-        }
+      // No authenticated sender (the envelope did not even unseal): there is
+      // no room to put a placeholder in. A sealed message that unsealed to a
+      // certificate-authenticated sender is a genuine first contact, so its
+      // room and placeholder are made (INV-4: the loss must be visible).
+      if (senderSnow.isEmpty) {
+        debugPrint('[DIAG:Queue] $messageId no authenticated sender — no placeholder');
+        return;
       }
 
-      // Ensure conversation row exists (same as _processPrivate1to1).
+      // Ensure the conversation row exists.
       final myId = _myIdResolver();
-      if (senderSnow.isNotEmpty) {
-        await _conversationDao.findOrCreate(
-          id: conversationId,
-          type: 'direct',
-          participantIds: [myId, senderSnow],
-          title: senderSnow,
-        );
-      }
+      await _conversationDao.findOrCreate(
+        id: conversationId,
+        type: 'direct',
+        participantIds: [myId, senderSnow],
+        title: senderSnow,
+      );
 
       final companion = LocalMessagesCompanion(
         id: Value(messageId),
@@ -1547,7 +1434,7 @@ class MessageQueue {
       // partial row already exists from a previous failed attempt.
       await _messageDao.upsertMessage(companion);
       debugPrint('[DIAG:Queue] $messageId placeholder INSERTED '
-          'convId=$conversationId sender=$senderSnow');
+          'convId=${logRef(conversationId)} sender=${logRef(senderSnow)}');
     } catch (placeholderErr) {
       // Placeholder insertion failure is serious but must not block the ACK
       // path — otherwise the server keeps re-delivering the undecryptable
@@ -1558,67 +1445,24 @@ class MessageQueue {
   }
 
   // ---------------------------------------------------------------------------
-  // Retry request emit (Phase 10 P0-D)
+  // Session reset after a failed decrypt
   // ---------------------------------------------------------------------------
 
-  /// Emit a retry request to the original sender after decryption failure.
-  ///
-  /// Dispatches by message type:
-  /// - `e2ee_text` (non-sealed 1:1 from a build-1000 peer — the server
-  ///   already knows its sender): archiveAndResetSession →
-  ///   sendMessageRetryRequest
-  /// - `sealed`: archiveAndResetSession only — no retry request (SC-05)
-  ///
-  /// IMPORTANT: For 1:1 ratchet corruption, archiveAndResetSession() MUST
-  /// complete before the retry emit to prevent the race where the sender
-  /// re-encrypts against the old (now-archived) session.
-  Future<void> _emitRetryRequest(
-    Envelope envelope,
-    String messageId,
-    String errorCode, {
-    String? authedSender,
-  }) async {
+  /// A sealed message from [authedSender] (certificate-authenticated at
+  /// unseal) could not be decrypted: archive and reset the session so the
+  /// sender's FUTURE messages decrypt — the peer learns of the new session
+  /// from a sealed session_reset control. Nothing asks the sender to send it
+  /// again: the server relays no retry requests (they named the sealed
+  /// sender, SC-05); the stuck message is the visible placeholder (INV-4).
+  Future<void> _resetAfterFailedDecrypt(
+      String messageId, String? authedSender) async {
+    if (authedSender == null || authedSender.isEmpty) return;
     try {
-      final type = (envelope['type'] ?? 'e2ee_text') as String;
-      final senderSnow = (envelope['senderSnowchatId'] ??
-          envelope['senderId'] ??
-          authedSender) as String?;
-
-      switch (type) {
-        case 'sealed':
-          // Sealed Sender: the wire carries no sender id, but if we unsealed the
-          // envelope the sender is certificate-authenticated (authedSender). We
-          // archive+reset to establish a fresh session so the sender's FUTURE
-          // messages (and any manual resend) decrypt — the peer learns of the
-          // new session from a sealed session_reset control; the account is
-          // also being SPK-self-healed in parallel.
-          //
-          // No message_retry_request: the server refuses one for a sealed row
-          // (SEALED_RETRY_UNSUPPORTED — answering it would link sender and
-          // recipient), so the request delivered nothing and only told the
-          // server who sent the sealed message (SC-05, 2026-11-10 report). The
-          // guarantee for the stuck message is the visible non-phantom
-          // placeholder (INV-4).
-          if (authedSender != null && authedSender.isNotEmpty) {
-            await _sessionMgr.archiveAndResetSession(authedSender);
-          }
-          break;
-
-        case 'e2ee_text':
-        default:
-          // 1:1 message: archive and reset session FIRST, then emit retry
-          if (senderSnow != null && senderSnow.isNotEmpty) {
-            await _sessionMgr.archiveAndResetSession(senderSnow);
-            _socketManager.sendMessageRetryRequest(messageId, senderSnow);
-          }
-          break;
-      }
-
-      debugPrint('[DIAG:Queue] $messageId session reset after a failed '
-          'decrypt (type=$type)');
-    } catch (retryErr) {
-      // Retry request failure must not block the ACK path.
-      debugPrint('[DIAG:Queue] $messageId retry request FAILED: $retryErr');
+      await _sessionMgr.archiveAndResetSession(authedSender);
+      debugPrint('[DIAG:Queue] $messageId session reset after a failed decrypt');
+    } catch (e) {
+      // Must not block the ACK path.
+      debugPrint('[DIAG:Queue] $messageId session reset FAILED: $e');
     }
   }
 

@@ -3,7 +3,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (starts the 1:1 outbox with the global router). Earlier 2026-11-21 (/call is pushed for an incoming call when CallState.inAppIncoming is set —
+/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef; a tap on a push
+///              whose row is no message opens the Friends tab when it was a contact notice the queue
+///              just handled, else the chat list). Earlier 2026-11-22 (watches contactSyncProvider — the contact backup's restore, block-tag
+///              replace and periodic write while signed in; a friend notification's tap opens the
+///              Friends tab — NotificationService.onRouteTap). Earlier 2026-11-22 (watches gv2InviteNotifierProvider — an invite arriving while the app is open is notified). Earlier 2026-11-21 (starts the 1:1 outbox with the global router). Earlier 2026-11-21 (/call is pushed for an incoming call when CallState.inAppIncoming is set —
 ///              iOS with no CallKit window, the in-app screen is the only incoming UI). Earlier
 ///              2026-11-20 (comment: no v1 group pushes). Earlier 2026-11-20 (a tapped push whose message id is a row of the group queue opens that group's chat — Gv2Runtime.conversationOfPush). Earlier 2026-11-13 (watches gv2RuntimeProvider — group protocol v2, behind a flag).
 ///              Earlier 2026-08-07 (metadata-min Batch 2: 1:1 push deep-link restored
@@ -56,12 +60,14 @@ import 'app_lock_gate.dart';
 import 'keyboard_behavior.dart';
 import '../core/network/token_manager.dart';
 import '../features/chat/providers/conversation_list_provider.dart';
+import '../features/group/providers/gv2_group_provider.dart' show gv2InviteNotifierProvider;
 import '../shared/constants/colors.dart';
 import 'package:go_router/go_router.dart';
 
 import 'deeplink_handler.dart';
 import 'providers.dart';
 import 'router.dart';
+import '../core/diagnostics/log_ref.dart';
 
 /// MethodChannel into MainActivity's KeyguardManager bridge. Returns true
 /// when the device is currently locked (PIN/pattern/biometric required to
@@ -221,6 +227,14 @@ class SnowChatApp extends ConsumerWidget {
         // alive for the lifetime of the root widget.
         ref.watch(appBadgeUpdaterProvider);
 
+        // A group invite that arrives while the app is open gets a local
+        // notification (an open app shows no push).
+        ref.watch(gv2InviteNotifierProvider);
+
+        // The friend list's backup on the server: restored once on a new
+        // install, the block tags replaced, written on its own period.
+        ref.watch(contactSyncProvider);
+
         // Phase 8.1-D: Wire notification tap → chat room navigation.
         //
         // convergeRoom(): the recipient of a peer's first message may only have a
@@ -249,14 +263,14 @@ class SnowChatApp extends ConsumerWidget {
           String? conversationId,
           String? messageId,
         }) async {
-          debugPrint('[DeepLink] openChatFromPush conv=$conversationId '
+          debugPrint('[DeepLink] openChatFromPush conv=${logRef(conversationId)} '
               'msg=$messageId');
           convergeRoom();
           // Read the router FRESH here, not via the build-captured `router`:
           // these listeners register once (guarded), so a captured router would
           // go stale if routerProvider ever rebuilds and navigation would no-op.
           if (conversationId != null && conversationId.isNotEmpty) {
-            debugPrint('[DeepLink] → /chat/$conversationId (direct)');
+            debugPrint('[DeepLink] → /chat/${logRef(conversationId)} (direct)');
             ref.read(routerProvider).go('/chat/$conversationId');
             return;
           }
@@ -280,15 +294,24 @@ class SnowChatApp extends ConsumerWidget {
           debugPrint('[DeepLink] resolved room=${room != null} for a push');
           if (room != null && room.isNotEmpty) {
             ref.read(routerProvider).go('/chat/$room');
+            return;
           }
-          // else: leave the user on the list (masked-safe fallback).
+          // No message row: a contact notice (pushed like a message, never
+          // stored as one) opens the Friends tab; anything else the chat
+          // list. The push itself says nothing of which it was.
+          final notice =
+              ref.read(messageQueueProvider).wasContactNotice(messageId);
+          ref.read(routerProvider).go(notice ? '/friends' : '/chat');
         }
 
         ref.read(notificationServiceProvider).onNotificationTap =
             (conversationId) {
-          debugPrint('[DeepLink] onNotificationTap conv=$conversationId');
+          debugPrint('[DeepLink] onNotificationTap conv=${logRef(conversationId)}');
           unawaited(openChatFromPush(conversationId: conversationId));
         };
+        // A friend notification opens the Friends tab, not a chat.
+        ref.read(notificationServiceProvider).onRouteTap =
+            (route) => ref.read(routerProvider).go(route);
 
         // FCM / APNs notification-tap handlers. Guarded so the raw-stream
         // .listen() + getInitialMessage() register EXACTLY once — every Riverpod

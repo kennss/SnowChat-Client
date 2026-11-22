@@ -4,7 +4,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-11-21 (schema v17: hasMessageFromPeer() — the receiver's duplicate guard;
+/// @lastUpdated 2026-11-22 (markOutgoingDelivered(): the server delivered an outgoing 1:1 message —
+///              sent → delivered, never back from read; markOutgoingAsRead() takes the room of the
+///              receipt's authenticated sender — a peer's receipt flips only this user's messages
+///              to that peer). Earlier 2026-11-21 (schema v17: hasMessageFromPeer() — the receiver's duplicate guard;
 ///              updateMetadata() — an uploaded attachment's file id and key; the local→server id
 ///              swap carries peerClientId). Earlier 2026-11-21 (countWaitingPlaces(): the "cannot be read" places of a v2 group). Earlier 2026-11-21 (comment: no safety_number_changed bubble). Earlier 2026-11-20 (updatePlaceholder() fills only a placeholder of the sender of the retry response). Earlier 2026-11-13 (messageIdsSentBefore() / deleteMessagesSentBefore(): a history cleared up to a time — group protocol v2; freeDateSent(): two messages of one sender at the same millisecond). Earlier 2026-08-05 (getLatestDisplayableMessage(): latest non-system/non-deleted row per conversation, ordered by dateReceived — backfills the Chats-list preview when the server returns no 1:1 snippet and the outgoing send path never wrote one). Earlier 2026-07-15 (sealed read receipt: markOutgoingAsRead() batch-flips own sent/delivered rows to 'read' — guarded by senderSnowchatId==myId so peer-echoed foreign ids are no-ops). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-18 P0-2 Safety Number: added insertLocalSystemMessage helper)
 ///
@@ -20,6 +23,8 @@
 ///  - markAllRead(): mark all as read
 ///  - getUnreadCount(): query unread count
 ///  - updateOutgoingStatus(): update outgoing status (sending -> sent -> delivered -> read)
+///  - markOutgoingDelivered(): sent -> delivered for one outgoing message (never back from read)
+///  - markOutgoingAsRead(): a peer's read receipt for this user's messages in its room
 ///  - hasMessageFromPeer(): a sender's message with this own id is stored already (v17)
 ///  - updateMetadata(): replace a message's metadata JSON
 ///  - markRemoteDeleted(): handle remote deletion
@@ -437,20 +442,34 @@ class MessageDao extends DatabaseAccessor<SnowDatabase>
     }
   }
 
+  /// The server delivered the outgoing message [messageId] (its server id)
+  /// to the peer's device: 'sent' becomes 'delivered'. Never moves a row
+  /// back from 'read', and touches nothing else. Returns the rows updated.
+  Future<int> markOutgoingDelivered(String messageId) => (update(localMessages)
+        ..where((m) => m.id.equals(messageId) & m.outgoingStatus.equals('sent')))
+      .write(const LocalMessagesCompanion(outgoingStatus: Value('delivered')));
+
   /// Sealed read receipt (2026-07-15): flip our own outgoing rows to 'read'
   /// in one batch (blue double-check). Guarded to rows WE sent ([myId]) whose
   /// status is 'sent'/'delivered' — a peer echoing foreign or already-read
   /// ids matches zero rows, so re-receipts are idempotent and 'read' never
   /// downgrades. Returns the number of rows updated (0 is a benign no-op,
   /// e.g. a receipt racing the local→server id swap).
+  ///
+  /// [conversationId] is the room of the receipt's authenticated sender (a
+  /// 1:1 room's id is the peer's snowId): only this user's messages in that
+  /// room are flipped — a peer naming the id of a message this user sent to
+  /// someone else matches nothing.
   Future<int> markOutgoingAsRead(
     List<String> messageIds, {
     required String myId,
+    required String conversationId,
   }) async {
     if (messageIds.isEmpty) return 0;
     return (update(localMessages)
           ..where((m) =>
               m.id.isIn(messageIds) &
+              m.conversationId.equals(conversationId) &
               m.senderSnowchatId.equals(myId) &
               m.outgoingStatus.isIn(['sent', 'delivered'])))
         .write(const LocalMessagesCompanion(

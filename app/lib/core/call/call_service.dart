@@ -6,7 +6,16 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-22 (SC-10: every SDP sent — offer, answer, ICE-restart offer — carries
+/// @lastUpdated 2026-11-23 (startCall takes systemCallName — the name the iOS CallKit
+///              outgoing window shows, decided by CallNotifier from "Show caller name on
+///              calls" (the callee's name or "SnowChat Call"); the window's handle is empty, no
+///              snowId). Earlier 2026-11-22 (an SDP is never sent unsigned: when this device cannot sign its DTLS
+///              fingerprint (no signing key, no fingerprint) the call ends as failed here, with a log
+///              line, instead of sending an SDP the peer must refuse). Earlier 2026-11-22 (friend graph off the server: an incoming call's name is never the
+///              caller-supplied one — peerName (this device: contact name, then the name certificate
+///              that titles the 1:1 room) or, with none, the UI's short snowId; call_invite carries
+///              no senderDisplayName; Part 3 E: an SDP without a fingerprint signature ends the call
+///              as `failed`). Earlier 2026-11-22 (accepting a call whose microphone cannot be opened ends it at once with `call_end` — reason `permission_denied` when the permission is not granted, `failed` otherwise; before, the caller rang until its timeout and the answering side stayed "incoming". SC-10: every SDP sent — offer, answer, ICE-restart offer — carries
 ///              fpSig, its DTLS fingerprint signed for the call with the Signal-layer Ed25519 key;
 ///              a received fpSig must verify under the peer's account-bound key or the call ends
 ///              (failed). An SDP without fpSig is a build-1000 peer: accepted, the SAS stays).
@@ -116,7 +125,8 @@
 ///  - CallService._scheduleIncomingTimeout() / _cancelIncomingTimeout(): callee ring timeout
 ///  - CallService.toggleMute() / toggleSpeaker()
 ///  - CallService.handleRemote*(): dispatch CallSignaling incoming events
-///  - CallService._fingerprintSignatureField(sdp): fpSig of an SDP this device sends (SC-10)
+///  - CallService._fingerprintSignatureField(sdp): fpSig of an SDP this device sends, or null (SC-10)
+///  - CallService._endOnLocalSigningFailed(callId): end the call when this device cannot sign
 ///  - CallService._remoteFingerprintAccepted(event, sdp): check a received SDP's fpSig against the peer's bound Ed25519 key (SC-10)
 ///  - CallService._endOnFingerprintRejected(callId): end the call when a signature is refused (fail closed)
 ///  - CallService._cleanup(): memory wipe (§23.4.5) + assert verification
@@ -136,6 +146,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding, AppLifecycleState;
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../permissions/microphone_permission.dart' show microphoneGranted;
 import 'call_signaling.dart';
 import 'call_verification.dart';
 import 'callkit_manager.dart';
@@ -160,7 +171,8 @@ class CallServiceEvent {
   final String? remoteSnowchatId;
 
   /// The remote peer's displayName (nickname). Caller side sets it externally via
-  /// startCall(remoteDisplayName). Callee side extracts it from senderDisplayName in the call_invite payload.
+  /// startCall(remoteDisplayName). Callee side: the name this device knows
+  /// for the caller (peerName), never one the caller sent.
   final String? remoteDisplayName;
 
   /// End reason on `ended`: `ended` | `declined` | `busy` | `timeout` | `failed` | `permission_denied` | `offline`
@@ -186,7 +198,9 @@ class CallService {
     CallKitManager? callKit,
     Uint8List? Function()? fingerprintSigningSeed,
     Future<Uint8List?> Function(String snowId)? peerFingerprintKey,
-  })  : _signaling = signaling,
+    String? Function(String snowId)? peerName,
+  })  : _peerName = peerName,
+        _signaling = signaling,
         _turnManager = turnManager,
         _callKit = callKit,
         _fingerprintSigningSeed = fingerprintSigningSeed,
@@ -205,7 +219,8 @@ class CallService {
 
   /// SC-10 (2026-11-10 report): this device's Signal-layer Ed25519 seed
   /// (SignalProtocolService.signingKeySeed), read at each use — it signs the
-  /// DTLS fingerprint of every SDP sent (fpSig). Null (tests): unsigned.
+  /// DTLS fingerprint of every SDP sent (fpSig). Null, or no seed: no SDP
+  /// can be sent — a call that reaches its SDP ends as failed.
   final Uint8List? Function()? _fingerprintSigningSeed;
 
   /// SC-10: the peer's Signal-layer Ed25519 key, bound to its account
@@ -213,6 +228,13 @@ class CallService {
   /// every SDP received. Null, or no key for the peer: a signed SDP cannot be
   /// checked and the call ends.
   final Future<Uint8List?> Function(String snowId)? _peerFingerprintKey;
+
+  /// The name this device knows for an account (contact row, then its name
+  /// certificate — NameCertService.cachedName), read synchronously when an
+  /// invite arrives (the incoming state must be set before the signaling
+  /// event returns). Null: the UI shows the short snowId. The name a caller
+  /// puts in its invite is never used.
+  final String? Function(String snowId)? _peerName;
   // v204 (2026-05-03): outbound CallKit registration. Null on Android (uses
   // ConnectionService Self-Managed via the same plugin internally) and in
   // tests. When non-null, startCall on iOS triggers CXStartCallAction so
@@ -385,21 +407,23 @@ class CallService {
   /// Start outgoing call. Sends `call_invite` then `rtc_offer` in sequence.
   ///
   /// [alwaysRelay]: user option. ORed with the recipient's preference for the final decision (§8.3).
-  /// [remoteDisplayName]: peer name shown in the iOS CallKit window (§7.1
-  ///   includesCallsInRecents=false → not exposed to system Phone app). Caller
-  ///   already knows the callee, so passing the name is privacy-safe.
+  /// [remoteDisplayName]: peer name for the in-app call screens.
+  /// [systemCallName]: what the iOS CallKit outgoing window shows (§7.1
+  ///   includesCallsInRecents=false → not exposed to system Phone app) —
+  ///   CallNotifier passes the callee's name when the user lets system call
+  ///   screens show names, else [kAnonymousCallName].
   Future<void> startCall({
     required String recipientSnowchatId,
     required bool alwaysRelay,
-    String? senderDisplayName,
     String? remoteDisplayName,
+    String systemCallName = kAnonymousCallName,
   }) async {
     try {
       await _startCallImpl(
         recipientSnowchatId: recipientSnowchatId,
         alwaysRelay: alwaysRelay,
-        senderDisplayName: senderDisplayName,
         remoteDisplayName: remoteDisplayName,
+        systemCallName: systemCallName,
       );
     } on _CallCancelledException catch (e) {
       // 2026-05-04 fix: state race audit. _cleanup 가 setup 중간에 발화한
@@ -412,8 +436,8 @@ class CallService {
   Future<void> _startCallImpl({
     required String recipientSnowchatId,
     required bool alwaysRelay,
-    String? senderDisplayName,
     String? remoteDisplayName,
+    required String systemCallName,
   }) async {
     if (_status != CallServiceStatus.idle) {
       throw StateError('Call already in progress');
@@ -505,8 +529,7 @@ class CallService {
       try {
         await _callKit.startOutgoing(
           callId: _callId!,
-          calleeName: remoteDisplayName ?? 'SnowChat Call',
-          handle: recipientSnowchatId,
+          calleeName: systemCallName,
         );
       } catch (e) {
         // CallKit start failure shouldn't block the call — fall back to
@@ -534,9 +557,8 @@ class CallService {
     final iceServers = await _turnManager.getIceServers();
     await _createPeerConnection(iceServers: iceServers, relay: alwaysRelay);
 
-    // Send call_invite (meta only — actual SDP follows as rtc_offer).
-    // The receiver UI (IncomingCallScreen / CallKit toast) uses senderDisplayName as the
-    // peer display name. Falls back to snow ID if absent.
+    // Send call_invite (meta only — actual SDP follows as rtc_offer). It
+    // carries no name: the receiver names the caller from what it knows.
     await _signaling.sendSealedSignaling(
       recipientSnowchatId: recipientSnowchatId,
       eventType: 'call_invite',
@@ -544,8 +566,6 @@ class CallService {
         'callId': _callId,
         'alwaysRelay': alwaysRelay,
         'mediaType': 'audio',
-        if (senderDisplayName != null && senderDisplayName.isNotEmpty)
-          'senderDisplayName': senderDisplayName,
       },
     );
 
@@ -567,13 +587,18 @@ class CallService {
     // SDP from _pc.localDescription.
     final finalSdp = await _waitForIceGatherAndGetLocalSdp(fallback: offer.sdp);
 
+    final fpSig = _fingerprintSignatureField(finalSdp);
+    if (fpSig == null) {
+      await _endOnLocalSigningFailed(_callId);
+      return;
+    }
     await _signaling.sendSealedSignaling(
       recipientSnowchatId: recipientSnowchatId,
       eventType: 'rtc_offer',
       innerPayload: {
         'callId': _callId,
         'sdp': finalSdp,
-        ..._fingerprintSignatureField(finalSdp),
+        ...fpSig,
       },
     );
 
@@ -753,7 +778,21 @@ class CallService {
       }
     }
     debugPrint('[DIAG:CallService] acceptCall audioSession ${sw.elapsedMilliseconds}ms');
-    await _acquireLocalStream();
+    try {
+      await _acquireLocalStream();
+    } on _CallCancelledException {
+      rethrow;
+    } catch (e) {
+      // No microphone: the call cannot connect. End it now instead of
+      // leaving the caller ringing until its timeout (and this side in
+      // "incoming") — the caller is told why. The permission itself is asked
+      // on the first run (core/permissions/microphone_permission.dart).
+      final reason =
+          await microphoneGranted() ? 'failed' : 'permission_denied';
+      debugPrint('[CallService] acceptCall: no microphone — ending ($reason)');
+      await declineCall(reason: reason);
+      return;
+    }
     debugPrint('[DIAG:CallService] acceptCall localStream ${sw.elapsedMilliseconds}ms');
 
     final iceServers = await _turnManager.getIceServers();
@@ -852,13 +891,13 @@ class CallService {
         case 'call_invite':
           final callId = event.data['callId'] as String?;
           final wantsRelay = event.data['alwaysRelay'] as bool? ?? false;
-          final callerName = event.data['senderDisplayName'] as String?;
           if (callId == null) return;
           handleIncomingInvite(
             callId: callId,
             callerSnowchatId: event.senderSnowchatId,
             remoteWantsRelay: wantsRelay,
-            callerDisplayName: callerName,
+            // This device's name for the caller — never the invite's.
+            callerDisplayName: _peerName?.call(event.senderSnowchatId),
           );
           return;
 
@@ -950,13 +989,18 @@ class CallService {
     final finalAnswer =
         await _waitForIceGatherAndGetLocalSdp(fallback: answer.sdp);
 
+    final fpSig = _fingerprintSignatureField(finalAnswer);
+    if (fpSig == null) {
+      await _endOnLocalSigningFailed(_callId);
+      return;
+    }
     await _signaling.sendSealedSignaling(
       recipientSnowchatId: event.senderSnowchatId,
       eventType: 'rtc_answer',
       innerPayload: {
         'callId': _callId,
         'sdp': finalAnswer,
-        ..._fingerprintSignatureField(finalAnswer),
+        ...fpSig,
       },
     );
   }
@@ -993,8 +1037,10 @@ class CallService {
   }
 
   /// SC-10: the `fpSig` field for an SDP this device sends
-  /// (CallVerification.signatureField). The signature is not logged.
-  Map<String, String> _fingerprintSignatureField(String? sdp) {
+  /// (CallVerification.signatureField), or null when it cannot be signed —
+  /// the caller ends the call ([_endOnLocalSigningFailed]); an unsigned SDP
+  /// is never sent (the peer refuses it). The signature is not logged.
+  Map<String, String>? _fingerprintSignatureField(String? sdp) {
     try {
       return CallVerification.signatureField(
         callId: _callId,
@@ -1002,14 +1048,26 @@ class CallService {
         signingKeySeed: _fingerprintSigningSeed?.call(),
       );
     } catch (e) {
-      debugPrint('[CallService] fingerprint not signed: ${e.runtimeType}');
-      return const {};
+      debugPrint('[CallService] DTLS fingerprint cannot be signed '
+          '(${e is CallVerificationException ? e.message : e.runtimeType}) '
+          '— the call ends as failed');
+      return null;
     }
   }
 
+  /// This device could not sign the DTLS fingerprint of an SDP it was about
+  /// to send: the call ends as `failed` here (and the peer is told), never
+  /// with an unsigned SDP.
+  Future<void> _endOnLocalSigningFailed(String? callId) async {
+    if (callId == null || _callId != callId) return;
+    _sendCallEndUnawaited('failed');
+    await _cleanup(endedReason: 'failed');
+  }
+
   /// SC-10: whether the DTLS fingerprint of a received [sdp] may be used —
-  /// unsigned (a build-1000 peer) or verified under the peer's account-bound
-  /// key; refused otherwise (CallVerification.checkRemote).
+  /// only when its signature (mandatory) verifies under the peer's
+  /// account-bound key (CallVerification.checkRemote); an SDP without one
+  /// ends the call as `failed`.
   Future<bool> _remoteFingerprintAccepted(
     CallSignalingEvent event,
     String sdp,
@@ -1022,11 +1080,7 @@ class CallService {
       peerKey: () async =>
           keyOf == null ? null : await keyOf(event.senderSnowchatId),
     );
-    if (check == RemoteFingerprintCheck.unsigned) {
-      debugPrint('[CallService] peer SDP carries no fingerprint signature '
-          '(older app) — accepted, SAS stays');
-    }
-    return check != RemoteFingerprintCheck.refused;
+    return check == RemoteFingerprintCheck.verified;
   }
 
   /// A received SDP's fingerprint signature was refused: end the call here
@@ -1410,6 +1464,11 @@ class CallService {
     try {
       final offer = await _pc!.createOffer({'iceRestart': true});
       await _pc!.setLocalDescription(offer);
+      final fpSig = _fingerprintSignatureField(offer.sdp);
+      if (fpSig == null) {
+        await _endOnLocalSigningFailed(_callId);
+        return;
+      }
       await _signaling.sendSealedSignaling(
         recipientSnowchatId: _remoteSnowchatId!,
         eventType: 'rtc_offer',
@@ -1417,7 +1476,7 @@ class CallService {
           'callId': _callId,
           'sdp': offer.sdp,
           'restart': true,
-          ..._fingerprintSignatureField(offer.sdp),
+          ...fpSig,
         },
       );
     } catch (e) {

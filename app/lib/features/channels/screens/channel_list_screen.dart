@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-11-21 (the expanded roster leads with "New group from members" — a v2 group from this community's roster, where groups can run). Earlier 2026-11-20 (v1 groups removed: no per-community unread badge — a community has no rooms — and no mute toggle; expandChannelId opens the list with that community expanded, e.g. after joining through an invite link). Earlier 2026-08-05 (onboarding: tab is now explore-first — empty state replaced by embedded CommunityExplore (search + trending discover); "My Communities" header above the feed; "+" menu drops redundant Browse (tab is the browse) keeping Create/Join-with-code; "Channel"→"Community" rename throughout). Earlier 2026-06-25 (member-count refresh on resume; member tap → openDirectChatWith). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (a community's avatar comes from communityAvatarBytesProvider — POST
+///              /files/fetch, no file id in a URL). Earlier 2026-11-22 (no PERSONAL channel events to skip — friends are not channels; comment: a
+///              member's 1:1 is made on this device, no find-or-create). Earlier 2026-11-21 (the expanded roster leads with "New group from members" — a v2 group from this community's roster, where groups can run). Earlier 2026-11-20 (v1 groups removed: no per-community unread badge — a community has no rooms — and no mute toggle; expandChannelId opens the list with that community expanded, e.g. after joining through an invite link). Earlier 2026-08-05 (onboarding: tab is now explore-first — empty state replaced by embedded CommunityExplore (search + trending discover); "My Communities" header above the feed; "+" menu drops redundant Browse (tab is the browse) keeping Create/Join-with-code; "Channel"→"Community" rename throughout). Earlier 2026-06-25 (member-count refresh on resume; member tap → openDirectChatWith). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - ChannelListScreen: channel list + member accordion (replaces former ContactListScreen)
@@ -98,10 +100,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
   void _listenForMemberChanges() {
     final sm = ref.read(socketManagerProvider);
     _memberJoinedSub = sm.onChannelMemberJoined.listen((data) {
-      // Skip PERSONAL channel events — those are handled by FriendListScreen
-      final type = data['type'] as String?;
-      if (type == 'PERSONAL') return;
-
       // Refresh channel list + detail + pending + discover when any member joins
       ref.invalidate(myChannelsProvider);
       ref.invalidate(pendingChannelsProvider);
@@ -124,10 +122,6 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
       }
     });
     _memberLeftSub = sm.onChannelMemberLeft.listen((data) {
-      // Skip PERSONAL channel events
-      final type = data['type'] as String?;
-      if (type == 'PERSONAL') return;
-
       ref.invalidate(myChannelsProvider);
       final channelId = data['channelId'] as String?;
       if (channelId != null) {
@@ -293,8 +287,11 @@ class _ChannelListScreenState extends ConsumerState<ChannelListScreen>
                   snowId: channel.id,
                   size: SnowSizes.avatarMd,
                   displayName: channel.name ?? '',
-                  avatarUrl: channel.avatarUrl,
-                  authHeader: ref.watch(authHeaderProvider),
+                  imageBytes: channel.avatarUrl == null
+                      ? null
+                      : ref
+                          .watch(communityAvatarBytesProvider(channel.avatarUrl!))
+                          .valueOrNull,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -605,9 +602,9 @@ class _ChannelMemberList extends ConsumerWidget {
               onTap: () {
                 final myId = ref.read(currentSnowIdProvider);
                 if (snowchatId.isNotEmpty && snowchatId != myId) {
-                  // Tap a channel member → open the 1:1 directly: find an
-                  // existing direct conversation, else find-or-create on the
-                  // server → /chat/{id}. Same path the Friends list uses. The
+                  // Tap a channel member → open the 1:1 directly: an existing
+                  // direct conversation, else one made on this device →
+                  // /chat/{id}. Same path the Friends list uses. The
                   // old '/new-chat?recipientId=…' push was silently ignored by
                   // NewChatScreen, dumping the user on a generic picker (a
                   // group-create button + an unscoped all-contacts list) where

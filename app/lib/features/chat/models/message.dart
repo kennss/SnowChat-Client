@@ -3,8 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (peerClientId: on a received 1:1 message, the sender's own id for it — the
-///              receiver's duplicate guard). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10: added decryptionFailed state — for placeholder messages)
+/// @lastUpdated 2026-11-22 (peerNameCert: a received 1:1 message's name certificate — the sender's
+///              name, checked by NameCertService; never stored). Earlier 2026-11-21 (peerClientId: on a
+///              received 1:1 message, the sender's own id for it — the receiver's duplicate guard). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10: added decryptionFailed state — for placeholder messages)
 ///
 /// @functions
 ///  - MessageType: message type enum (text, file, voice, system)
@@ -20,6 +21,7 @@
 ///  - isImageFile: checks whether this is an image file message
 ///  - fileId/fileKey/fileName/fileMimeType/fileSize: file metadata accessors
 ///  - peerClientId: a received 1:1 message's own id at its sender (`cid`)
+///  - peerNameCert: a received 1:1 message's name certificate (base64, `nameCert`)
 
 enum MessageType { text, file, voice, system }
 
@@ -57,6 +59,11 @@ class Message {
   /// the sender's outbox may send it again after a lost ack.
   final String? peerClientId;
 
+  /// A received 1:1 message: the name certificate its sender carried at the
+  /// top level of the E2EE payload (`nameCert`, base64), or null. Checked
+  /// and applied by NameCertService before the message is shown; not stored.
+  final String? peerNameCert;
+
   const Message({
     required this.id,
     required this.conversationId,
@@ -74,6 +81,7 @@ class Message {
     this.isDeleted = false,
     this.senderDisplayName,
     this.peerClientId,
+    this.peerNameCert,
   });
 
   /// Whether this message has expired.
@@ -154,6 +162,7 @@ class Message {
       isDeleted: isDeleted ?? this.isDeleted,
       senderDisplayName: senderDisplayName ?? this.senderDisplayName,
       peerClientId: peerClientId,
+      peerNameCert: peerNameCert,
     );
   }
 }

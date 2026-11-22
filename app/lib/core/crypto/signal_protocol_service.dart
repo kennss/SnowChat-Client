@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (legacy TOFU removed: the identity store is required — a null store no longer switches admission off; admission results are always bound; a session without a stored remote IK is treated as not matching the bound identity (no inference / labelling for pre-B-2 sessions); no legacy IK seeding; no remoteIdentityKeySnapshot; no IdentityKeyChangedException). Earlier 2026-11-20 (a peer without an identity binding is refused at every admission point — refuseUnbound(); v1 groups removed: no Sender Key manager, SKDM tracker or group encrypt/decrypt here — group protocol v2 keeps its keys in the database; the session store no longer writes `senderKeys`. archiveSessionsOf(): archive the sessions with every device of a peer — used when the peer states that its sessions are gone). Earlier 2026-11-10 (B-2 Identity Binding v1: the TOFU IdentityPinStore is replaced by VerifiedIdentityStore + IdentityAdmission. createSession() verifies the account-signed binding of the bundle (or applies the Signal-style legacy policy) BEFORE X3DH; type-2 messages carry our binding (identityBinding) and decryptMessage() verifies the sender's binding offline BEFORE _receiveSession (header IK + envelope deviceId + epoch latch), falling back to the non-consuming identity directory only for binding-less senders. Sessions persist remoteIdentityKey; sessions (active + archived) that do not match a bound peer's IK are purged and never used (§5.6)). Earlier 2026-08-04 (Tier 2 persistent-PreKey re-arm: stop clearing isPreKeySession after the first SEND; instead retire the pending-prekey state (_clearPrekeyState) only when we DECRYPT an inbound message on the session — matching libsignal, which keeps emitting PreKey/type-2 until the peer replies. Fixes receive-first bootstrap failure (group GMK delivery + sealed first-contact): a lost single type-2 could previously leave the peer unable to establish the inbound session. Clear targets only the specific decrypting session (never blanket per-peer → glare safety) and nulls all X3DH metadata fields; type-2 _receiveSession failures now consult the archive fallback like type-1, preserving IdentityKeyChangedException propagation). Earlier 2026-08-03 (F3: resolveSealedMessageType() — recover Signal messageType from the unsealed DR ciphertext itself). Earlier 2026-05-05 (P0 fail-loud: throw when sender-named OPK missing locally)
+/// @lastUpdated 2026-11-22 (no message send log: nothing asks for a 1:1 message again — the server relays no retry requests, Part 3 E). Earlier 2026-11-21 (legacy TOFU removed: the identity store is required — a null store no longer switches admission off; admission results are always bound; a session without a stored remote IK is treated as not matching the bound identity (no inference / labelling for pre-B-2 sessions); no legacy IK seeding; no remoteIdentityKeySnapshot; no IdentityKeyChangedException). Earlier 2026-11-20 (a peer without an identity binding is refused at every admission point — refuseUnbound(); v1 groups removed: no Sender Key manager, SKDM tracker or group encrypt/decrypt here — group protocol v2 keeps its keys in the database; the session store no longer writes `senderKeys`. archiveSessionsOf(): archive the sessions with every device of a peer — used when the peer states that its sessions are gone). Earlier 2026-11-10 (B-2 Identity Binding v1: the TOFU IdentityPinStore is replaced by VerifiedIdentityStore + IdentityAdmission. createSession() verifies the account-signed binding of the bundle (or applies the Signal-style legacy policy) BEFORE X3DH; type-2 messages carry our binding (identityBinding) and decryptMessage() verifies the sender's binding offline BEFORE _receiveSession (header IK + envelope deviceId + epoch latch), falling back to the non-consuming identity directory only for binding-less senders. Sessions persist remoteIdentityKey; sessions (active + archived) that do not match a bound peer's IK are purged and never used (§5.6)). Earlier 2026-08-04 (Tier 2 persistent-PreKey re-arm: stop clearing isPreKeySession after the first SEND; instead retire the pending-prekey state (_clearPrekeyState) only when we DECRYPT an inbound message on the session — matching libsignal, which keeps emitting PreKey/type-2 until the peer replies. Fixes receive-first bootstrap failure (group GMK delivery + sealed first-contact): a lost single type-2 could previously leave the peer unable to establish the inbound session. Clear targets only the specific decrypting session (never blanket per-peer → glare safety) and nulls all X3DH metadata fields; type-2 _receiveSession failures now consult the archive fallback like type-1, preserving IdentityKeyChangedException propagation). Earlier 2026-08-03 (F3: resolveSealedMessageType() — recover Signal messageType from the unsealed DR ciphertext itself). Earlier 2026-05-05 (P0 fail-loud: throw when sender-named OPK missing locally)
 ///
 /// @functions
 ///  - SignalProtocolService: Pure Dart Signal Protocol implementation class
@@ -39,7 +39,6 @@ import 'identity_admission.dart';
 import 'identity_binding.dart';
 import 'identity_binding_exception.dart';
 import 'prekey_bundle.dart';
-import 'message_send_log.dart';
 import 'verified_identity_store.dart';
 import 'x25519.dart';
 import 'x3dh.dart';
@@ -594,10 +593,6 @@ class SignalProtocolService {
 
   /// Registration ID for this device.
   int? _registrationId;
-
-  /// Message send log for retry requests (Phase 5.2).
-  MessageSendLog _messageSendLog = MessageSendLog();
-  MessageSendLog get messageSendLog => _messageSendLog;
 
   /// Random generator for registration IDs.
   static final _rng = Random.secure();
@@ -1292,9 +1287,6 @@ class SignalProtocolService {
     }
     store['remoteIdentityKeys'] = remoteIdMap;
 
-    // Message send log for 1:1 retry (Phase 10 P0-A, 24h TTL)
-    store['messageSendLog'] = _messageSendLog.toJson();
-
     try {
       final jsonBytes = Uint8List.fromList(utf8.encode(jsonEncode(store)));
       // Encrypt session store with derived key (Zero-Knowledge: no plaintext on disk)
@@ -1518,12 +1510,6 @@ class SignalProtocolService {
         }
         debugPrint('[SignalProtocolService] Loaded ${_remoteIdentityKeys.length} '
             'remote identity keys for Sealed Sender');
-      }
-
-      // Message send log for 1:1 retry (Phase 10 P0-A, 24h TTL)
-      final sendLogMap = store['messageSendLog'] as Map<String, dynamic>?;
-      if (sendLogMap != null) {
-        _messageSendLog = MessageSendLog.fromJson(sendLogMap);
       }
 
       final totalSessions =

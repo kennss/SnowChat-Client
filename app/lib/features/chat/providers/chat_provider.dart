@@ -3,7 +3,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (1:1 sends go through the 1:1 outbox (DirectOutbox): text, file and voice are
+/// @lastUpdated 2026-11-23 (no conversation id in an exception message — logRef). Earlier 2026-11-22 (a sent 1:1 message showed twice — drift moves the row to the server id when the outbox settles, and the merge kept the local "sending" copy forever; now only messages drift never held are kept from memory). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (no socket status handling here: the sent / delivered marks of a 1:1
+///              message are written to its row by the 1:1 outbox, which knows the wire id the server's
+///              status events name — the chat's own handler matched no row and the delivered mark never
+///              showed). Earlier 2026-11-22 (a 1:1 is cleared / deleted on the server with POST
+///              /conversations/clear | /conversations/delete { peerSnowchatId } — no peer id in the URL
+///              path, contract §12.1). Earlier 2026-11-21 (1:1 sends go through the 1:1 outbox (DirectOutbox): text, file and voice are
 ///              stored and shown at once — also offline, where text used to be dropped — and the
 ///              outbox uploads / sends / retries them; the 10 s "failed" timer is gone;
 ///              retryFailedMessage() for the failed bubble). Earlier 2026-11-21 (typing: no typer name in ChatState — it was the raw snow-id the server
@@ -57,6 +62,7 @@ import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
+import '../../../core/network/api_endpoints.dart';
 import '../../../core/crypto/verified_identity_store.dart' show VouchSource;
 import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/crypto/file_encryptor.dart';
@@ -72,6 +78,7 @@ import 'conversation_list_provider.dart';
 import 'gv2_chat_actions.dart';
 import 'mark_read_helper.dart';
 import 'message_repository.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 /// Provides messages for a specific conversation.
 final chatProvider = StateNotifierProvider.family<
@@ -97,7 +104,6 @@ final chatProvider = StateNotifierProvider.family<
     conversationId: conversationId,
     messageDao: messageDao,
     attachmentDao: ref.read(attachmentDaoProvider),
-    socketManager: socketManager,
     apiClient: apiClient,
     fileService: ref.read(fileServiceProvider),
     e2eeHandler: ref.read(encryptedMessageHandlerProvider),
@@ -237,10 +243,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
   final DirectOutbox? _outbox;
 
   StreamSubscription<List<LocalMessage>>? _messageWatchSubscription;
+
+  /// Every message id drift has held for this chat — written by this notifier
+  /// or delivered by the watch. A local "sending" message is shown from memory
+  /// only until drift has held it.
+  final Set<String> _seenInDrift = {};
   StreamSubscription<Map<String, dynamic>>? _typingSubscription;
 
   final Map<String, Timer> _deletionTimers = {};
-  final Map<String, MessageStatus> _pendingStatuses = {};
   Timer? _typingDebounceTimer;
   DateTime? _lastTypingSent;
 
@@ -284,10 +294,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
         super(const ChatState()) {
     // Wire up repository callbacks for immediate UI updates
     _repo.onIncomingMessage = _addIncomingMessage;
-    _repo.onMessageStatusChanged = _handleStatusChange;
 
     _loadMessages();
-    _repo.startSocketListeners();
     _subscribeToMessages();
     _listenToTyping();
     _repo.resumePendingDownloads();
@@ -326,7 +334,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
     _deletionTimers.clear();
     _markReadHelper.dispose();
-    _repo.dispose();
     super.dispose();
   }
 
@@ -342,13 +349,19 @@ class ChatNotifier extends StateNotifier<ChatState> {
         final driftMessages =
             dbMessages.map(MessageRepository.convertToMessage).toList();
 
-        // Preserve in-flight "sending" messages not yet in drift
-        final sendingMessages = state.messages
-            .where((m) => m.status == MessageStatus.sending)
-            .toList();
+        // Keep an in-flight "sending" message only until drift has it. Once
+        // drift has held its id, drift is its record: when the 1:1 outbox
+        // settles a send, the row moves from the local id to the server id
+        // (MessageDao.updateOutgoingStatus) — the local id leaves drift and
+        // must not come back as a second, forever-"sending" bubble.
         final driftIds = driftMessages.map((m) => m.id).toSet();
-        final mergedSending =
-            sendingMessages.where((m) => !driftIds.contains(m.id)).toList();
+        _seenInDrift.addAll(driftIds);
+        final mergedSending = state.messages
+            .where((m) =>
+                m.status == MessageStatus.sending &&
+                !driftIds.contains(m.id) &&
+                !_seenInDrift.contains(m.id))
+            .toList();
 
         final merged = [...driftMessages, ...mergedSending];
         merged.sort((a, b) => a.timestamp.compareTo(b.timestamp));
@@ -357,7 +370,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
         // listens to this state while the chat screen is open.
       },
       onError: (e) {
-        debugPrint('[ChatNotifier:$conversationId] Drift watch error: $e');
+        debugPrint('[ChatNotifier:${logRef(conversationId)}] Drift watch error: $e');
       },
     );
   }
@@ -415,72 +428,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final newMessages = List<Message>.from(state.messages)..add(message);
     state = state.copyWith(messages: newMessages);
     debugPrint(
-        '[ChatNotifier:$conversationId] addIncomingMessage OK: ${message.id} (total: ${newMessages.length})');
+        '[ChatNotifier:${logRef(conversationId)}] addIncomingMessage OK: ${message.id} (total: ${newMessages.length})');
     _scheduleDeletionIfNeeded(message);
-  }
-
-  void _handleStatusChange(String messageId, MessageStatus newStatus,
-      {String? serverMessageId}) async {
-    if (!mounted) return;
-    // The status of a v2 group message comes from this device's outbox
-    // (Gv2Runtime.sendEvents, written to the row), never from the socket.
-    if (isGv2) return;
-
-    if (newStatus == MessageStatus.sent && serverMessageId != null) {
-      // Update drift FIRST: attachment messageId + message ID (atomic).
-      // This ensures attachmentWatchProvider(CUID) returns results
-      // BEFORE the widget rebuilds with the new message ID.
-      await _repo.updateOutgoingStatusWithAttachment(
-          messageId, 'sent', serverMessageId);
-      // Rekey expiration timer (localId → serverId)
-      _repo.expiringManager?.rekey(messageId, serverMessageId);
-      if (!mounted) return;
-      // Then update in-memory state (drift watch will also fire)
-      state = state.copyWith(
-        messages: state.messages.map((m) {
-          if (m.id == messageId) {
-            return Message(
-              id: serverMessageId,
-              conversationId: m.conversationId,
-              senderSnowchatId: m.senderSnowchatId,
-              plaintext: m.plaintext,
-              timestamp: m.timestamp,
-              type: m.type,
-              status: MessageStatus.sent,
-              metadata: m.metadata,
-              expiresAt: m.expiresAt,
-              ttlSeconds: m.ttlSeconds,
-              replyToId: m.replyToId,
-              replyToPreview: m.replyToPreview,
-              replyToSenderId: m.replyToSenderId,
-              isDeleted: m.isDeleted,
-              senderDisplayName: m.senderDisplayName,
-            );
-          }
-          return m;
-        }).toList(),
-      );
-      // Apply any pending statuses that arrived during async sent processing
-      if (_pendingStatuses.containsKey(serverMessageId)) {
-        final pending = _pendingStatuses.remove(serverMessageId)!;
-        // Update drift DB — watch will rebuild UI
-        _repo.updateOutgoingStatusInDrift(serverMessageId, pending.name);
-      }
-    } else {
-      final hasMessage = state.messages.any((m) => m.id == messageId);
-      if (!hasMessage) {
-        // Race condition: delivered/read arrive before sent handler replaces
-        // localId → serverId. Queue the highest priority status.
-        final existing = _pendingStatuses[messageId];
-        if (existing == null || newStatus.index > existing.index) {
-          _pendingStatuses[messageId] = newStatus;
-        }
-        return;
-      }
-      // Update drift DB FIRST — drift watch will rebuild UI with correct status.
-      // Do NOT update in-memory state here; the watch subscription handles it.
-      _repo.updateOutgoingStatusInDrift(messageId, newStatus.name);
-    }
   }
 
   void _updateMessageStatus(String messageId, MessageStatus status) {
@@ -500,7 +449,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final replyTo = state.replyToMessage;
     clearReplyTo();
 
-    debugPrint('[DIAG:Send] sendMessage entry: convId=$conversationId '
+    debugPrint('[DIAG:Send] sendMessage entry: convId=${logRef(conversationId)} '
         'gv2=$isGv2');
 
     // Group protocol v2: queued on this device (it leaves when the group can
@@ -531,7 +480,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
     if (recipientId == null) {
       debugPrint('[DIAG:Send] ABORT: not a 1:1 room or a v2 group '
-          '(convId=$conversationId)');
+          '(convId=${logRef(conversationId)})');
       return;
     }
     _userWroteToPeer();
@@ -586,6 +535,9 @@ class ChatNotifier extends StateNotifier<ChatState> {
       snippetText: text,
       sentTimestamp: now.millisecondsSinceEpoch,
     );
+    // Drift holds it from here on, even if the watch never shows this id
+    // before the outbox moves the row to the server id.
+    _seenInDrift.add(messageId);
 
     // Schedule expiration deletion
     if (ttl != null) {
@@ -970,6 +922,9 @@ class ChatNotifier extends StateNotifier<ChatState> {
         snippetText: text,
         sentTimestamp: now.millisecondsSinceEpoch,
       );
+      // Drift holds it from here on, even if the watch never shows this id
+      // before the outbox moves the row to the server id.
+      _seenInDrift.add(messageId);
       // The attachment row shows the kept copy now (the bubbles watch it);
       // the outbox adds the server file id once uploaded.
       await _repo.attachmentDao?.insertAttachment(LocalAttachmentsCompanion(
@@ -1324,7 +1279,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
 
     try {
-      await apiClient.delete('/conversations/$peer/messages');
+      await apiClient.post(
+        ApiEndpoints.conversationClear,
+        data: {'peerSnowchatId': peer},
+      );
       debugPrint('[Chat] clearChat: server clear success');
     } catch (e) {
       debugPrint('[Chat] clearChat: server clear failed ($e) — '
@@ -1350,7 +1308,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// all local attachment files. The peer is unaffected — there is no
   /// "leave conversation" concept on the server for 1:1 chats. If the peer
   /// messages us again, the conversation is naturally re-created by
-  /// MessageQueue's _processPrivate1to1.findOrCreate path.
+  /// MessageQueue's findOrCreate on the sealed receive path.
   Future<void> deleteChat() async {
     _cancelAllTimers();
 
@@ -1374,7 +1332,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
     if (apiClient != null) {
       final serverId = peer;
       try {
-        await apiClient.delete('/conversations/$serverId');
+        await apiClient.post(
+          ApiEndpoints.conversationDelete,
+          data: {'peerSnowchatId': serverId},
+        );
         debugPrint('[Chat] deleteChat: server DELETE success');
         if (_secureStorage != null) {
           await removeDeletedConvId(_secureStorage, serverId);
@@ -1448,7 +1409,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
   Gv2ChatActions _requireGroup(String action) {
     final gv2 = _gv2;
     if (gv2 == null) {
-      throw StateError('$action: $conversationId is not a group');
+      throw StateError('$action: ${logRef(conversationId)} is not a group');
     }
     return gv2;
   }

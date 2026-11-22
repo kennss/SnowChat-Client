@@ -3,7 +3,15 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (a failed 1:1 message offers "tap to retry" — MessageBubble.onRetry →
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (Block at the 5,000-account cap says so and keeps the chat). Earlier 2026-11-22 (friend graph off the server — design §5.7: a 1:1 chat shows where the
+///              peer stands in the friend list on this device (ContactStatusBanner: not in your
+///              friends — Add / Block; request sent; wants to be your friend — Accept / Decline;
+///              account unavailable; blocked — Unblock); the 1:1 header name follows the name order
+///              (resolvePeerName — the list, the chat's name, a certificate, the short snowId), also
+///              for the call; "Add Friend" in the + menu says when the peer is already a friend or
+///              asked already, and the group picker leaves out accounts already in the list or
+///              blocked; no presence line (online / last seen); a call takes no own-name in its
+///              invite). Earlier 2026-11-21 (a failed 1:1 message offers "tap to retry" — MessageBubble.onRetry →
 ///              ChatNotifier.retryFailedMessage). Earlier 2026-11-21 (header subtitle shows "typing..." without a name — it showed the
 ///              peer's snow-id). Earlier 2026-11-21 (X1: blocking goes through BlockList; P5.6: the input follows what the group takes — Gv2GroupView.canWrite — so an account invited again after a removal writes nothing until it accepts; one leave dialog with the info screen; a leave or end runs once and takes the chat from the list also when the screen closed meanwhile; a v2 group is never shown as "no longer a member" — with its "Remove chat" — while this device cannot read its groups or the read failed: it says groups are not running yet and locks the input; Leave only when it can be made). Earlier 2026-11-21 (the identity banner is the rejection one only (no severity flag)). Earlier 2026-11-21 (the chat closes when the list reports the peer deleted it — the sealed control, not a socket event). Earlier 2026-11-20 (v1 groups removed: a group chat is a v2 group (its id), no community rooms — no room title, no channel owner / kick listeners; a peer's 1:1 deletion closes the chat with its own wording; group members for friend requests come from this device only). Earlier same day (a v2 group shows when the server's keys are not the ones this app trusts. Leaving the chat no longer touches a disposed Chats list — a reset or restart took it down with the app. Group protocol v2: a v2 group's chat shows where the group stands —
 ///              waiting for confirmation, changes held back, update needed, frozen, no longer
@@ -21,6 +29,7 @@
 ///  - _scrollToMessage(): scroll to the original message on reply-quote tap
 ///  - _confirmDeleteChat(): "Delete chat" confirmation dialog (local-only deletion)
 ///  - _confirmBlockContact(): "Block contact" confirmation dialog (server block + local deletion)
+///  - ContactStatusBanner (contact_status_banner.dart): the 1:1 peer's place in the friend list
 ///  - _handleSendAsset(): Wallet V2 Phase F — enter 1:1 chat transfer screen (TransferRequestScreen)
 
 import 'dart:async';
@@ -30,8 +39,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../app/app_config.dart';
+import '../../../core/contacts/contact_store.dart' show ContactLabel;
+import '../../../core/diagnostics/log_ref.dart';
 import '../../../core/group_v2/gv2_codec.dart';
-import '../../channels/providers/channel_provider.dart' show friendActionsProvider;
 import '../../../core/network/link_preview_service.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
@@ -43,6 +53,7 @@ import '../providers/chat_provider.dart';
 import '../providers/conversation_list_provider.dart';
 import '../providers/mark_read_helper.dart';
 import '../utils/sender_name_resolver.dart';
+import '../widgets/contact_status_banner.dart';
 import '../widgets/disappearing_timer_selector.dart';
 import '../widgets/identity_change_banner.dart';
 import '../widgets/message_bubble.dart';
@@ -336,18 +347,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final isDirect = conversation?.type == ConversationType.direct;
 
     if (isDirect) {
-      // 1:1 chat: send friend request to the other participant
+      // 1:1 chat: add the other participant (a request — or the acceptance
+      // of theirs), unless it is in the list already.
       final otherSnowId = conversation?.otherParticipant(_myId) ?? '';
       if (otherSnowId.isEmpty) return;
-      final result =
-          await ref.read(friendActionsProvider).addFriend(otherSnowId);
+      final entry = await ref.read(contactStoreProvider).entry(otherSnowId);
+      final String message;
+      if (entry?.label == ContactLabel.friend) {
+        message = 'Already your friend.';
+      } else if (entry?.label == ContactLabel.requestSent) {
+        message = 'Request sent already.';
+      } else {
+        final accepting = entry?.label == ContactLabel.requestReceived &&
+            entry!.isVisible;
+        try {
+          final title = conversation?.title;
+          await ref.read(contactProvider.notifier).request(otherSnowId,
+              displayName: title == otherSnowId ? null : title);
+          message = accepting ? 'You are now friends.' : 'Request sent.';
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Could not send the friend request.'),
+              behavior: SnackBarBehavior.floating,
+            ));
+          }
+          return;
+        }
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(result == 'pending'
-              ? 'Friend request sent!'
-              : result == 'already_friend'
-                  ? 'Already friends!'
-                  : 'Could not send friend request.'),
+          content: Text(message),
           behavior: SnackBarBehavior.floating,
         ));
       }
@@ -360,14 +390,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// Show a multi-select dialog of group members for friend requests.
   Future<void> _showGroupFriendPicker() async {
     // The members of a group are the ones this device holds (the server
-    // holds no list of them).
+    // holds no list of them). Accounts already in this user's list, and
+    // blocked ones, are not offered.
+    final inMyList = {
+      for (final c in ref.read(contactProvider))
+        if (c.inMyList) c.snowChatId,
+    };
+    final blocked = ref.read(blockedAccountsProvider).valueOrNull ?? const {};
     final members = [
       for (final m in ref.read(groupDetailProvider(widget.conversationId)).members)
-        if (m.snowchatId != _myId)
+        if (m.snowchatId != _myId &&
+            !inMyList.contains(m.snowchatId) &&
+            !blocked.contains(m.snowchatId))
           <String, dynamic>{'snowchatId': m.snowchatId, 'displayName': m.displayName},
     ];
 
-    if (members.isEmpty || !mounted) return;
+    if (!mounted) return;
+    if (members.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Everyone here is in your friends already.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
 
     final selected = <String>{};
 
@@ -437,13 +482,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (selected.isNotEmpty && mounted) {
       var sentOk = 0;
       for (final snowId in selected) {
-        final result =
-            await ref.read(friendActionsProvider).addFriend(snowId);
-        if (result == 'pending' || result == 'already_friend') sentOk++;
+        try {
+          await ref.read(contactProvider.notifier).request(snowId);
+          sentOk++;
+        } catch (_) {
+          // Not an account: skipped.
+        }
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('$sentOk friend request(s) sent!'),
+          content: Text(sentOk == 1
+              ? '1 friend request sent.'
+              : '$sentOk friend requests sent.'),
           behavior: SnackBarBehavior.floating,
         ));
       }
@@ -953,11 +1003,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               Navigator.of(ctx).pop();
               Future.microtask(() async {
                 if (!mounted) return;
+                final contacts = ref.read(contactProvider.notifier);
+                // At the cap nothing is blocked — and the chat is kept.
+                if (!await contacts.canBlock(snowchatId)) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text(blockLimitText)),
+                  );
+                  return;
+                }
                 // 1. Block: on this device at once (what the account sends
                 //    is dropped from now on), the server next (BlockList).
-                unawaited(
-                  ref.read(contactProvider.notifier).blockContact(snowchatId),
-                );
+                unawaited(contacts.blockContact(snowchatId).catchError((Object e) {
+                  debugPrint('[Chat] block not done: ${e.runtimeType}');
+                }));
                 // 2. Local chat cleanup
                 await ref
                     .read(chatProvider(widget.conversationId).notifier)
@@ -997,7 +1056,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   ///  1. Any locally loaded message from the same sender — its
   ///     senderDisplayName is the most accurate label and works for
   ///     both 1:1 and group chats without needing the contact directory.
-  ///  2. The contact directory (1:1 friends, server-synced).
+  ///  2. The friend list on this device.
   ///  3. Null — the bubble falls back to a shortened snow ID.
   ///
   /// Cheap O(N) scan over the messages list — only called for messages
@@ -1039,7 +1098,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatProvider(widget.conversationId));
-    debugPrint('[ChatScreen:build] conversationId=${widget.conversationId} messages=${chatState.messages.length}');
+    debugPrint('[ChatScreen:build] conversation=${logRef(widget.conversationId)} '
+        'messages=${chatState.messages.length}');
     // Keep this room's translation cache alive for as long as the screen is
     // open — independent of how many bubbles watch it. Without a screen-level
     // subscription an empty room had no listener, the autoDispose cache was
@@ -1080,16 +1140,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     String title;
     if (conversation != null) {
-      title = isGroup
-          ? (conversation.title ?? 'Group')
-          : (conversation.displayName(_myId) ?? 'Chat');
+      if (isGroup) {
+        title = conversation.title ?? 'Group';
+      } else {
+        // The name order of a 1:1 peer (design §5.6) — never the server.
+        final peer = conversation.otherParticipant(_myId);
+        title = peer == null
+            ? conversation.displayName(_myId)
+            : resolvePeerName(ref, peer, conversationTitle: conversation.title);
+      }
     } else if (isGv2) {
       title = gv2View?.title ?? 'Group';
     } else {
-      // New conversation not yet in list — resolve recipient name from provider
+      // New conversation not yet in list — the recipient's name from this
+      // device.
       final recipientId = ref.watch(chatProvider(widget.conversationId).notifier).recipientId;
       title = (recipientId != null && recipientId.isNotEmpty)
-          ? '${recipientId.substring(0, recipientId.length.clamp(0, 10))}...'
+          ? resolvePeerName(ref, recipientId)
           : 'Chat';
     }
     // A group whose name isn't known on this device yet would show a bare
@@ -1101,13 +1168,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     final otherSnowId = conversation?.otherParticipant(_myId) ?? '';
     final ttlLabel = _ttlDisplayLabel(chatState.disappearingTTL);
+    final isDirect = conversation?.type == ConversationType.direct;
 
-    // Presence (only for 1:1 chats)
-    final presenceService = ref.watch(presenceServiceProvider);
-    final isDirect =
-        conversation?.type == ConversationType.direct;
-    final isOnline =
-        isDirect ? presenceService.isOnline(otherSnowId) : false;
 
     // Owner check: needed to show "Delete Group" menu item (owner only)
     final groupId = widget.conversationId;
@@ -1130,8 +1192,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         : false;
     // Ending a group needs the owner of a group that can be changed.
     final canDeleteGroup = gv2View?.canEnd ?? false;
-    final lastSeenText =
-        isDirect && !isOnline ? presenceService.formatLastSeen(otherSnowId) : null;
 
     // _markAsRead() is already called in initState via addPostFrameCallback
     // Do NOT call it here in build() — causes Riverpod state modification during build
@@ -1186,24 +1246,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           fontWeight: FontWeight.w400,
                         ),
                       )
-                    else if (isOnline)
-                      const Text(
-                        'Online',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: SnowColors.primary,
-                          fontWeight: FontWeight.w400,
-                        ),
-                      )
-                    else if (lastSeenText != null)
-                      Text(
-                        lastSeenText,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: SnowColors.textTertiary,
-                          fontWeight: FontWeight.w400,
-                        ),
-                      )
                     else if (ttlLabel != null)
                       Text(
                         'Messages disappear after $ttlLabel',
@@ -1242,26 +1284,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 // sides — if either is true, both ends are forced through TURN.
                 final alwaysRelay =
                     ref.read(settingsProvider).callAlwaysRelay;
-                // Own displayName — attached to the call_invite payload so the
-                // recipient UI / system toast shows it as the caller name.
-                final myDisplayName =
-                    ref.read(currentDisplayNameProvider);
-                // Peer displayName resolution priority (Galaxy nickname-not-shown fix):
-                //   1. contactProvider — server /users synced directory (most trusted)
-                //   2. conversation.title (= title) — _resolveSenderDisplayName
-                //      only updated in-memory and didn't persist to drift → regressed
-                //      to null after restart. iPhone calls happened to have title
-                //      populated so it was OK, but Android fell back to a truncated
-                //      snow ID after restart/reload.
-                //   3. truncated snow ID (title) — last-ditch fallback
-                final contacts = ref.read(contactProvider);
-                final recipient = contacts
-                    .where((c) => c.snowChatId == otherSnowId)
-                    .firstOrNull;
-                final recipientName =
-                    (recipient?.displayName?.isNotEmpty ?? false)
-                        ? recipient!.displayName
-                        : title;
+                // The peer's name is the header's: the name order of a 1:1
+                // peer (resolvePeerName — the friend list, the chat's name, a
+                // certificate, the short snowId).
+                final recipientName = title;
                 try {
                   // /call navigation is handled by app.dart's ref.listen<CallState>
                   // immediately on state=outgoing transition. Here we fire-and-
@@ -1273,7 +1299,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     recipientSnowchatId: otherSnowId,
                     alwaysRelay: alwaysRelay,
                     remoteDisplayName: recipientName,
-                    senderDisplayName: myDisplayName,
                   ).catchError((Object e) {
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -1467,6 +1492,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         children: [
           // Group protocol v2: why this group cannot be used as usual.
           ?_gv2StandingBanner(gv2Standing),
+          // 1:1: where the peer stands in this user's friend list (§5.7).
+          if (isDirect && otherSnowId.isNotEmpty)
+            ContactStatusBanner(
+              peerSnowId: otherSnowId,
+              // The chat's own name (never the snowId standing in for one).
+              peerName: conversation?.title == otherSnowId
+                  ? null
+                  : conversation?.title,
+              onBlock: () => _confirmBlockContact(otherSnowId),
+            ),
           // P0-2: Safety Number change banner (1:1 only).
           // Visible iff the IdentityVerifications row reports a recent
           // mismatch and the user hasn't dismissed it for this screen.

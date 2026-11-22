@@ -3,13 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (snowIdStorageKey made public: the database key manager's readability probe). Earlier 2026-11-20 (matchesRecoveryPhrase(): local proof of the recovery phrase, for resetting a forgotten PIN). Earlier 2026-11-20 (group protocol v2: purpose-bound uses of the account key — deriveGroupMemberKey(), signGroupMemberCert(), signAccountDeleted(), deriveGroupBackupKey()). Earlier 2026-11-10 (B-2 Identity Binding v1: account-key signing is purpose-bound — signAuthChallenge() with a strict nonce regex and signIdentityBinding(); the generic sign()/signString() are private (signing-oracle fix §3.1). currentIdentityBinding() mints/reuses the local binding with a monotonic epoch, re-signed whenever the X25519 IK, the Signal Ed25519 key or the deviceId changes). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (createIdentity() refuses to overwrite an existing identity — IdentityExistsException; deriveContactBackupKey(): the key of the sealed contact backup). Earlier 2026-11-21 (snowIdStorageKey made public: the database key manager's readability probe). Earlier 2026-11-20 (matchesRecoveryPhrase(): local proof of the recovery phrase, for resetting a forgotten PIN). Earlier 2026-11-20 (group protocol v2: purpose-bound uses of the account key — deriveGroupMemberKey(), signGroupMemberCert(), signAccountDeleted(), deriveGroupBackupKey()). Earlier 2026-11-10 (B-2 Identity Binding v1: account-key signing is purpose-bound — signAuthChallenge() with a strict nonce regex and signIdentityBinding(); the generic sign()/signString() are private (signing-oracle fix §3.1). currentIdentityBinding() mints/reuses the local binding with a monotonic epoch, re-signed whenever the X25519 IK, the Signal Ed25519 key or the deviceId changes). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - IdentityManager: User ID keypair and Signal key management class
 ///  - IdentityManager.setSignalService(): Wire up SignalProtocolService
 ///  - IdentityManager.hasIdentity(): Check whether an identity exists on this device
-///  - IdentityManager.createIdentity(): Create a new identity, return mnemonic
+///  - IdentityManager.createIdentity(): Create a new identity, return mnemonic (refuses when one exists)
+///  - IdentityExistsException: what createIdentity() throws on a device that has an identity
 ///  - IdentityManager.restoreIdentity(): Restore identity from mnemonic
 ///  - IdentityManager.getSnowChatId(): Get the current SnowChat ID
 ///  - IdentityManager.getMnemonic(): Get the stored mnemonic
@@ -26,6 +27,7 @@
 ///  - IdentityManager._sign(): Private Ed25519 detached signing with the account key
 ///  - IdentityManager.deriveGroupMemberKey(): This account's member signing key in one v2 group
 ///  - IdentityManager.deriveGroupBackupKey(): The key sealing this account's backup of its v2 group keys
+///  - IdentityManager.deriveContactBackupKey(): The key sealing this account's contact backup
 ///  - IdentityManager.signGroupMemberCert(): Account key vouches for that member key
 ///  - IdentityManager.signAccountDeleted(): Account deletion proof for this account
 ///  - IdentityManager.generateSignalIdentityKey(): Generate and store Signal Curve25519 keypair
@@ -39,12 +41,22 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:pinenacl/ed25519.dart';
 
+import '../contacts/contact_backup.dart' as contact_backup;
 import '../group_v2/gv2_keys.dart';
 import '../storage/secure_storage.dart';
 import 'account_deletion_proof.dart';
 import 'identity_binding.dart';
 import 'key_derivation.dart';
 import 'signal_protocol_service.dart';
+
+/// Thrown by IdentityManager.createIdentity() on a device that holds an
+/// identity: its account seed is never overwritten.
+class IdentityExistsException implements Exception {
+  const IdentityExistsException();
+
+  @override
+  String toString() => 'IdentityExistsException: an identity exists on this device';
+}
 
 /// Manages the user's Ed25519 identity keypair.
 /// Private keys are stored in flutter_secure_storage (Keychain / Android Keystore).
@@ -113,8 +125,13 @@ class IdentityManager {
     return id != null && id.isNotEmpty;
   }
 
-  /// Create a new identity. Returns the mnemonic for backup.
+  /// Create a new identity. Returns the mnemonic for backup. Throws
+  /// [IdentityExistsException] when this device holds an identity already:
+  /// the account seed is never overwritten (a user sent back to sign-up
+  /// would lose the account). Removing an identity is deleteIdentity(), an
+  /// explicit step of its own.
   Future<List<String>> createIdentity() async {
+    if (await hasIdentity()) throw const IdentityExistsException();
     final mnemonic = KeyDerivation.generateMnemonic();
     final keyPair = await KeyDerivation.deriveKeyPair(mnemonic);
 
@@ -286,6 +303,18 @@ class IdentityManager {
       throw StateError('No identity key available');
     }
     return gv2DeriveBackupKey(accountSeed);
+  }
+
+  /// The key that seals this account's contact backup (design 2026-11-22
+  /// §5.10, contract §12.5): HKDF of the account seed with its own salt, so
+  /// the same recovery phrase opens it on a new install. Only the derived
+  /// key leaves this class.
+  Future<Uint8List> deriveContactBackupKey() async {
+    final accountSeed = await getPrivateKey();
+    if (accountSeed == null) {
+      throw StateError('No identity key available');
+    }
+    return contact_backup.deriveContactBackupKey(accountSeed);
   }
 
   /// Group protocol v2: the member certificate — the account key vouching

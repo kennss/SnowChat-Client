@@ -4,13 +4,19 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (mergeRestored takes in at most `limit` new blocks — the list's cap).
+///              Earlier 2026-11-22 (this device's list is the source of truth: no adoption of the
+///              server's list — adoptServerBlocks is gone; setBlocked keeps a nickname;
+///              markAllSynced() after the server's tags were replaced; mergeRestored() for the
+///              contact backup). Earlier 2026-11-21
 ///
 /// @functions
 ///  - BlockListDao.allRows(): every row
 ///  - BlockListDao.setBlocked(): this device blocked or unblocked an account (not synced yet)
 ///  - BlockListDao.markSynced(): the server took what a row says (an unblock row goes)
-///  - BlockListDao.adoptServerBlocks(): blocks the server knows of and this device does not
+///  - BlockListDao.markAllSynced(): the server's tags were replaced by the blocked rows
+///    (blocked rows synced, unblock rows gone)
+///  - BlockListDao.mergeRestored(): blocks from the contact backup this device has no row of
 library;
 
 import 'package:drift/drift.dart';
@@ -28,16 +34,74 @@ class BlockListDao extends DatabaseAccessor<SnowDatabase>
   Future<List<BlockedAccountRow>> allRows() => select(blockedAccounts).get();
 
   /// This device blocked ([blocked]) or unblocked [snowId]: recorded, for
-  /// the server to take next.
-  Future<void> setBlocked(String snowId, bool blocked, int nowMs) =>
+  /// the server to take next. [nickname] is kept with a block (null keeps
+  /// none).
+  Future<void> setBlocked(
+    String snowId,
+    bool blocked,
+    int nowMs, {
+    String? nickname,
+  }) =>
       into(blockedAccounts).insertOnConflictUpdate(
         BlockedAccountsCompanion.insert(
           snowId: snowId,
           blocked: blocked,
           synced: const Value(false),
           updatedAtMs: nowMs,
+          nickname: Value(nickname),
         ),
       );
+
+  /// The server's tags now hold exactly the rows that were blocked at
+  /// [snapshotMs] or before: those are marked synced and unblock rows of
+  /// that time go. A row changed after [snapshotMs] is not touched (it is
+  /// sent by itself).
+  Future<void> markAllSynced(int snapshotMs) => transaction(() async {
+        for (final row in await select(blockedAccounts).get()) {
+          if (row.updatedAtMs > snapshotMs) continue;
+          if (row.blocked) {
+            await (update(blockedAccounts)
+                  ..where((b) => b.snowId.equals(row.snowId)))
+                .write(const BlockedAccountsCompanion(synced: Value(true)));
+          } else {
+            await (delete(blockedAccounts)
+                  ..where((b) => b.snowId.equals(row.snowId)))
+                .go();
+          }
+        }
+      });
+
+  /// Blocks of the contact backup ([blocks]: snowId → nickname) that this
+  /// device has no row of: taken in as blocked, not synced (the server's
+  /// tags are replaced after a restore). A row this device has — a block or
+  /// an unblock it made — is never overridden. Returns the accounts taken in.
+  /// At most [limit] are taken in (the list's cap).
+  Future<List<String>> mergeRestored(
+    Map<String, String?> blocks,
+    int nowMs, {
+    required int limit,
+  }) =>
+      transaction(() async {
+        final held = {
+          for (final r in await select(blockedAccounts).get()) r.snowId,
+        };
+        final taken = <String>[];
+        for (final e in blocks.entries) {
+          if (taken.length >= limit) break;
+          if (held.contains(e.key)) continue;
+          await into(blockedAccounts).insert(
+            BlockedAccountsCompanion.insert(
+              snowId: e.key,
+              blocked: true,
+              synced: const Value(false),
+              updatedAtMs: nowMs,
+              nickname: Value(e.value),
+            ),
+          );
+          taken.add(e.key);
+        }
+        return taken;
+      });
 
   /// The server took what the row of [snowId] said at [updatedAtMs]: a
   /// block is marked synced, an unblock row goes. A row changed meanwhile
@@ -57,30 +121,5 @@ class BlockListDao extends DatabaseAccessor<SnowDatabase>
                 ..where((b) => b.snowId.equals(snowId)))
               .go();
         }
-      });
-
-  /// Blocks the server holds that this device has no row of (a new install,
-  /// or a block made before this list existed): taken in as synced. A row
-  /// this device has — blocked or an unblock not yet taken — is never
-  /// overridden. Returns the accounts taken in.
-  Future<List<String>> adoptServerBlocks(List<String> snowIds, int nowMs) =>
-      transaction(() async {
-        final held = {
-          for (final r in await select(blockedAccounts).get()) r.snowId,
-        };
-        final taken = <String>[];
-        for (final id in snowIds.toSet()) {
-          if (held.contains(id)) continue;
-          await into(blockedAccounts).insert(
-            BlockedAccountsCompanion.insert(
-              snowId: id,
-              blocked: true,
-              synced: const Value(true),
-              updatedAtMs: nowMs,
-            ),
-          );
-          taken.add(id);
-        }
-        return taken;
       });
 }

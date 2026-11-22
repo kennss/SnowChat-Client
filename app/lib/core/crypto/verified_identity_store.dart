@@ -3,7 +3,7 @@
 ///              identity we have verified. Bindings are mandatory, so a record
 ///              is either BOUND (account key, device, epoch, IK, Ed, binding
 ///              signature — written by IdentityAdmission.admitBound) or holds
-///              only a pinned ACCOUNT key (pinFromInviteLink /
+///              only a pinned ACCOUNT key (pinAccountKey /
 ///              rememberAccountKey). No record carries keys that were not
 ///              proven by a binding.
 ///
@@ -25,7 +25,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-21 (rememberNickRequest / settleNickRequests: a friend request sent by
+/// @lastUpdated 2026-11-22 (friend graph off the server: the nickname lookup names the account,
+///              so a request is vouched for when it is made — rememberNickRequest /
+///              settleNickRequests are gone; VouchSource.restored — an account of this user's list
+///              restored from the sealed contact backup; pinFromInviteLink → pinAccountKey (a link,
+///              a QR, or the backup pin the account key)). Earlier 2026-11-21 (rememberNickRequest / settleNickRequests: a friend request sent by
 ///              nickname vouches once the accepted friend list shows that nickname — that path
 ///              never names the account at send time). Earlier 2026-11-21 (vouch() / isVouched(): accounts this user chose by an action of their own — the "known" accounts of the group pickers). Earlier same day (legacy TOFU removed: no legacy pin migration and readiness gate, no IK seeding, no pending key changes or acceptPendingChange, no edLegacySourced, no isPeerVerified / verifiedLookup, no legacyKeyChanged / legacyKeyChangeBlocked / interceptionSuspected events; rememberAccountKey only fills a missing record). Earlier 2026-11-20 (comment: no GMK signatures). Earlier 2026-11-10 (review fixes: M1 ambiguous device pins migrate no Ed, migrated Eds flagged legacy-sourced, IK seeding carries the deviceId; L6 a keychain-locked deferral is retried on a later read)
 ///
@@ -38,12 +42,10 @@
 ///  - VerifiedIdentityStore.put(): persist a record
 ///  - VerifiedIdentityStore.raiseLatch(): monotonic latch update
 ///  - VerifiedIdentityStore.remove(): drop the record (latch is kept)
-///  - VerifiedIdentityStore.pinFromInviteLink(): pin an account key from a link/QR
+///  - VerifiedIdentityStore.pinAccountKey(): pin an account key from a link / QR / the contact backup
 ///  - VerifiedIdentityStore.rememberAccountKey(): store a derive-checked account key
 ///  - VerifiedIdentityStore.vouch(): this user vouched for an account (kept)
 ///  - VerifiedIdentityStore.isVouched(): whether this user ever did
-///  - VerifiedIdentityStore.rememberNickRequest() / settleNickRequests(): a request sent by
-///    nickname is vouched for when the accepted friend list shows that nickname
 ///  - VouchSource: the actions of the user that vouch
 ///  - VerifiedIdentityStore.emit()/events: identity event broadcast
 library;
@@ -217,6 +219,12 @@ enum VouchSource {
 
   /// Marked its safety number as verified.
   safetyNumber,
+
+  /// Restored into this user's list from the account's own sealed contact
+  /// backup — it was chosen on an earlier install (the backup is
+  /// authenticated with the recovery phrase's key: the server cannot add to
+  /// it).
+  restored,
 }
 
 class VerifiedIdentityStore {
@@ -225,15 +233,6 @@ class VerifiedIdentityStore {
   static const String recordPrefix = 'verified_identity_v1:';
   static const String latchPrefix = 'identity_bound_latch:';
   static const String vouchedPrefix = 'identity_vouched:';
-
-  /// A friend request sent by nickname, waiting to be accepted
-  /// (`identity_nick_request:<nick, lower case>` → sent-at ms). That path
-  /// never tells this device which account the nickname is (the server
-  /// redeems an opaque token), so the vouch waits for the acceptance.
-  static const String nickRequestPrefix = 'identity_nick_request:';
-
-  /// A nickname request not accepted within this long is forgotten.
-  static const Duration nickRequestTtl = Duration(days: 30);
 
   final Map<String, VerifiedIdentityRecord?> _recordCache = {};
   final Map<String, int?> _latchCache = {};
@@ -312,11 +311,12 @@ class VerifiedIdentityStore {
     _recordCache[snowId] = null;
   }
 
-  /// Pin [accountPublicKey] for [snowId] from an invite link / QR the peer
-  /// generated (new clients only). Latches the peer so a server can never
-  /// downgrade this first contact to unbound keys. Returns false when the key
-  /// does not derive [snowId] or conflicts with an already pinned key.
-  Future<bool> pinFromInviteLink(
+  /// Pin [accountPublicKey] for [snowId] — from an invite link / QR the peer
+  /// generated, or from this account's own sealed contact backup. Latches
+  /// the peer so a server can never downgrade this contact to unbound keys.
+  /// Returns false when the key does not derive [snowId] or conflicts with an
+  /// already pinned key.
+  Future<bool> pinAccountKey(
       String snowId, Uint8List accountPublicKey) async {
     if (!IdentityBindingV1.accountKeyMatchesSnowId(accountPublicKey, snowId)) {
       return false;
@@ -379,62 +379,6 @@ class VerifiedIdentityStore {
     final value = await _storage.read('$vouchedPrefix$snowId') != null;
     _vouchedCache[snowId] = value;
     return value;
-  }
-
-  /// This user sent a friend request to the account named [nick] (by its
-  /// nickname). Vouched for when that request is accepted —
-  /// [settleNickRequests].
-  Future<void> rememberNickRequest(String nick, {DateTime? now}) async {
-    final key = _nickKey(nick);
-    if (key == null) return;
-    await _storage.write(
-        key, '${(now ?? DateTime.now()).millisecondsSinceEpoch}');
-  }
-
-  /// Vouch (VouchSource.friendRequest) for each of [friends] — this user's
-  /// ACCEPTED friends, never a wider contact list — whose nickname matches a
-  /// remembered nickname request, and forget that request. Requests older
-  /// than [nickRequestTtl] are forgotten unmatched. Returns how many were
-  /// vouched for.
-  ///
-  /// The trust is the same as accepting a request (friendAccepted): the
-  /// server says which account answers to the name, and the user chose the
-  /// name on this device. Only the accepted friend list counts, so a
-  /// community member or a past chat partner with that name is not vouched.
-  Future<int> settleNickRequests(
-    Iterable<({String snowId, String? nick})> friends, {
-    DateTime? now,
-  }) async {
-    final all = await _storage.readAll();
-    final pending = <String, int>{};
-    for (final e in all.entries) {
-      if (!e.key.startsWith(nickRequestPrefix)) continue;
-      pending[e.key] = int.tryParse(e.value) ?? 0;
-    }
-    if (pending.isEmpty) return 0;
-    final nowMs = (now ?? DateTime.now()).millisecondsSinceEpoch;
-    for (final e in pending.entries.toList()) {
-      if (nowMs - e.value > nickRequestTtl.inMilliseconds) {
-        await _storage.delete(e.key);
-        pending.remove(e.key);
-      }
-    }
-    var vouched = 0;
-    for (final friend in friends) {
-      final key = _nickKey(friend.nick);
-      if (key == null || !pending.containsKey(key)) continue;
-      await vouch(friend.snowId, VouchSource.friendRequest);
-      await _storage.delete(key);
-      pending.remove(key);
-      vouched++;
-    }
-    return vouched;
-  }
-
-  static String? _nickKey(String? nick) {
-    final n = nick?.trim().toLowerCase();
-    if (n == null || n.isEmpty) return null;
-    return '$nickRequestPrefix$n';
   }
 
   /// Drop in-memory caches (tests / account wipe).

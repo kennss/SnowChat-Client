@@ -1,9 +1,10 @@
 /// @file        direct_community_screens_test.dart
 /// @description 1:1 chats, friends and communities through the app, on two
 ///              devices at once against the dev server (design
-///              2026-11-20-community-roster-v1-removal §3.3): who may start a
-///              1:1 (strangers may not; community co-members and friends
-///              may; a kicked member no longer may), a community joined by
+///              2026-11-20-community-roster-v1-removal §3.3, and the friend
+///              list on the device of 2026-11-22-friend-graph-off-server): a
+///              friend request and its acceptance as sealed contact notices
+///              (each side's own list), a community joined by
 ///              application and approval and opened expanded on the
 ///              Communities tab, a 1:1 started from the roster and talked in
 ///              both ways — each message stored in its SENDER's room, the
@@ -12,11 +13,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21 (acceptFriendRequest takes the request). Earlier 2026-11-21 (texts carry the run's tag)
+/// @lastUpdated 2026-11-22 (friend graph off the server: no find-or-create gate — anyone may start
+///              a 1:1; friends are each device's list (ContactNotifier request / accept, the labels of
+///              ContactEntry)). Earlier 2026-11-21 (acceptFriendRequest takes the request). Earlier 2026-11-21 (texts carry the run's tag)
 ///
 /// @functions
 ///  - main(): one test; what it does is chosen by S2_ROLE (host | guest)
-///  - _findOrCreate(): the server's answer to "may this account start a 1:1"
 ///  - _roomsHolding(): the conversations whose messages hold a text
 ///
 /// Notes:
@@ -29,24 +31,24 @@
 ///    Start the guest first.
 ///  - The host owns the community; the guest applies, talks, is kicked,
 ///    asks to be friends. The host deletes the 1:1 at the end.
-///  - The two accounts must not be friends when it starts: the host ends an
-///    existing friendship first (and the guest waits for that).
+///  - The two accounts must not be friends when it starts: each removes the
+///    other from its own list first.
 ///  - It prints steps only: no keys, no message content beyond its own
 ///    fixed texts.
 library;
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:snowchat/app/providers.dart';
-import 'package:snowchat/core/network/api_client.dart';
+import 'package:snowchat/core/contacts/contact_store.dart';
 import 'package:snowchat/core/network/api_endpoints.dart';
 import 'package:snowchat/core/storage/database.dart';
 import 'package:snowchat/features/channels/providers/channel_provider.dart';
 import 'package:snowchat/features/chat/providers/chat_provider.dart';
 import 'package:snowchat/features/chat/screens/chat_screen.dart';
 import 'package:snowchat/features/chat/widgets/conversation_tile.dart';
+import 'package:snowchat/features/contacts/contact_provider.dart';
 import 'package:snowchat/shared/widgets/snow_avatar.dart';
 
 import 'support/screen_driver.dart';
@@ -60,20 +62,6 @@ void _say(String line) {
   // The test's own progress lines (read from the device log).
   // ignore: avoid_print
   print('S2UI[$_role] $line');
-}
-
-/// The server's answer to POST /conversations/find-or-create for [peer]:
-/// its status code (200 allowed, 403 refused).
-Future<int> _findOrCreate(ApiClient api, String peer) async {
-  try {
-    final r = await api.post<dynamic>(
-      ApiEndpoints.conversationFindOrCreate,
-      data: {'recipientSnowchatId': peer},
-    );
-    return r.statusCode ?? 0;
-  } on DioException catch (e) {
-    return e.response?.statusCode ?? -1;
-  }
 }
 
 /// The ids of the conversations whose stored messages hold [text].
@@ -108,18 +96,13 @@ void main() {
     final db = d.db;
     final api = container.read(apiClientProvider);
     final channels = container.read(channelActionsProvider);
-    final friends = container.read(friendActionsProvider);
+    final contacts = container.read(contactStoreProvider);
     final until = d.until;
     final see = d.see;
     final tap = d.tap;
 
-    Future<bool> friendsWithPeer() async {
-      container.invalidate(personalChannelProvider);
-      final list = await container.read(friendListProvider.future);
-      return list.any((f) => f.snowchatId == _peer);
-    }
-
-    Future<int> mayStart() => _findOrCreate(api, _peer);
+    /// The label of the peer in this device's list (null: not in it).
+    Future<ContactLabel?> peerLabel() async => (await contacts.entry(_peer))?.label;
 
     /// The 1:1 room with the peer holds [text], written by [sender], and no
     /// other conversation does.
@@ -139,15 +122,10 @@ void main() {
         );
 
     if (_role == 'host') {
-      // ---- A clean start: not friends ----
-      if (await friendsWithPeer()) {
-        final channelId = container.read(personalChannelIdProvider);
-        final list = await container.read(friendListProvider.future);
-        final peer = list.firstWhere((f) => f.snowchatId == _peer);
-        expect(channelId, isNotNull);
-        expect(await friends.removeFriend(channelId!, peer.userId), isTrue);
-        _say('ended the old friendship');
-      }
+      // ---- A clean start: the guest is not in this device's list ----
+      await contacts.remove(_peer);
+      await contacts.forget(_peer);
+      _say('the guest is not in the list');
 
       // ---- A community the guest has to apply to ----
       final created = await channels.createChannel(
@@ -192,18 +170,11 @@ void main() {
       _say('guest kicked');
 
       // ---- Friends ----
-      final request = await until('the guest\'s friend request', () async {
-        container.invalidate(friendRequestsProvider);
-        final pending = await container.read(friendRequestsProvider.future);
-        for (final r in pending) {
-          if (r.creatorSnowchatId == _peer) return r;
-        }
-        return null;
-      });
-      expect(await friends.acceptFriendRequest(request), isTrue);
+      await until('the guest\'s friend request', () async =>
+          await peerLabel() == ContactLabel.requestReceived ? true : null);
+      await container.read(contactProvider.notifier).accept(_peer);
+      expect(await peerLabel(), ContactLabel.friend);
       _say('friend request accepted');
-      await until('friends may start a 1:1 (host side)',
-          () async => await mayStart() == 200 ? true : null);
 
       // ---- The guest says so in the 1:1; then the host deletes it ----
       await storedInPeerRoom(friendsNow, _peer);
@@ -218,10 +189,10 @@ void main() {
     }
 
     // ================= guest =================
-    await until('not friends with the host',
-        () async => await friendsWithPeer() ? null : true);
-    expect(await mayStart(), 403, reason: 'strangers may not start a 1:1');
-    _say('a stranger may not start a 1:1');
+    // A clean start: the host is not in this device's list.
+    await contacts.remove(_peer);
+    await contacts.forget(_peer);
+    _say('the host is not in the list');
 
     // ---- Apply to the host's community; approved ----
     final channelId = await until('the community is found', () async {
@@ -239,7 +210,6 @@ void main() {
       final mine = await container.read(myChannelsProvider.future);
       return mine.any((c) => c.id == channelId) ? true : null;
     });
-    expect(await mayStart(), 200, reason: 'co-members may start a 1:1');
 
     // ---- The Communities tab, opened with it expanded ----
     d.router().go('/contacts?expand=${Uri.encodeQueryComponent(channelId)}');
@@ -271,14 +241,14 @@ void main() {
       final mine = await container.read(myChannelsProvider.future);
       return mine.any((c) => c.id == channelId) ? null : true;
     });
-    expect(await mayStart(), 403, reason: 'a kicked member is no co-member');
-    _say('a kicked member may not start a 1:1');
+    _say('kicked from the community');
 
-    // ---- Friends ----
-    final status = await friends.addFriend(_peer);
-    _say('friend request: $status');
-    await until('friends may start a 1:1 (guest side)',
-        () async => await mayStart() == 200 ? true : null);
+    // ---- Friends: a request, then the host's acceptance ----
+    await container.read(contactProvider.notifier).request(_peer);
+    expect(await peerLabel(), ContactLabel.requestSent);
+    _say('friend request sent');
+    await until('the host accepted (guest side)', () async =>
+        await peerLabel() == ContactLabel.friend ? true : null);
     // Still in the 1:1 opened from the roster (the kick closed nothing).
     await until(
       'the 1:1 with the host is still open',

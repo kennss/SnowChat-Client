@@ -1,34 +1,32 @@
 /// @file        channel_provider.dart
-/// @description Channel state-management Provider — communities (member lists) + Phase 9.1 PERSONAL channel (friends).
+/// @description Channel state-management Provider — communities (member lists). Friends are not
+///              channels any more: the friend list lives on this device (features/contacts).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-11-21 (a friend request sent by nickname is remembered and vouched for once the
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (friend graph off the server: the PERSONAL channel is gone —
+///              personalChannelProvider, friendListProvider, friendRequestsProvider, FriendActions and
+///              settleNickFriendRequests are removed (the friend list is ContactStore, the actions are
+///              contactProvider's); a community ban no longer touches the block list). Earlier
+///              2026-11-21 (a friend request sent by nickname is remembered and vouched for once the
 ///              accepted friend list shows that nickname — settleNickFriendRequests, run by
 ///              friendListProvider and the group picker). Earlier 2026-11-21 (X1: after a ban the device block list syncs (a friend ban blocks on the server)). Earlier 2026-11-21 (a friend request sent or accepted vouches for the account (VerifiedIdentityStore.vouch); acceptFriendRequest takes the request). Earlier 2026-11-20 (v1 groups removed: no mute toggle — a community has no rooms to notify about). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
 ///  - myChannelsProvider: my channel list (COMMUNITY only)
 ///  - pendingChannelsProvider: pending-join channel list
-///  - personalChannelProvider: PERSONAL channel info (friends + requests)
-///  - friendListProvider: friend list (accepted members)
-///  - friendRequestsProvider: received friend requests (pending)
 ///  - channelDiscoverProvider: public channel discovery
 ///  - channelSearchProvider: channel search
 ///  - inviteInfoProvider: invite-code lookup
 ///  - ChannelActions: join/leave/apply/invite/admin actions
-///  - FriendActions: add/accept/remove friend actions
 ///  - channelCategories: category constants
 
-import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
-import '../../../core/crypto/verified_identity_store.dart'
-    show VerifiedIdentityStore, VouchSource;
+import '../../../core/diagnostics/log_ref.dart';
 import '../../../core/network/api_endpoints.dart';
 import '../models/channel.dart';
 
@@ -36,8 +34,7 @@ import '../models/channel.dart';
 // My Channels (for the Channels tab)
 // ---------------------------------------------------------------------------
 
-/// My joined channels with member details — for Channels tab.
-/// Filters out PERSONAL channels (Phase 9.1) — those are shown in Friends tab.
+/// My joined channels with member details — for Channels tab (communities).
 final myChannelsProvider = FutureProvider<List<ChannelInfo>>((ref) async {
   try {
     final apiClient = ref.read(apiClientProvider);
@@ -54,7 +51,6 @@ final myChannelsProvider = FutureProvider<List<ChannelInfo>>((ref) async {
 });
 
 /// Pending channel applications — COMMUNITY channels awaiting approval.
-/// PERSONAL pending channels are shown as friend requests in Friends tab.
 final pendingChannelsProvider =
     FutureProvider<List<PendingChannel>>((ref) async {
   try {
@@ -68,76 +64,6 @@ final pendingChannelsProvider =
         .toList();
   } catch (e) {
     debugPrint('[ChannelProvider] Pending channels failed: $e');
-    return [];
-  }
-});
-
-// ---------------------------------------------------------------------------
-// PERSONAL Channel — Friends (Phase 9.1)
-// ---------------------------------------------------------------------------
-
-/// Raw PERSONAL channel response from server.
-/// Returns { channelId, friends: [...], pendingRequests: [...] }.
-final personalChannelProvider =
-    FutureProvider.autoDispose<Map<String, dynamic>?>((ref) async {
-  try {
-    final apiClient = ref.read(apiClientProvider);
-    final res = await apiClient.get(ApiEndpoints.personalChannel);
-    return Map<String, dynamic>.from(res.data as Map);
-  } catch (e) {
-    debugPrint('[ChannelProvider] Personal channel failed: $e');
-    return null;
-  }
-});
-
-/// My PERSONAL channel ID.
-final personalChannelIdProvider = Provider.autoDispose<String?>((ref) {
-  final data = ref.watch(personalChannelProvider).valueOrNull;
-  return data?['channelId'] as String?;
-});
-
-/// Friend list (accepted members of my PERSONAL channel).
-final friendListProvider = FutureProvider.autoDispose<List<FriendInfo>>((ref) async {
-  final data = await ref.watch(personalChannelProvider.future);
-  if (data == null) return [];
-  final friends = (data['friends'] as List?) ?? [];
-  final list = friends
-      .map((f) => FriendInfo.fromJson(Map<String, dynamic>.from(f as Map)))
-      .toList();
-  // A request this user sent by nickname vouches once it shows here,
-  // accepted (VerifiedIdentityStore.settleNickRequests).
-  await settleNickFriendRequests(ref.read(verifiedIdentityStoreProvider), list);
-  return list;
-});
-
-/// Vouch for the accepted [friends] this user had asked by nickname. The
-/// friend list's displayName is the nickname (unique on the server).
-/// Best-effort: a storage failure leaves the requests for the next time.
-Future<void> settleNickFriendRequests(
-    VerifiedIdentityStore store, List<FriendInfo> friends) async {
-  try {
-    await store.settleNickRequests(
-        friends.map((f) => (snowId: f.snowchatId, nick: f.displayName)));
-  } catch (e) {
-    debugPrint('[FriendActions] settle nickname requests failed: $e');
-  }
-}
-
-/// Incoming friend requests — PERSONAL channels where I have pending membership.
-/// These come from GET /channels/my → pendingChannels where type == PERSONAL.
-final friendRequestsProvider =
-    FutureProvider.autoDispose<List<PendingChannel>>((ref) async {
-  try {
-    final apiClient = ref.read(apiClientProvider);
-    final res = await apiClient.get('/channels/my');
-    final pending = (res.data['pendingChannels'] as List?) ?? [];
-    return pending
-        .map((c) =>
-            PendingChannel.fromJson(Map<String, dynamic>.from(c as Map)))
-        .where((c) => c.isPersonal)
-        .toList();
-  } catch (e) {
-    debugPrint('[ChannelProvider] Friend requests failed: $e');
     return [];
   }
 });
@@ -328,9 +254,6 @@ class ChannelActions {
     try {
       final apiClient = _ref.read(apiClientProvider);
       await apiClient.post(ApiEndpoints.channelBan(channelId, userId));
-      // Banning from the PERSONAL channel (a friend) blocks the account on
-      // the server: this device's block list takes it in now (X1).
-      unawaited(_ref.read(blockListProvider).sync());
       return true;
     } catch (e) {
       debugPrint('[ChannelActions] Ban failed: $e');
@@ -380,10 +303,10 @@ class ChannelActions {
   /// Transfer channel ownership to another member (owner only).
   Future<bool> transferOwnership(String channelId, String newOwnerId) async {
     try {
-      debugPrint('[ChannelActions] POST transfer-ownership: channelId=$channelId newOwnerId=$newOwnerId');
+      debugPrint('[ChannelActions] POST transfer-ownership: '
+          'channel=${logRef(channelId)} newOwner=${logRef(newOwnerId)}');
       final apiClient = _ref.read(apiClientProvider);
       final url = ApiEndpoints.channelTransferOwnership(channelId);
-      debugPrint('[ChannelActions] URL: $url');
       await apiClient.post(url, data: {'newOwnerId': newOwnerId});
       debugPrint('[ChannelActions] TransferOwnership success');
       return true;
@@ -432,117 +355,6 @@ class ChannelActions {
 
 final channelActionsProvider = Provider<ChannelActions>((ref) {
   return ChannelActions(ref);
-});
-
-// ---------------------------------------------------------------------------
-// Friend Actions (Phase 9.1)
-// ---------------------------------------------------------------------------
-
-class FriendActions {
-  final Ref _ref;
-  FriendActions(this._ref);
-
-  /// Send a friend request by snowchatId. The user chose this account: it is
-  /// vouched for (VouchSource.friendRequest) once the server took the
-  /// request.
-  /// Returns status string: 'pending', 'already_friend', 'already_pending', or 'error'.
-  Future<String> addFriend(String snowchatId) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      final res = await apiClient.post(
-        ApiEndpoints.personalChannelAdd,
-        data: {'snowchatId': snowchatId},
-      );
-      await _ref
-          .read(verifiedIdentityStoreProvider)
-          .vouch(snowchatId, VouchSource.friendRequest);
-      return (res.data['status'] as String?) ?? 'pending';
-    } catch (e) {
-      debugPrint('[FriendActions] Add friend failed: $e');
-      return 'error';
-    }
-  }
-
-  /// Nick first-contact lookup (design B). Exact-match; returns whether a user
-  /// holds the nick + a one-time OPAQUE inviteToken (NOT the target's id/avatar)
-  /// + whether the nick was recently reassigned (impersonation hint). Rate-
-  /// limited server-side → [rateLimited] distinguishes a 429 from a genuine miss.
-  Future<({bool exists, String? inviteToken, bool recentlyReassigned, bool rateLimited})>
-      lookupByNick(String nick) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      final res = await apiClient
-          .post(ApiEndpoints.lookupByNick, data: {'nick': nick.trim()});
-      final d = Map<String, dynamic>.from(res.data as Map);
-      return (
-        exists: d['exists'] == true,
-        inviteToken: d['inviteToken'] as String?,
-        recentlyReassigned: d['recentlyReassigned'] == true,
-        rateLimited: false,
-      );
-    } catch (e) {
-      final limited = e is DioException && e.response?.statusCode == 429;
-      if (!limited) debugPrint('[FriendActions] lookupByNick failed: $e');
-      return (exists: false, inviteToken: null, recentlyReassigned: false, rateLimited: limited);
-    }
-  }
-
-  /// Send a friend request by redeeming a nick-invite opaque token. Returns the
-  /// same status strings as [addFriend], plus 'expired' when the token is gone.
-  ///
-  /// [nick] is the nickname the token was looked up for: the request is
-  /// remembered under it and vouched for once the accepted friend list shows
-  /// it (this path never names the account — settleNickFriendRequests).
-  Future<String> addFriendByToken(String inviteToken, {required String nick}) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      final res = await apiClient.post(
-        ApiEndpoints.personalChannelAddByToken,
-        data: {'inviteToken': inviteToken},
-      );
-      await _ref.read(verifiedIdentityStoreProvider).rememberNickRequest(nick);
-      return (res.data['status'] as String?) ?? 'pending';
-    } catch (e) {
-      if (e is DioException && e.response?.statusCode == 410) return 'expired';
-      debugPrint('[FriendActions] addFriendByToken failed: $e');
-      return 'error';
-    }
-  }
-
-  /// Accept a friend request (bidirectional). The user chose its sender: it
-  /// is vouched for (VouchSource.friendAccepted).
-  Future<bool> acceptFriendRequest(PendingChannel request) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      await apiClient.post(ApiEndpoints.personalChannelAccept(request.id));
-      final requester = request.creatorSnowchatId;
-      if (requester != null) {
-        await _ref
-            .read(verifiedIdentityStoreProvider)
-            .vouch(requester, VouchSource.friendAccepted);
-      }
-      return true;
-    } catch (e) {
-      debugPrint('[FriendActions] Accept friend failed: $e');
-      return false;
-    }
-  }
-
-  /// Remove a friend (kick from PERSONAL channel — server handles bidirectional).
-  Future<bool> removeFriend(String channelId, String userId) async {
-    try {
-      final apiClient = _ref.read(apiClientProvider);
-      await apiClient.post(ApiEndpoints.channelKick(channelId, userId));
-      return true;
-    } catch (e) {
-      debugPrint('[FriendActions] Remove friend failed: $e');
-      return false;
-    }
-  }
-}
-
-final friendActionsProvider = Provider<FriendActions>((ref) {
-  return FriendActions(ref);
 });
 
 /// Available channel categories.

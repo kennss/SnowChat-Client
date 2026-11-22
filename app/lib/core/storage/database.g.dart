@@ -2690,445 +2690,6 @@ class ConversationsCompanion extends UpdateCompanion<Conversation> {
   }
 }
 
-class $ContactsTable extends Contacts with TableInfo<$ContactsTable, Contact> {
-  @override
-  final GeneratedDatabase attachedDatabase;
-  final String? _alias;
-  $ContactsTable(this.attachedDatabase, [this._alias]);
-  static const VerificationMeta _snowChatIdMeta = const VerificationMeta(
-    'snowChatId',
-  );
-  @override
-  late final GeneratedColumn<String> snowChatId = GeneratedColumn<String>(
-    'snow_chat_id',
-    aliasedName,
-    false,
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _displayNameMeta = const VerificationMeta(
-    'displayName',
-  );
-  @override
-  late final GeneratedColumn<String> displayName = GeneratedColumn<String>(
-    'display_name',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _publicKeyHexMeta = const VerificationMeta(
-    'publicKeyHex',
-  );
-  @override
-  late final GeneratedColumn<String> publicKeyHex = GeneratedColumn<String>(
-    'public_key_hex',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _isBlockedMeta = const VerificationMeta(
-    'isBlocked',
-  );
-  @override
-  late final GeneratedColumn<bool> isBlocked = GeneratedColumn<bool>(
-    'is_blocked',
-    aliasedName,
-    false,
-    type: DriftSqlType.bool,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'CHECK ("is_blocked" IN (0, 1))',
-    ),
-    defaultValue: const Constant(false),
-  );
-  static const VerificationMeta _isTrustedMeta = const VerificationMeta(
-    'isTrusted',
-  );
-  @override
-  late final GeneratedColumn<bool> isTrusted = GeneratedColumn<bool>(
-    'is_trusted',
-    aliasedName,
-    false,
-    type: DriftSqlType.bool,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'CHECK ("is_trusted" IN (0, 1))',
-    ),
-    defaultValue: const Constant(false),
-  );
-  static const VerificationMeta _addedAtMeta = const VerificationMeta(
-    'addedAt',
-  );
-  @override
-  late final GeneratedColumn<DateTime> addedAt = GeneratedColumn<DateTime>(
-    'added_at',
-    aliasedName,
-    false,
-    type: DriftSqlType.dateTime,
-    requiredDuringInsert: true,
-  );
-  @override
-  List<GeneratedColumn> get $columns => [
-    snowChatId,
-    displayName,
-    publicKeyHex,
-    isBlocked,
-    isTrusted,
-    addedAt,
-  ];
-  @override
-  String get aliasedName => _alias ?? actualTableName;
-  @override
-  String get actualTableName => $name;
-  static const String $name = 'contacts';
-  @override
-  VerificationContext validateIntegrity(
-    Insertable<Contact> instance, {
-    bool isInserting = false,
-  }) {
-    final context = VerificationContext();
-    final data = instance.toColumns(true);
-    if (data.containsKey('snow_chat_id')) {
-      context.handle(
-        _snowChatIdMeta,
-        snowChatId.isAcceptableOrUnknown(
-          data['snow_chat_id']!,
-          _snowChatIdMeta,
-        ),
-      );
-    } else if (isInserting) {
-      context.missing(_snowChatIdMeta);
-    }
-    if (data.containsKey('display_name')) {
-      context.handle(
-        _displayNameMeta,
-        displayName.isAcceptableOrUnknown(
-          data['display_name']!,
-          _displayNameMeta,
-        ),
-      );
-    }
-    if (data.containsKey('public_key_hex')) {
-      context.handle(
-        _publicKeyHexMeta,
-        publicKeyHex.isAcceptableOrUnknown(
-          data['public_key_hex']!,
-          _publicKeyHexMeta,
-        ),
-      );
-    }
-    if (data.containsKey('is_blocked')) {
-      context.handle(
-        _isBlockedMeta,
-        isBlocked.isAcceptableOrUnknown(data['is_blocked']!, _isBlockedMeta),
-      );
-    }
-    if (data.containsKey('is_trusted')) {
-      context.handle(
-        _isTrustedMeta,
-        isTrusted.isAcceptableOrUnknown(data['is_trusted']!, _isTrustedMeta),
-      );
-    }
-    if (data.containsKey('added_at')) {
-      context.handle(
-        _addedAtMeta,
-        addedAt.isAcceptableOrUnknown(data['added_at']!, _addedAtMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_addedAtMeta);
-    }
-    return context;
-  }
-
-  @override
-  Set<GeneratedColumn> get $primaryKey => {snowChatId};
-  @override
-  Contact map(Map<String, dynamic> data, {String? tablePrefix}) {
-    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return Contact(
-      snowChatId: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}snow_chat_id'],
-      )!,
-      displayName: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}display_name'],
-      ),
-      publicKeyHex: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}public_key_hex'],
-      ),
-      isBlocked: attachedDatabase.typeMapping.read(
-        DriftSqlType.bool,
-        data['${effectivePrefix}is_blocked'],
-      )!,
-      isTrusted: attachedDatabase.typeMapping.read(
-        DriftSqlType.bool,
-        data['${effectivePrefix}is_trusted'],
-      )!,
-      addedAt: attachedDatabase.typeMapping.read(
-        DriftSqlType.dateTime,
-        data['${effectivePrefix}added_at'],
-      )!,
-    );
-  }
-
-  @override
-  $ContactsTable createAlias(String alias) {
-    return $ContactsTable(attachedDatabase, alias);
-  }
-}
-
-class Contact extends DataClass implements Insertable<Contact> {
-  final String snowChatId;
-  final String? displayName;
-  final String? publicKeyHex;
-  final bool isBlocked;
-  final bool isTrusted;
-  final DateTime addedAt;
-  const Contact({
-    required this.snowChatId,
-    this.displayName,
-    this.publicKeyHex,
-    required this.isBlocked,
-    required this.isTrusted,
-    required this.addedAt,
-  });
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    map['snow_chat_id'] = Variable<String>(snowChatId);
-    if (!nullToAbsent || displayName != null) {
-      map['display_name'] = Variable<String>(displayName);
-    }
-    if (!nullToAbsent || publicKeyHex != null) {
-      map['public_key_hex'] = Variable<String>(publicKeyHex);
-    }
-    map['is_blocked'] = Variable<bool>(isBlocked);
-    map['is_trusted'] = Variable<bool>(isTrusted);
-    map['added_at'] = Variable<DateTime>(addedAt);
-    return map;
-  }
-
-  ContactsCompanion toCompanion(bool nullToAbsent) {
-    return ContactsCompanion(
-      snowChatId: Value(snowChatId),
-      displayName: displayName == null && nullToAbsent
-          ? const Value.absent()
-          : Value(displayName),
-      publicKeyHex: publicKeyHex == null && nullToAbsent
-          ? const Value.absent()
-          : Value(publicKeyHex),
-      isBlocked: Value(isBlocked),
-      isTrusted: Value(isTrusted),
-      addedAt: Value(addedAt),
-    );
-  }
-
-  factory Contact.fromJson(
-    Map<String, dynamic> json, {
-    ValueSerializer? serializer,
-  }) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return Contact(
-      snowChatId: serializer.fromJson<String>(json['snowChatId']),
-      displayName: serializer.fromJson<String?>(json['displayName']),
-      publicKeyHex: serializer.fromJson<String?>(json['publicKeyHex']),
-      isBlocked: serializer.fromJson<bool>(json['isBlocked']),
-      isTrusted: serializer.fromJson<bool>(json['isTrusted']),
-      addedAt: serializer.fromJson<DateTime>(json['addedAt']),
-    );
-  }
-  @override
-  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return <String, dynamic>{
-      'snowChatId': serializer.toJson<String>(snowChatId),
-      'displayName': serializer.toJson<String?>(displayName),
-      'publicKeyHex': serializer.toJson<String?>(publicKeyHex),
-      'isBlocked': serializer.toJson<bool>(isBlocked),
-      'isTrusted': serializer.toJson<bool>(isTrusted),
-      'addedAt': serializer.toJson<DateTime>(addedAt),
-    };
-  }
-
-  Contact copyWith({
-    String? snowChatId,
-    Value<String?> displayName = const Value.absent(),
-    Value<String?> publicKeyHex = const Value.absent(),
-    bool? isBlocked,
-    bool? isTrusted,
-    DateTime? addedAt,
-  }) => Contact(
-    snowChatId: snowChatId ?? this.snowChatId,
-    displayName: displayName.present ? displayName.value : this.displayName,
-    publicKeyHex: publicKeyHex.present ? publicKeyHex.value : this.publicKeyHex,
-    isBlocked: isBlocked ?? this.isBlocked,
-    isTrusted: isTrusted ?? this.isTrusted,
-    addedAt: addedAt ?? this.addedAt,
-  );
-  Contact copyWithCompanion(ContactsCompanion data) {
-    return Contact(
-      snowChatId: data.snowChatId.present
-          ? data.snowChatId.value
-          : this.snowChatId,
-      displayName: data.displayName.present
-          ? data.displayName.value
-          : this.displayName,
-      publicKeyHex: data.publicKeyHex.present
-          ? data.publicKeyHex.value
-          : this.publicKeyHex,
-      isBlocked: data.isBlocked.present ? data.isBlocked.value : this.isBlocked,
-      isTrusted: data.isTrusted.present ? data.isTrusted.value : this.isTrusted,
-      addedAt: data.addedAt.present ? data.addedAt.value : this.addedAt,
-    );
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('Contact(')
-          ..write('snowChatId: $snowChatId, ')
-          ..write('displayName: $displayName, ')
-          ..write('publicKeyHex: $publicKeyHex, ')
-          ..write('isBlocked: $isBlocked, ')
-          ..write('isTrusted: $isTrusted, ')
-          ..write('addedAt: $addedAt')
-          ..write(')'))
-        .toString();
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    snowChatId,
-    displayName,
-    publicKeyHex,
-    isBlocked,
-    isTrusted,
-    addedAt,
-  );
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      (other is Contact &&
-          other.snowChatId == this.snowChatId &&
-          other.displayName == this.displayName &&
-          other.publicKeyHex == this.publicKeyHex &&
-          other.isBlocked == this.isBlocked &&
-          other.isTrusted == this.isTrusted &&
-          other.addedAt == this.addedAt);
-}
-
-class ContactsCompanion extends UpdateCompanion<Contact> {
-  final Value<String> snowChatId;
-  final Value<String?> displayName;
-  final Value<String?> publicKeyHex;
-  final Value<bool> isBlocked;
-  final Value<bool> isTrusted;
-  final Value<DateTime> addedAt;
-  final Value<int> rowid;
-  const ContactsCompanion({
-    this.snowChatId = const Value.absent(),
-    this.displayName = const Value.absent(),
-    this.publicKeyHex = const Value.absent(),
-    this.isBlocked = const Value.absent(),
-    this.isTrusted = const Value.absent(),
-    this.addedAt = const Value.absent(),
-    this.rowid = const Value.absent(),
-  });
-  ContactsCompanion.insert({
-    required String snowChatId,
-    this.displayName = const Value.absent(),
-    this.publicKeyHex = const Value.absent(),
-    this.isBlocked = const Value.absent(),
-    this.isTrusted = const Value.absent(),
-    required DateTime addedAt,
-    this.rowid = const Value.absent(),
-  }) : snowChatId = Value(snowChatId),
-       addedAt = Value(addedAt);
-  static Insertable<Contact> custom({
-    Expression<String>? snowChatId,
-    Expression<String>? displayName,
-    Expression<String>? publicKeyHex,
-    Expression<bool>? isBlocked,
-    Expression<bool>? isTrusted,
-    Expression<DateTime>? addedAt,
-    Expression<int>? rowid,
-  }) {
-    return RawValuesInsertable({
-      if (snowChatId != null) 'snow_chat_id': snowChatId,
-      if (displayName != null) 'display_name': displayName,
-      if (publicKeyHex != null) 'public_key_hex': publicKeyHex,
-      if (isBlocked != null) 'is_blocked': isBlocked,
-      if (isTrusted != null) 'is_trusted': isTrusted,
-      if (addedAt != null) 'added_at': addedAt,
-      if (rowid != null) 'rowid': rowid,
-    });
-  }
-
-  ContactsCompanion copyWith({
-    Value<String>? snowChatId,
-    Value<String?>? displayName,
-    Value<String?>? publicKeyHex,
-    Value<bool>? isBlocked,
-    Value<bool>? isTrusted,
-    Value<DateTime>? addedAt,
-    Value<int>? rowid,
-  }) {
-    return ContactsCompanion(
-      snowChatId: snowChatId ?? this.snowChatId,
-      displayName: displayName ?? this.displayName,
-      publicKeyHex: publicKeyHex ?? this.publicKeyHex,
-      isBlocked: isBlocked ?? this.isBlocked,
-      isTrusted: isTrusted ?? this.isTrusted,
-      addedAt: addedAt ?? this.addedAt,
-      rowid: rowid ?? this.rowid,
-    );
-  }
-
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    if (snowChatId.present) {
-      map['snow_chat_id'] = Variable<String>(snowChatId.value);
-    }
-    if (displayName.present) {
-      map['display_name'] = Variable<String>(displayName.value);
-    }
-    if (publicKeyHex.present) {
-      map['public_key_hex'] = Variable<String>(publicKeyHex.value);
-    }
-    if (isBlocked.present) {
-      map['is_blocked'] = Variable<bool>(isBlocked.value);
-    }
-    if (isTrusted.present) {
-      map['is_trusted'] = Variable<bool>(isTrusted.value);
-    }
-    if (addedAt.present) {
-      map['added_at'] = Variable<DateTime>(addedAt.value);
-    }
-    if (rowid.present) {
-      map['rowid'] = Variable<int>(rowid.value);
-    }
-    return map;
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('ContactsCompanion(')
-          ..write('snowChatId: $snowChatId, ')
-          ..write('displayName: $displayName, ')
-          ..write('publicKeyHex: $publicKeyHex, ')
-          ..write('isBlocked: $isBlocked, ')
-          ..write('isTrusted: $isTrusted, ')
-          ..write('addedAt: $addedAt, ')
-          ..write('rowid: $rowid')
-          ..write(')'))
-        .toString();
-  }
-}
-
 class $SignalSessionsTable extends SignalSessions
     with TableInfo<$SignalSessionsTable, SignalSession> {
   @override
@@ -14996,8 +14557,25 @@ class $BlockedAccountsTable extends BlockedAccounts
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _nicknameMeta = const VerificationMeta(
+    'nickname',
+  );
   @override
-  List<GeneratedColumn> get $columns => [snowId, blocked, synced, updatedAtMs];
+  late final GeneratedColumn<String> nickname = GeneratedColumn<String>(
+    'nickname',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    snowId,
+    blocked,
+    synced,
+    updatedAtMs,
+    nickname,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -15043,6 +14621,12 @@ class $BlockedAccountsTable extends BlockedAccounts
     } else if (isInserting) {
       context.missing(_updatedAtMsMeta);
     }
+    if (data.containsKey('nickname')) {
+      context.handle(
+        _nicknameMeta,
+        nickname.isAcceptableOrUnknown(data['nickname']!, _nicknameMeta),
+      );
+    }
     return context;
   }
 
@@ -15068,6 +14652,10 @@ class $BlockedAccountsTable extends BlockedAccounts
         DriftSqlType.int,
         data['${effectivePrefix}updated_at_ms'],
       )!,
+      nickname: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}nickname'],
+      ),
     );
   }
 
@@ -15091,11 +14679,16 @@ class BlockedAccountRow extends DataClass
 
   /// When this device last changed the row (local clock, ms).
   final int updatedAtMs;
+
+  /// The account's name when it was blocked (contact list / conversation
+  /// title), or null. Shown by the blocked-list screen.
+  final String? nickname;
   const BlockedAccountRow({
     required this.snowId,
     required this.blocked,
     required this.synced,
     required this.updatedAtMs,
+    this.nickname,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -15104,6 +14697,9 @@ class BlockedAccountRow extends DataClass
     map['blocked'] = Variable<bool>(blocked);
     map['synced'] = Variable<bool>(synced);
     map['updated_at_ms'] = Variable<int>(updatedAtMs);
+    if (!nullToAbsent || nickname != null) {
+      map['nickname'] = Variable<String>(nickname);
+    }
     return map;
   }
 
@@ -15113,6 +14709,9 @@ class BlockedAccountRow extends DataClass
       blocked: Value(blocked),
       synced: Value(synced),
       updatedAtMs: Value(updatedAtMs),
+      nickname: nickname == null && nullToAbsent
+          ? const Value.absent()
+          : Value(nickname),
     );
   }
 
@@ -15126,6 +14725,7 @@ class BlockedAccountRow extends DataClass
       blocked: serializer.fromJson<bool>(json['blocked']),
       synced: serializer.fromJson<bool>(json['synced']),
       updatedAtMs: serializer.fromJson<int>(json['updatedAtMs']),
+      nickname: serializer.fromJson<String?>(json['nickname']),
     );
   }
   @override
@@ -15136,6 +14736,7 @@ class BlockedAccountRow extends DataClass
       'blocked': serializer.toJson<bool>(blocked),
       'synced': serializer.toJson<bool>(synced),
       'updatedAtMs': serializer.toJson<int>(updatedAtMs),
+      'nickname': serializer.toJson<String?>(nickname),
     };
   }
 
@@ -15144,11 +14745,13 @@ class BlockedAccountRow extends DataClass
     bool? blocked,
     bool? synced,
     int? updatedAtMs,
+    Value<String?> nickname = const Value.absent(),
   }) => BlockedAccountRow(
     snowId: snowId ?? this.snowId,
     blocked: blocked ?? this.blocked,
     synced: synced ?? this.synced,
     updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+    nickname: nickname.present ? nickname.value : this.nickname,
   );
   BlockedAccountRow copyWithCompanion(BlockedAccountsCompanion data) {
     return BlockedAccountRow(
@@ -15158,6 +14761,7 @@ class BlockedAccountRow extends DataClass
       updatedAtMs: data.updatedAtMs.present
           ? data.updatedAtMs.value
           : this.updatedAtMs,
+      nickname: data.nickname.present ? data.nickname.value : this.nickname,
     );
   }
 
@@ -15167,13 +14771,15 @@ class BlockedAccountRow extends DataClass
           ..write('snowId: $snowId, ')
           ..write('blocked: $blocked, ')
           ..write('synced: $synced, ')
-          ..write('updatedAtMs: $updatedAtMs')
+          ..write('updatedAtMs: $updatedAtMs, ')
+          ..write('nickname: $nickname')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(snowId, blocked, synced, updatedAtMs);
+  int get hashCode =>
+      Object.hash(snowId, blocked, synced, updatedAtMs, nickname);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -15181,7 +14787,8 @@ class BlockedAccountRow extends DataClass
           other.snowId == this.snowId &&
           other.blocked == this.blocked &&
           other.synced == this.synced &&
-          other.updatedAtMs == this.updatedAtMs);
+          other.updatedAtMs == this.updatedAtMs &&
+          other.nickname == this.nickname);
 }
 
 class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
@@ -15189,12 +14796,14 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
   final Value<bool> blocked;
   final Value<bool> synced;
   final Value<int> updatedAtMs;
+  final Value<String?> nickname;
   final Value<int> rowid;
   const BlockedAccountsCompanion({
     this.snowId = const Value.absent(),
     this.blocked = const Value.absent(),
     this.synced = const Value.absent(),
     this.updatedAtMs = const Value.absent(),
+    this.nickname = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   BlockedAccountsCompanion.insert({
@@ -15202,6 +14811,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
     required bool blocked,
     this.synced = const Value.absent(),
     required int updatedAtMs,
+    this.nickname = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : snowId = Value(snowId),
        blocked = Value(blocked),
@@ -15211,6 +14821,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
     Expression<bool>? blocked,
     Expression<bool>? synced,
     Expression<int>? updatedAtMs,
+    Expression<String>? nickname,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -15218,6 +14829,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
       if (blocked != null) 'blocked': blocked,
       if (synced != null) 'synced': synced,
       if (updatedAtMs != null) 'updated_at_ms': updatedAtMs,
+      if (nickname != null) 'nickname': nickname,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -15227,6 +14839,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
     Value<bool>? blocked,
     Value<bool>? synced,
     Value<int>? updatedAtMs,
+    Value<String?>? nickname,
     Value<int>? rowid,
   }) {
     return BlockedAccountsCompanion(
@@ -15234,6 +14847,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
       blocked: blocked ?? this.blocked,
       synced: synced ?? this.synced,
       updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+      nickname: nickname ?? this.nickname,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -15253,6 +14867,9 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
     if (updatedAtMs.present) {
       map['updated_at_ms'] = Variable<int>(updatedAtMs.value);
     }
+    if (nickname.present) {
+      map['nickname'] = Variable<String>(nickname.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -15266,6 +14883,7 @@ class BlockedAccountsCompanion extends UpdateCompanion<BlockedAccountRow> {
           ..write('blocked: $blocked, ')
           ..write('synced: $synced, ')
           ..write('updatedAtMs: $updatedAtMs, ')
+          ..write('nickname: $nickname, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -15506,13 +15124,15 @@ class $DirectOutboxJobsTable extends DirectOutboxJobs
 }
 
 class DirectOutboxRow extends DataClass implements Insertable<DirectOutboxRow> {
-  /// The local message id (`msg_…`) — also the `cid` the peer deduplicates by.
+  /// The local message id (`msg_…`) — also the `cid` the peer deduplicates
+  /// by. A control job (kind `control`): a random UUID of its own.
   final String messageId;
 
   /// The peer ("snow" + 32 hex). A 1:1 room's id is the peer's snowId.
   final String peer;
 
-  /// `text`, `file` or `voice` (MessageType name).
+  /// `text`, `file` or `voice` (MessageType name), or `control` (a contact
+  /// notice — DirectOutbox.controlKind).
   final String kind;
 
   /// DirectOutboxPhase.upload or DirectOutboxPhase.send.
@@ -15521,8 +15141,10 @@ class DirectOutboxRow extends DataClass implements Insertable<DirectOutboxRow> {
   /// What the job needs to send without the screen that started it (JSON):
   /// text, ttl, reply fields; for an attachment the kept copy's relative
   /// path, file name, MIME type, size, voice duration, and — once uploaded —
-  /// the E2EE metadata (file id and key). Encrypted at rest with the rest of
-  /// the database; never sent anywhere as it is.
+  /// the E2EE metadata (file id and key); for a control job the inner JSON,
+  /// whether it travels as a control row and whether it carries the name
+  /// certificate. Encrypted at rest with the rest of the database; never
+  /// sent anywhere as it is.
   final String payload;
 
   /// When the message was written (local clock, ms). Orders a peer's jobs;
@@ -15813,12 +15435,1873 @@ class DirectOutboxJobsCompanion extends UpdateCompanion<DirectOutboxRow> {
   }
 }
 
+class $ContactListTable extends ContactList
+    with TableInfo<$ContactListTable, ContactRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ContactListTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _snowIdMeta = const VerificationMeta('snowId');
+  @override
+  late final GeneratedColumn<String> snowId = GeneratedColumn<String>(
+    'snow_id',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 36,
+      maxTextLength: 36,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _inMyListMeta = const VerificationMeta(
+    'inMyList',
+  );
+  @override
+  late final GeneratedColumn<bool> inMyList = GeneratedColumn<bool>(
+    'in_my_list',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("in_my_list" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _addedMeMeta = const VerificationMeta(
+    'addedMe',
+  );
+  @override
+  late final GeneratedColumn<bool> addedMe = GeneratedColumn<bool>(
+    'added_me',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("added_me" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _hiddenAtMsMeta = const VerificationMeta(
+    'hiddenAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> hiddenAtMs = GeneratedColumn<int>(
+    'hidden_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _nicknameMeta = const VerificationMeta(
+    'nickname',
+  );
+  @override
+  late final GeneratedColumn<String> nickname = GeneratedColumn<String>(
+    'nickname',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _nameIssuedAtMsMeta = const VerificationMeta(
+    'nameIssuedAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> nameIssuedAtMs = GeneratedColumn<int>(
+    'name_issued_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _accountPubMeta = const VerificationMeta(
+    'accountPub',
+  );
+  @override
+  late final GeneratedColumn<Uint8List> accountPub = GeneratedColumn<Uint8List>(
+    'account_pub',
+    aliasedName,
+    true,
+    type: DriftSqlType.blob,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _notFoundCountMeta = const VerificationMeta(
+    'notFoundCount',
+  );
+  @override
+  late final GeneratedColumn<int> notFoundCount = GeneratedColumn<int>(
+    'not_found_count',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _removedMeAtMsMeta = const VerificationMeta(
+    'removedMeAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> removedMeAtMs = GeneratedColumn<int>(
+    'removed_me_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _createdAtMsMeta = const VerificationMeta(
+    'createdAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> createdAtMs = GeneratedColumn<int>(
+    'created_at_ms',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMsMeta = const VerificationMeta(
+    'updatedAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAtMs = GeneratedColumn<int>(
+    'updated_at_ms',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    snowId,
+    inMyList,
+    addedMe,
+    hiddenAtMs,
+    nickname,
+    nameIssuedAtMs,
+    accountPub,
+    notFoundCount,
+    removedMeAtMs,
+    createdAtMs,
+    updatedAtMs,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'contact_list';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<ContactRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('snow_id')) {
+      context.handle(
+        _snowIdMeta,
+        snowId.isAcceptableOrUnknown(data['snow_id']!, _snowIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_snowIdMeta);
+    }
+    if (data.containsKey('in_my_list')) {
+      context.handle(
+        _inMyListMeta,
+        inMyList.isAcceptableOrUnknown(data['in_my_list']!, _inMyListMeta),
+      );
+    }
+    if (data.containsKey('added_me')) {
+      context.handle(
+        _addedMeMeta,
+        addedMe.isAcceptableOrUnknown(data['added_me']!, _addedMeMeta),
+      );
+    }
+    if (data.containsKey('hidden_at_ms')) {
+      context.handle(
+        _hiddenAtMsMeta,
+        hiddenAtMs.isAcceptableOrUnknown(
+          data['hidden_at_ms']!,
+          _hiddenAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('nickname')) {
+      context.handle(
+        _nicknameMeta,
+        nickname.isAcceptableOrUnknown(data['nickname']!, _nicknameMeta),
+      );
+    }
+    if (data.containsKey('name_issued_at_ms')) {
+      context.handle(
+        _nameIssuedAtMsMeta,
+        nameIssuedAtMs.isAcceptableOrUnknown(
+          data['name_issued_at_ms']!,
+          _nameIssuedAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('account_pub')) {
+      context.handle(
+        _accountPubMeta,
+        accountPub.isAcceptableOrUnknown(data['account_pub']!, _accountPubMeta),
+      );
+    }
+    if (data.containsKey('not_found_count')) {
+      context.handle(
+        _notFoundCountMeta,
+        notFoundCount.isAcceptableOrUnknown(
+          data['not_found_count']!,
+          _notFoundCountMeta,
+        ),
+      );
+    }
+    if (data.containsKey('removed_me_at_ms')) {
+      context.handle(
+        _removedMeAtMsMeta,
+        removedMeAtMs.isAcceptableOrUnknown(
+          data['removed_me_at_ms']!,
+          _removedMeAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at_ms')) {
+      context.handle(
+        _createdAtMsMeta,
+        createdAtMs.isAcceptableOrUnknown(
+          data['created_at_ms']!,
+          _createdAtMsMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMsMeta);
+    }
+    if (data.containsKey('updated_at_ms')) {
+      context.handle(
+        _updatedAtMsMeta,
+        updatedAtMs.isAcceptableOrUnknown(
+          data['updated_at_ms']!,
+          _updatedAtMsMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMsMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {snowId};
+  @override
+  ContactRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ContactRow(
+      snowId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}snow_id'],
+      )!,
+      inMyList: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}in_my_list'],
+      )!,
+      addedMe: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}added_me'],
+      )!,
+      hiddenAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}hidden_at_ms'],
+      ),
+      nickname: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}nickname'],
+      ),
+      nameIssuedAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}name_issued_at_ms'],
+      ),
+      accountPub: attachedDatabase.typeMapping.read(
+        DriftSqlType.blob,
+        data['${effectivePrefix}account_pub'],
+      ),
+      notFoundCount: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}not_found_count'],
+      )!,
+      removedMeAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}removed_me_at_ms'],
+      ),
+      createdAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at_ms'],
+      )!,
+      updatedAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at_ms'],
+      )!,
+    );
+  }
+
+  @override
+  $ContactListTable createAlias(String alias) {
+    return $ContactListTable(attachedDatabase, alias);
+  }
+}
+
+class ContactRow extends DataClass implements Insertable<ContactRow> {
+  /// The account ("snow" + 32 hex).
+  final String snowId;
+
+  /// This user added the account: sent a request, or accepted the account's.
+  final bool inMyList;
+
+  /// The account told this user it added them (a sealed contact_added). Opens
+  /// nothing — it only changes the label.
+  final bool addedMe;
+
+  /// When this user declined the account's request (the row is hidden), or
+  /// null. A new contact_added from the account shows the request again.
+  final int? hiddenAtMs;
+
+  /// The name from the newest verified name certificate, or null.
+  final String? nickname;
+
+  /// Issue time of that certificate (server clock, ms), or null.
+  final int? nameIssuedAtMs;
+
+  /// The account public key (32 bytes) that derives [snowId], or null.
+  final Uint8List? accountPub;
+
+  /// Sends to the account the server refused in a row with USER_NOT_FOUND
+  /// (reset by a send it took, or by a notice from the account). From
+  /// ContactStore.unavailableAfterFailures on, the list shows "Account
+  /// unavailable" — the row itself is never removed on the server's word.
+  /// Kept on this device only (not in the backup).
+  final int notFoundCount;
+
+  /// When the account last told this install it removed this user (a sealed
+  /// contact_removed), or null — cleared by a later contact_added. The
+  /// restore merge reads it: the peer's word on this install is newer than
+  /// the backup's addedMe, and a live addedMe=false without it only means "no
+  /// word yet". Before the restore of this install ran, a row whose only mark
+  /// is this one is kept for it (afterwards such a row goes). Kept on this
+  /// device only (not in the backup).
+  final int? removedMeAtMs;
+  final int createdAtMs;
+  final int updatedAtMs;
+  const ContactRow({
+    required this.snowId,
+    required this.inMyList,
+    required this.addedMe,
+    this.hiddenAtMs,
+    this.nickname,
+    this.nameIssuedAtMs,
+    this.accountPub,
+    required this.notFoundCount,
+    this.removedMeAtMs,
+    required this.createdAtMs,
+    required this.updatedAtMs,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['snow_id'] = Variable<String>(snowId);
+    map['in_my_list'] = Variable<bool>(inMyList);
+    map['added_me'] = Variable<bool>(addedMe);
+    if (!nullToAbsent || hiddenAtMs != null) {
+      map['hidden_at_ms'] = Variable<int>(hiddenAtMs);
+    }
+    if (!nullToAbsent || nickname != null) {
+      map['nickname'] = Variable<String>(nickname);
+    }
+    if (!nullToAbsent || nameIssuedAtMs != null) {
+      map['name_issued_at_ms'] = Variable<int>(nameIssuedAtMs);
+    }
+    if (!nullToAbsent || accountPub != null) {
+      map['account_pub'] = Variable<Uint8List>(accountPub);
+    }
+    map['not_found_count'] = Variable<int>(notFoundCount);
+    if (!nullToAbsent || removedMeAtMs != null) {
+      map['removed_me_at_ms'] = Variable<int>(removedMeAtMs);
+    }
+    map['created_at_ms'] = Variable<int>(createdAtMs);
+    map['updated_at_ms'] = Variable<int>(updatedAtMs);
+    return map;
+  }
+
+  ContactListCompanion toCompanion(bool nullToAbsent) {
+    return ContactListCompanion(
+      snowId: Value(snowId),
+      inMyList: Value(inMyList),
+      addedMe: Value(addedMe),
+      hiddenAtMs: hiddenAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(hiddenAtMs),
+      nickname: nickname == null && nullToAbsent
+          ? const Value.absent()
+          : Value(nickname),
+      nameIssuedAtMs: nameIssuedAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(nameIssuedAtMs),
+      accountPub: accountPub == null && nullToAbsent
+          ? const Value.absent()
+          : Value(accountPub),
+      notFoundCount: Value(notFoundCount),
+      removedMeAtMs: removedMeAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(removedMeAtMs),
+      createdAtMs: Value(createdAtMs),
+      updatedAtMs: Value(updatedAtMs),
+    );
+  }
+
+  factory ContactRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ContactRow(
+      snowId: serializer.fromJson<String>(json['snowId']),
+      inMyList: serializer.fromJson<bool>(json['inMyList']),
+      addedMe: serializer.fromJson<bool>(json['addedMe']),
+      hiddenAtMs: serializer.fromJson<int?>(json['hiddenAtMs']),
+      nickname: serializer.fromJson<String?>(json['nickname']),
+      nameIssuedAtMs: serializer.fromJson<int?>(json['nameIssuedAtMs']),
+      accountPub: serializer.fromJson<Uint8List?>(json['accountPub']),
+      notFoundCount: serializer.fromJson<int>(json['notFoundCount']),
+      removedMeAtMs: serializer.fromJson<int?>(json['removedMeAtMs']),
+      createdAtMs: serializer.fromJson<int>(json['createdAtMs']),
+      updatedAtMs: serializer.fromJson<int>(json['updatedAtMs']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'snowId': serializer.toJson<String>(snowId),
+      'inMyList': serializer.toJson<bool>(inMyList),
+      'addedMe': serializer.toJson<bool>(addedMe),
+      'hiddenAtMs': serializer.toJson<int?>(hiddenAtMs),
+      'nickname': serializer.toJson<String?>(nickname),
+      'nameIssuedAtMs': serializer.toJson<int?>(nameIssuedAtMs),
+      'accountPub': serializer.toJson<Uint8List?>(accountPub),
+      'notFoundCount': serializer.toJson<int>(notFoundCount),
+      'removedMeAtMs': serializer.toJson<int?>(removedMeAtMs),
+      'createdAtMs': serializer.toJson<int>(createdAtMs),
+      'updatedAtMs': serializer.toJson<int>(updatedAtMs),
+    };
+  }
+
+  ContactRow copyWith({
+    String? snowId,
+    bool? inMyList,
+    bool? addedMe,
+    Value<int?> hiddenAtMs = const Value.absent(),
+    Value<String?> nickname = const Value.absent(),
+    Value<int?> nameIssuedAtMs = const Value.absent(),
+    Value<Uint8List?> accountPub = const Value.absent(),
+    int? notFoundCount,
+    Value<int?> removedMeAtMs = const Value.absent(),
+    int? createdAtMs,
+    int? updatedAtMs,
+  }) => ContactRow(
+    snowId: snowId ?? this.snowId,
+    inMyList: inMyList ?? this.inMyList,
+    addedMe: addedMe ?? this.addedMe,
+    hiddenAtMs: hiddenAtMs.present ? hiddenAtMs.value : this.hiddenAtMs,
+    nickname: nickname.present ? nickname.value : this.nickname,
+    nameIssuedAtMs: nameIssuedAtMs.present
+        ? nameIssuedAtMs.value
+        : this.nameIssuedAtMs,
+    accountPub: accountPub.present ? accountPub.value : this.accountPub,
+    notFoundCount: notFoundCount ?? this.notFoundCount,
+    removedMeAtMs: removedMeAtMs.present
+        ? removedMeAtMs.value
+        : this.removedMeAtMs,
+    createdAtMs: createdAtMs ?? this.createdAtMs,
+    updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+  );
+  ContactRow copyWithCompanion(ContactListCompanion data) {
+    return ContactRow(
+      snowId: data.snowId.present ? data.snowId.value : this.snowId,
+      inMyList: data.inMyList.present ? data.inMyList.value : this.inMyList,
+      addedMe: data.addedMe.present ? data.addedMe.value : this.addedMe,
+      hiddenAtMs: data.hiddenAtMs.present
+          ? data.hiddenAtMs.value
+          : this.hiddenAtMs,
+      nickname: data.nickname.present ? data.nickname.value : this.nickname,
+      nameIssuedAtMs: data.nameIssuedAtMs.present
+          ? data.nameIssuedAtMs.value
+          : this.nameIssuedAtMs,
+      accountPub: data.accountPub.present
+          ? data.accountPub.value
+          : this.accountPub,
+      notFoundCount: data.notFoundCount.present
+          ? data.notFoundCount.value
+          : this.notFoundCount,
+      removedMeAtMs: data.removedMeAtMs.present
+          ? data.removedMeAtMs.value
+          : this.removedMeAtMs,
+      createdAtMs: data.createdAtMs.present
+          ? data.createdAtMs.value
+          : this.createdAtMs,
+      updatedAtMs: data.updatedAtMs.present
+          ? data.updatedAtMs.value
+          : this.updatedAtMs,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ContactRow(')
+          ..write('snowId: $snowId, ')
+          ..write('inMyList: $inMyList, ')
+          ..write('addedMe: $addedMe, ')
+          ..write('hiddenAtMs: $hiddenAtMs, ')
+          ..write('nickname: $nickname, ')
+          ..write('nameIssuedAtMs: $nameIssuedAtMs, ')
+          ..write('accountPub: $accountPub, ')
+          ..write('notFoundCount: $notFoundCount, ')
+          ..write('removedMeAtMs: $removedMeAtMs, ')
+          ..write('createdAtMs: $createdAtMs, ')
+          ..write('updatedAtMs: $updatedAtMs')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    snowId,
+    inMyList,
+    addedMe,
+    hiddenAtMs,
+    nickname,
+    nameIssuedAtMs,
+    $driftBlobEquality.hash(accountPub),
+    notFoundCount,
+    removedMeAtMs,
+    createdAtMs,
+    updatedAtMs,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ContactRow &&
+          other.snowId == this.snowId &&
+          other.inMyList == this.inMyList &&
+          other.addedMe == this.addedMe &&
+          other.hiddenAtMs == this.hiddenAtMs &&
+          other.nickname == this.nickname &&
+          other.nameIssuedAtMs == this.nameIssuedAtMs &&
+          $driftBlobEquality.equals(other.accountPub, this.accountPub) &&
+          other.notFoundCount == this.notFoundCount &&
+          other.removedMeAtMs == this.removedMeAtMs &&
+          other.createdAtMs == this.createdAtMs &&
+          other.updatedAtMs == this.updatedAtMs);
+}
+
+class ContactListCompanion extends UpdateCompanion<ContactRow> {
+  final Value<String> snowId;
+  final Value<bool> inMyList;
+  final Value<bool> addedMe;
+  final Value<int?> hiddenAtMs;
+  final Value<String?> nickname;
+  final Value<int?> nameIssuedAtMs;
+  final Value<Uint8List?> accountPub;
+  final Value<int> notFoundCount;
+  final Value<int?> removedMeAtMs;
+  final Value<int> createdAtMs;
+  final Value<int> updatedAtMs;
+  final Value<int> rowid;
+  const ContactListCompanion({
+    this.snowId = const Value.absent(),
+    this.inMyList = const Value.absent(),
+    this.addedMe = const Value.absent(),
+    this.hiddenAtMs = const Value.absent(),
+    this.nickname = const Value.absent(),
+    this.nameIssuedAtMs = const Value.absent(),
+    this.accountPub = const Value.absent(),
+    this.notFoundCount = const Value.absent(),
+    this.removedMeAtMs = const Value.absent(),
+    this.createdAtMs = const Value.absent(),
+    this.updatedAtMs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  ContactListCompanion.insert({
+    required String snowId,
+    this.inMyList = const Value.absent(),
+    this.addedMe = const Value.absent(),
+    this.hiddenAtMs = const Value.absent(),
+    this.nickname = const Value.absent(),
+    this.nameIssuedAtMs = const Value.absent(),
+    this.accountPub = const Value.absent(),
+    this.notFoundCount = const Value.absent(),
+    this.removedMeAtMs = const Value.absent(),
+    required int createdAtMs,
+    required int updatedAtMs,
+    this.rowid = const Value.absent(),
+  }) : snowId = Value(snowId),
+       createdAtMs = Value(createdAtMs),
+       updatedAtMs = Value(updatedAtMs);
+  static Insertable<ContactRow> custom({
+    Expression<String>? snowId,
+    Expression<bool>? inMyList,
+    Expression<bool>? addedMe,
+    Expression<int>? hiddenAtMs,
+    Expression<String>? nickname,
+    Expression<int>? nameIssuedAtMs,
+    Expression<Uint8List>? accountPub,
+    Expression<int>? notFoundCount,
+    Expression<int>? removedMeAtMs,
+    Expression<int>? createdAtMs,
+    Expression<int>? updatedAtMs,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (snowId != null) 'snow_id': snowId,
+      if (inMyList != null) 'in_my_list': inMyList,
+      if (addedMe != null) 'added_me': addedMe,
+      if (hiddenAtMs != null) 'hidden_at_ms': hiddenAtMs,
+      if (nickname != null) 'nickname': nickname,
+      if (nameIssuedAtMs != null) 'name_issued_at_ms': nameIssuedAtMs,
+      if (accountPub != null) 'account_pub': accountPub,
+      if (notFoundCount != null) 'not_found_count': notFoundCount,
+      if (removedMeAtMs != null) 'removed_me_at_ms': removedMeAtMs,
+      if (createdAtMs != null) 'created_at_ms': createdAtMs,
+      if (updatedAtMs != null) 'updated_at_ms': updatedAtMs,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  ContactListCompanion copyWith({
+    Value<String>? snowId,
+    Value<bool>? inMyList,
+    Value<bool>? addedMe,
+    Value<int?>? hiddenAtMs,
+    Value<String?>? nickname,
+    Value<int?>? nameIssuedAtMs,
+    Value<Uint8List?>? accountPub,
+    Value<int>? notFoundCount,
+    Value<int?>? removedMeAtMs,
+    Value<int>? createdAtMs,
+    Value<int>? updatedAtMs,
+    Value<int>? rowid,
+  }) {
+    return ContactListCompanion(
+      snowId: snowId ?? this.snowId,
+      inMyList: inMyList ?? this.inMyList,
+      addedMe: addedMe ?? this.addedMe,
+      hiddenAtMs: hiddenAtMs ?? this.hiddenAtMs,
+      nickname: nickname ?? this.nickname,
+      nameIssuedAtMs: nameIssuedAtMs ?? this.nameIssuedAtMs,
+      accountPub: accountPub ?? this.accountPub,
+      notFoundCount: notFoundCount ?? this.notFoundCount,
+      removedMeAtMs: removedMeAtMs ?? this.removedMeAtMs,
+      createdAtMs: createdAtMs ?? this.createdAtMs,
+      updatedAtMs: updatedAtMs ?? this.updatedAtMs,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (snowId.present) {
+      map['snow_id'] = Variable<String>(snowId.value);
+    }
+    if (inMyList.present) {
+      map['in_my_list'] = Variable<bool>(inMyList.value);
+    }
+    if (addedMe.present) {
+      map['added_me'] = Variable<bool>(addedMe.value);
+    }
+    if (hiddenAtMs.present) {
+      map['hidden_at_ms'] = Variable<int>(hiddenAtMs.value);
+    }
+    if (nickname.present) {
+      map['nickname'] = Variable<String>(nickname.value);
+    }
+    if (nameIssuedAtMs.present) {
+      map['name_issued_at_ms'] = Variable<int>(nameIssuedAtMs.value);
+    }
+    if (accountPub.present) {
+      map['account_pub'] = Variable<Uint8List>(accountPub.value);
+    }
+    if (notFoundCount.present) {
+      map['not_found_count'] = Variable<int>(notFoundCount.value);
+    }
+    if (removedMeAtMs.present) {
+      map['removed_me_at_ms'] = Variable<int>(removedMeAtMs.value);
+    }
+    if (createdAtMs.present) {
+      map['created_at_ms'] = Variable<int>(createdAtMs.value);
+    }
+    if (updatedAtMs.present) {
+      map['updated_at_ms'] = Variable<int>(updatedAtMs.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ContactListCompanion(')
+          ..write('snowId: $snowId, ')
+          ..write('inMyList: $inMyList, ')
+          ..write('addedMe: $addedMe, ')
+          ..write('hiddenAtMs: $hiddenAtMs, ')
+          ..write('nickname: $nickname, ')
+          ..write('nameIssuedAtMs: $nameIssuedAtMs, ')
+          ..write('accountPub: $accountPub, ')
+          ..write('notFoundCount: $notFoundCount, ')
+          ..write('removedMeAtMs: $removedMeAtMs, ')
+          ..write('createdAtMs: $createdAtMs, ')
+          ..write('updatedAtMs: $updatedAtMs, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $PeerNamesTable extends PeerNames
+    with TableInfo<$PeerNamesTable, PeerNameRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $PeerNamesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _peerMeta = const VerificationMeta('peer');
+  @override
+  late final GeneratedColumn<String> peer = GeneratedColumn<String>(
+    'peer',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 36,
+      maxTextLength: 36,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _issuedAtMsMeta = const VerificationMeta(
+    'issuedAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> issuedAtMs = GeneratedColumn<int>(
+    'issued_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _announcedIssuedAtMsMeta =
+      const VerificationMeta('announcedIssuedAtMs');
+  @override
+  late final GeneratedColumn<int> announcedIssuedAtMs = GeneratedColumn<int>(
+    'announced_issued_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    peer,
+    name,
+    issuedAtMs,
+    announcedIssuedAtMs,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'peer_names';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<PeerNameRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('peer')) {
+      context.handle(
+        _peerMeta,
+        peer.isAcceptableOrUnknown(data['peer']!, _peerMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_peerMeta);
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    }
+    if (data.containsKey('issued_at_ms')) {
+      context.handle(
+        _issuedAtMsMeta,
+        issuedAtMs.isAcceptableOrUnknown(
+          data['issued_at_ms']!,
+          _issuedAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('announced_issued_at_ms')) {
+      context.handle(
+        _announcedIssuedAtMsMeta,
+        announcedIssuedAtMs.isAcceptableOrUnknown(
+          data['announced_issued_at_ms']!,
+          _announcedIssuedAtMsMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {peer};
+  @override
+  PeerNameRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return PeerNameRow(
+      peer: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}peer'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      ),
+      issuedAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}issued_at_ms'],
+      ),
+      announcedIssuedAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}announced_issued_at_ms'],
+      ),
+    );
+  }
+
+  @override
+  $PeerNamesTable createAlias(String alias) {
+    return $PeerNamesTable(attachedDatabase, alias);
+  }
+}
+
+class PeerNameRow extends DataClass implements Insertable<PeerNameRow> {
+  /// The peer ("snow" + 32 hex).
+  final String peer;
+
+  /// The name of the newest verified certificate the peer sent (null: the
+  /// account has no name), or null when none was received.
+  final String? name;
+
+  /// Issue time of that certificate (server clock, ms), or null when none was
+  /// received.
+  final int? issuedAtMs;
+
+  /// Issue time of the newest certificate of this account the server took on
+  /// its way to the peer, or null when none was announced yet.
+  final int? announcedIssuedAtMs;
+  const PeerNameRow({
+    required this.peer,
+    this.name,
+    this.issuedAtMs,
+    this.announcedIssuedAtMs,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['peer'] = Variable<String>(peer);
+    if (!nullToAbsent || name != null) {
+      map['name'] = Variable<String>(name);
+    }
+    if (!nullToAbsent || issuedAtMs != null) {
+      map['issued_at_ms'] = Variable<int>(issuedAtMs);
+    }
+    if (!nullToAbsent || announcedIssuedAtMs != null) {
+      map['announced_issued_at_ms'] = Variable<int>(announcedIssuedAtMs);
+    }
+    return map;
+  }
+
+  PeerNamesCompanion toCompanion(bool nullToAbsent) {
+    return PeerNamesCompanion(
+      peer: Value(peer),
+      name: name == null && nullToAbsent ? const Value.absent() : Value(name),
+      issuedAtMs: issuedAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(issuedAtMs),
+      announcedIssuedAtMs: announcedIssuedAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(announcedIssuedAtMs),
+    );
+  }
+
+  factory PeerNameRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return PeerNameRow(
+      peer: serializer.fromJson<String>(json['peer']),
+      name: serializer.fromJson<String?>(json['name']),
+      issuedAtMs: serializer.fromJson<int?>(json['issuedAtMs']),
+      announcedIssuedAtMs: serializer.fromJson<int?>(
+        json['announcedIssuedAtMs'],
+      ),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'peer': serializer.toJson<String>(peer),
+      'name': serializer.toJson<String?>(name),
+      'issuedAtMs': serializer.toJson<int?>(issuedAtMs),
+      'announcedIssuedAtMs': serializer.toJson<int?>(announcedIssuedAtMs),
+    };
+  }
+
+  PeerNameRow copyWith({
+    String? peer,
+    Value<String?> name = const Value.absent(),
+    Value<int?> issuedAtMs = const Value.absent(),
+    Value<int?> announcedIssuedAtMs = const Value.absent(),
+  }) => PeerNameRow(
+    peer: peer ?? this.peer,
+    name: name.present ? name.value : this.name,
+    issuedAtMs: issuedAtMs.present ? issuedAtMs.value : this.issuedAtMs,
+    announcedIssuedAtMs: announcedIssuedAtMs.present
+        ? announcedIssuedAtMs.value
+        : this.announcedIssuedAtMs,
+  );
+  PeerNameRow copyWithCompanion(PeerNamesCompanion data) {
+    return PeerNameRow(
+      peer: data.peer.present ? data.peer.value : this.peer,
+      name: data.name.present ? data.name.value : this.name,
+      issuedAtMs: data.issuedAtMs.present
+          ? data.issuedAtMs.value
+          : this.issuedAtMs,
+      announcedIssuedAtMs: data.announcedIssuedAtMs.present
+          ? data.announcedIssuedAtMs.value
+          : this.announcedIssuedAtMs,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PeerNameRow(')
+          ..write('peer: $peer, ')
+          ..write('name: $name, ')
+          ..write('issuedAtMs: $issuedAtMs, ')
+          ..write('announcedIssuedAtMs: $announcedIssuedAtMs')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(peer, name, issuedAtMs, announcedIssuedAtMs);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is PeerNameRow &&
+          other.peer == this.peer &&
+          other.name == this.name &&
+          other.issuedAtMs == this.issuedAtMs &&
+          other.announcedIssuedAtMs == this.announcedIssuedAtMs);
+}
+
+class PeerNamesCompanion extends UpdateCompanion<PeerNameRow> {
+  final Value<String> peer;
+  final Value<String?> name;
+  final Value<int?> issuedAtMs;
+  final Value<int?> announcedIssuedAtMs;
+  final Value<int> rowid;
+  const PeerNamesCompanion({
+    this.peer = const Value.absent(),
+    this.name = const Value.absent(),
+    this.issuedAtMs = const Value.absent(),
+    this.announcedIssuedAtMs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  PeerNamesCompanion.insert({
+    required String peer,
+    this.name = const Value.absent(),
+    this.issuedAtMs = const Value.absent(),
+    this.announcedIssuedAtMs = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : peer = Value(peer);
+  static Insertable<PeerNameRow> custom({
+    Expression<String>? peer,
+    Expression<String>? name,
+    Expression<int>? issuedAtMs,
+    Expression<int>? announcedIssuedAtMs,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (peer != null) 'peer': peer,
+      if (name != null) 'name': name,
+      if (issuedAtMs != null) 'issued_at_ms': issuedAtMs,
+      if (announcedIssuedAtMs != null)
+        'announced_issued_at_ms': announcedIssuedAtMs,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  PeerNamesCompanion copyWith({
+    Value<String>? peer,
+    Value<String?>? name,
+    Value<int?>? issuedAtMs,
+    Value<int?>? announcedIssuedAtMs,
+    Value<int>? rowid,
+  }) {
+    return PeerNamesCompanion(
+      peer: peer ?? this.peer,
+      name: name ?? this.name,
+      issuedAtMs: issuedAtMs ?? this.issuedAtMs,
+      announcedIssuedAtMs: announcedIssuedAtMs ?? this.announcedIssuedAtMs,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (peer.present) {
+      map['peer'] = Variable<String>(peer.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (issuedAtMs.present) {
+      map['issued_at_ms'] = Variable<int>(issuedAtMs.value);
+    }
+    if (announcedIssuedAtMs.present) {
+      map['announced_issued_at_ms'] = Variable<int>(announcedIssuedAtMs.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('PeerNamesCompanion(')
+          ..write('peer: $peer, ')
+          ..write('name: $name, ')
+          ..write('issuedAtMs: $issuedAtMs, ')
+          ..write('announcedIssuedAtMs: $announcedIssuedAtMs, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $ContactSyncStatesTable extends ContactSyncStates
+    with TableInfo<$ContactSyncStatesTable, ContactSyncStateRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $ContactSyncStatesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _slotMeta = const VerificationMeta('slot');
+  @override
+  late final GeneratedColumn<int> slot = GeneratedColumn<int>(
+    'slot',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _restoredMeta = const VerificationMeta(
+    'restored',
+  );
+  @override
+  late final GeneratedColumn<bool> restored = GeneratedColumn<bool>(
+    'restored',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("restored" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _etagMeta = const VerificationMeta('etag');
+  @override
+  late final GeneratedColumn<String> etag = GeneratedColumn<String>(
+    'etag',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _periodMsMeta = const VerificationMeta(
+    'periodMs',
+  );
+  @override
+  late final GeneratedColumn<int> periodMs = GeneratedColumn<int>(
+    'period_ms',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nextWriteAtMsMeta = const VerificationMeta(
+    'nextWriteAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> nextWriteAtMs = GeneratedColumn<int>(
+    'next_write_at_ms',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _blocksReplacePendingMeta =
+      const VerificationMeta('blocksReplacePending');
+  @override
+  late final GeneratedColumn<bool> blocksReplacePending = GeneratedColumn<bool>(
+    'blocks_replace_pending',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("blocks_replace_pending" IN (0, 1))',
+    ),
+    defaultValue: const Constant(true),
+  );
+  static const VerificationMeta _blockKeyVersionMeta = const VerificationMeta(
+    'blockKeyVersion',
+  );
+  @override
+  late final GeneratedColumn<int> blockKeyVersion = GeneratedColumn<int>(
+    'block_key_version',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ownNameCertMeta = const VerificationMeta(
+    'ownNameCert',
+  );
+  @override
+  late final GeneratedColumn<Uint8List> ownNameCert =
+      GeneratedColumn<Uint8List>(
+        'own_name_cert',
+        aliasedName,
+        true,
+        type: DriftSqlType.blob,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _ownNameCertAtMsMeta = const VerificationMeta(
+    'ownNameCertAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> ownNameCertAtMs = GeneratedColumn<int>(
+    'own_name_cert_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _restoreNoticeDueMeta = const VerificationMeta(
+    'restoreNoticeDue',
+  );
+  @override
+  late final GeneratedColumn<bool> restoreNoticeDue = GeneratedColumn<bool>(
+    'restore_notice_due',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("restore_notice_due" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _restoreSavedAtMsMeta = const VerificationMeta(
+    'restoreSavedAtMs',
+  );
+  @override
+  late final GeneratedColumn<int> restoreSavedAtMs = GeneratedColumn<int>(
+    'restore_saved_at_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _restoreUnreadableMeta = const VerificationMeta(
+    'restoreUnreadable',
+  );
+  @override
+  late final GeneratedColumn<bool> restoreUnreadable = GeneratedColumn<bool>(
+    'restore_unreadable',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("restore_unreadable" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    slot,
+    restored,
+    etag,
+    periodMs,
+    nextWriteAtMs,
+    blocksReplacePending,
+    blockKeyVersion,
+    ownNameCert,
+    ownNameCertAtMs,
+    restoreNoticeDue,
+    restoreSavedAtMs,
+    restoreUnreadable,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'contact_sync_state';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<ContactSyncStateRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('slot')) {
+      context.handle(
+        _slotMeta,
+        slot.isAcceptableOrUnknown(data['slot']!, _slotMeta),
+      );
+    }
+    if (data.containsKey('restored')) {
+      context.handle(
+        _restoredMeta,
+        restored.isAcceptableOrUnknown(data['restored']!, _restoredMeta),
+      );
+    }
+    if (data.containsKey('etag')) {
+      context.handle(
+        _etagMeta,
+        etag.isAcceptableOrUnknown(data['etag']!, _etagMeta),
+      );
+    }
+    if (data.containsKey('period_ms')) {
+      context.handle(
+        _periodMsMeta,
+        periodMs.isAcceptableOrUnknown(data['period_ms']!, _periodMsMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_periodMsMeta);
+    }
+    if (data.containsKey('next_write_at_ms')) {
+      context.handle(
+        _nextWriteAtMsMeta,
+        nextWriteAtMs.isAcceptableOrUnknown(
+          data['next_write_at_ms']!,
+          _nextWriteAtMsMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_nextWriteAtMsMeta);
+    }
+    if (data.containsKey('blocks_replace_pending')) {
+      context.handle(
+        _blocksReplacePendingMeta,
+        blocksReplacePending.isAcceptableOrUnknown(
+          data['blocks_replace_pending']!,
+          _blocksReplacePendingMeta,
+        ),
+      );
+    }
+    if (data.containsKey('block_key_version')) {
+      context.handle(
+        _blockKeyVersionMeta,
+        blockKeyVersion.isAcceptableOrUnknown(
+          data['block_key_version']!,
+          _blockKeyVersionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('own_name_cert')) {
+      context.handle(
+        _ownNameCertMeta,
+        ownNameCert.isAcceptableOrUnknown(
+          data['own_name_cert']!,
+          _ownNameCertMeta,
+        ),
+      );
+    }
+    if (data.containsKey('own_name_cert_at_ms')) {
+      context.handle(
+        _ownNameCertAtMsMeta,
+        ownNameCertAtMs.isAcceptableOrUnknown(
+          data['own_name_cert_at_ms']!,
+          _ownNameCertAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('restore_notice_due')) {
+      context.handle(
+        _restoreNoticeDueMeta,
+        restoreNoticeDue.isAcceptableOrUnknown(
+          data['restore_notice_due']!,
+          _restoreNoticeDueMeta,
+        ),
+      );
+    }
+    if (data.containsKey('restore_saved_at_ms')) {
+      context.handle(
+        _restoreSavedAtMsMeta,
+        restoreSavedAtMs.isAcceptableOrUnknown(
+          data['restore_saved_at_ms']!,
+          _restoreSavedAtMsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('restore_unreadable')) {
+      context.handle(
+        _restoreUnreadableMeta,
+        restoreUnreadable.isAcceptableOrUnknown(
+          data['restore_unreadable']!,
+          _restoreUnreadableMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {slot};
+  @override
+  ContactSyncStateRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return ContactSyncStateRow(
+      slot: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}slot'],
+      )!,
+      restored: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}restored'],
+      )!,
+      etag: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}etag'],
+      ),
+      periodMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}period_ms'],
+      )!,
+      nextWriteAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}next_write_at_ms'],
+      )!,
+      blocksReplacePending: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}blocks_replace_pending'],
+      )!,
+      blockKeyVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}block_key_version'],
+      ),
+      ownNameCert: attachedDatabase.typeMapping.read(
+        DriftSqlType.blob,
+        data['${effectivePrefix}own_name_cert'],
+      ),
+      ownNameCertAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}own_name_cert_at_ms'],
+      ),
+      restoreNoticeDue: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}restore_notice_due'],
+      )!,
+      restoreSavedAtMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}restore_saved_at_ms'],
+      ),
+      restoreUnreadable: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}restore_unreadable'],
+      )!,
+    );
+  }
+
+  @override
+  $ContactSyncStatesTable createAlias(String alias) {
+    return $ContactSyncStatesTable(attachedDatabase, alias);
+  }
+}
+
+class ContactSyncStateRow extends DataClass
+    implements Insertable<ContactSyncStateRow> {
+  /// Always 0: one row.
+  final int slot;
+
+  /// True once this install looked at the contact backup (restored from it,
+  /// or found none, or wrote the empty one of a new account). Once.
+  final bool restored;
+
+  /// The server's tag of the blob this device last wrote or read (base64 of
+  /// its SHA-256); null when the server holds none.
+  final String? etag;
+
+  /// This install's write period (ms), drawn once between 6 and 24 hours.
+  final int periodMs;
+
+  /// When the next periodic write is due (local clock, ms).
+  final int nextWriteAtMs;
+
+  /// The server's block tags must be replaced by this device's list
+  /// (POST /users/blocks/replace): true at first launch and after a restore.
+  final bool blocksReplacePending;
+
+  /// The server's block tag key version last seen in a block / unblock /
+  /// replace answer, or null. When an answer shows another version, the
+  /// tags are replaced by this device's list once (§5.9).
+  final int? blockKeyVersion;
+
+  /// This account's own name certificate (bytes as the server issued them),
+  /// or null when none was fetched yet.
+  final Uint8List? ownNameCert;
+
+  /// When [ownNameCert] was fetched (local clock, ms), or null.
+  final int? ownNameCertAtMs;
+
+  /// The restore of this install ran and the user was not told yet what it
+  /// found (the notice of §5.10 — shown once, even after an app restart).
+  final bool restoreNoticeDue;
+
+  /// When the restored backup was written (its writer's clock, ms); null
+  /// when the restore found no backup.
+  final int? restoreSavedAtMs;
+
+  /// The server holds a backup this account could not open (another key, or
+  /// altered bytes): nothing was restored, the server's block tags were not
+  /// replaced and no backup is written over it — [restored] stays false and
+  /// every sync tries again; the user is told (§5.10).
+  final bool restoreUnreadable;
+  const ContactSyncStateRow({
+    required this.slot,
+    required this.restored,
+    this.etag,
+    required this.periodMs,
+    required this.nextWriteAtMs,
+    required this.blocksReplacePending,
+    this.blockKeyVersion,
+    this.ownNameCert,
+    this.ownNameCertAtMs,
+    required this.restoreNoticeDue,
+    this.restoreSavedAtMs,
+    required this.restoreUnreadable,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['slot'] = Variable<int>(slot);
+    map['restored'] = Variable<bool>(restored);
+    if (!nullToAbsent || etag != null) {
+      map['etag'] = Variable<String>(etag);
+    }
+    map['period_ms'] = Variable<int>(periodMs);
+    map['next_write_at_ms'] = Variable<int>(nextWriteAtMs);
+    map['blocks_replace_pending'] = Variable<bool>(blocksReplacePending);
+    if (!nullToAbsent || blockKeyVersion != null) {
+      map['block_key_version'] = Variable<int>(blockKeyVersion);
+    }
+    if (!nullToAbsent || ownNameCert != null) {
+      map['own_name_cert'] = Variable<Uint8List>(ownNameCert);
+    }
+    if (!nullToAbsent || ownNameCertAtMs != null) {
+      map['own_name_cert_at_ms'] = Variable<int>(ownNameCertAtMs);
+    }
+    map['restore_notice_due'] = Variable<bool>(restoreNoticeDue);
+    if (!nullToAbsent || restoreSavedAtMs != null) {
+      map['restore_saved_at_ms'] = Variable<int>(restoreSavedAtMs);
+    }
+    map['restore_unreadable'] = Variable<bool>(restoreUnreadable);
+    return map;
+  }
+
+  ContactSyncStatesCompanion toCompanion(bool nullToAbsent) {
+    return ContactSyncStatesCompanion(
+      slot: Value(slot),
+      restored: Value(restored),
+      etag: etag == null && nullToAbsent ? const Value.absent() : Value(etag),
+      periodMs: Value(periodMs),
+      nextWriteAtMs: Value(nextWriteAtMs),
+      blocksReplacePending: Value(blocksReplacePending),
+      blockKeyVersion: blockKeyVersion == null && nullToAbsent
+          ? const Value.absent()
+          : Value(blockKeyVersion),
+      ownNameCert: ownNameCert == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ownNameCert),
+      ownNameCertAtMs: ownNameCertAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ownNameCertAtMs),
+      restoreNoticeDue: Value(restoreNoticeDue),
+      restoreSavedAtMs: restoreSavedAtMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(restoreSavedAtMs),
+      restoreUnreadable: Value(restoreUnreadable),
+    );
+  }
+
+  factory ContactSyncStateRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return ContactSyncStateRow(
+      slot: serializer.fromJson<int>(json['slot']),
+      restored: serializer.fromJson<bool>(json['restored']),
+      etag: serializer.fromJson<String?>(json['etag']),
+      periodMs: serializer.fromJson<int>(json['periodMs']),
+      nextWriteAtMs: serializer.fromJson<int>(json['nextWriteAtMs']),
+      blocksReplacePending: serializer.fromJson<bool>(
+        json['blocksReplacePending'],
+      ),
+      blockKeyVersion: serializer.fromJson<int?>(json['blockKeyVersion']),
+      ownNameCert: serializer.fromJson<Uint8List?>(json['ownNameCert']),
+      ownNameCertAtMs: serializer.fromJson<int?>(json['ownNameCertAtMs']),
+      restoreNoticeDue: serializer.fromJson<bool>(json['restoreNoticeDue']),
+      restoreSavedAtMs: serializer.fromJson<int?>(json['restoreSavedAtMs']),
+      restoreUnreadable: serializer.fromJson<bool>(json['restoreUnreadable']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'slot': serializer.toJson<int>(slot),
+      'restored': serializer.toJson<bool>(restored),
+      'etag': serializer.toJson<String?>(etag),
+      'periodMs': serializer.toJson<int>(periodMs),
+      'nextWriteAtMs': serializer.toJson<int>(nextWriteAtMs),
+      'blocksReplacePending': serializer.toJson<bool>(blocksReplacePending),
+      'blockKeyVersion': serializer.toJson<int?>(blockKeyVersion),
+      'ownNameCert': serializer.toJson<Uint8List?>(ownNameCert),
+      'ownNameCertAtMs': serializer.toJson<int?>(ownNameCertAtMs),
+      'restoreNoticeDue': serializer.toJson<bool>(restoreNoticeDue),
+      'restoreSavedAtMs': serializer.toJson<int?>(restoreSavedAtMs),
+      'restoreUnreadable': serializer.toJson<bool>(restoreUnreadable),
+    };
+  }
+
+  ContactSyncStateRow copyWith({
+    int? slot,
+    bool? restored,
+    Value<String?> etag = const Value.absent(),
+    int? periodMs,
+    int? nextWriteAtMs,
+    bool? blocksReplacePending,
+    Value<int?> blockKeyVersion = const Value.absent(),
+    Value<Uint8List?> ownNameCert = const Value.absent(),
+    Value<int?> ownNameCertAtMs = const Value.absent(),
+    bool? restoreNoticeDue,
+    Value<int?> restoreSavedAtMs = const Value.absent(),
+    bool? restoreUnreadable,
+  }) => ContactSyncStateRow(
+    slot: slot ?? this.slot,
+    restored: restored ?? this.restored,
+    etag: etag.present ? etag.value : this.etag,
+    periodMs: periodMs ?? this.periodMs,
+    nextWriteAtMs: nextWriteAtMs ?? this.nextWriteAtMs,
+    blocksReplacePending: blocksReplacePending ?? this.blocksReplacePending,
+    blockKeyVersion: blockKeyVersion.present
+        ? blockKeyVersion.value
+        : this.blockKeyVersion,
+    ownNameCert: ownNameCert.present ? ownNameCert.value : this.ownNameCert,
+    ownNameCertAtMs: ownNameCertAtMs.present
+        ? ownNameCertAtMs.value
+        : this.ownNameCertAtMs,
+    restoreNoticeDue: restoreNoticeDue ?? this.restoreNoticeDue,
+    restoreSavedAtMs: restoreSavedAtMs.present
+        ? restoreSavedAtMs.value
+        : this.restoreSavedAtMs,
+    restoreUnreadable: restoreUnreadable ?? this.restoreUnreadable,
+  );
+  ContactSyncStateRow copyWithCompanion(ContactSyncStatesCompanion data) {
+    return ContactSyncStateRow(
+      slot: data.slot.present ? data.slot.value : this.slot,
+      restored: data.restored.present ? data.restored.value : this.restored,
+      etag: data.etag.present ? data.etag.value : this.etag,
+      periodMs: data.periodMs.present ? data.periodMs.value : this.periodMs,
+      nextWriteAtMs: data.nextWriteAtMs.present
+          ? data.nextWriteAtMs.value
+          : this.nextWriteAtMs,
+      blocksReplacePending: data.blocksReplacePending.present
+          ? data.blocksReplacePending.value
+          : this.blocksReplacePending,
+      blockKeyVersion: data.blockKeyVersion.present
+          ? data.blockKeyVersion.value
+          : this.blockKeyVersion,
+      ownNameCert: data.ownNameCert.present
+          ? data.ownNameCert.value
+          : this.ownNameCert,
+      ownNameCertAtMs: data.ownNameCertAtMs.present
+          ? data.ownNameCertAtMs.value
+          : this.ownNameCertAtMs,
+      restoreNoticeDue: data.restoreNoticeDue.present
+          ? data.restoreNoticeDue.value
+          : this.restoreNoticeDue,
+      restoreSavedAtMs: data.restoreSavedAtMs.present
+          ? data.restoreSavedAtMs.value
+          : this.restoreSavedAtMs,
+      restoreUnreadable: data.restoreUnreadable.present
+          ? data.restoreUnreadable.value
+          : this.restoreUnreadable,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ContactSyncStateRow(')
+          ..write('slot: $slot, ')
+          ..write('restored: $restored, ')
+          ..write('etag: $etag, ')
+          ..write('periodMs: $periodMs, ')
+          ..write('nextWriteAtMs: $nextWriteAtMs, ')
+          ..write('blocksReplacePending: $blocksReplacePending, ')
+          ..write('blockKeyVersion: $blockKeyVersion, ')
+          ..write('ownNameCert: $ownNameCert, ')
+          ..write('ownNameCertAtMs: $ownNameCertAtMs, ')
+          ..write('restoreNoticeDue: $restoreNoticeDue, ')
+          ..write('restoreSavedAtMs: $restoreSavedAtMs, ')
+          ..write('restoreUnreadable: $restoreUnreadable')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    slot,
+    restored,
+    etag,
+    periodMs,
+    nextWriteAtMs,
+    blocksReplacePending,
+    blockKeyVersion,
+    $driftBlobEquality.hash(ownNameCert),
+    ownNameCertAtMs,
+    restoreNoticeDue,
+    restoreSavedAtMs,
+    restoreUnreadable,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is ContactSyncStateRow &&
+          other.slot == this.slot &&
+          other.restored == this.restored &&
+          other.etag == this.etag &&
+          other.periodMs == this.periodMs &&
+          other.nextWriteAtMs == this.nextWriteAtMs &&
+          other.blocksReplacePending == this.blocksReplacePending &&
+          other.blockKeyVersion == this.blockKeyVersion &&
+          $driftBlobEquality.equals(other.ownNameCert, this.ownNameCert) &&
+          other.ownNameCertAtMs == this.ownNameCertAtMs &&
+          other.restoreNoticeDue == this.restoreNoticeDue &&
+          other.restoreSavedAtMs == this.restoreSavedAtMs &&
+          other.restoreUnreadable == this.restoreUnreadable);
+}
+
+class ContactSyncStatesCompanion extends UpdateCompanion<ContactSyncStateRow> {
+  final Value<int> slot;
+  final Value<bool> restored;
+  final Value<String?> etag;
+  final Value<int> periodMs;
+  final Value<int> nextWriteAtMs;
+  final Value<bool> blocksReplacePending;
+  final Value<int?> blockKeyVersion;
+  final Value<Uint8List?> ownNameCert;
+  final Value<int?> ownNameCertAtMs;
+  final Value<bool> restoreNoticeDue;
+  final Value<int?> restoreSavedAtMs;
+  final Value<bool> restoreUnreadable;
+  const ContactSyncStatesCompanion({
+    this.slot = const Value.absent(),
+    this.restored = const Value.absent(),
+    this.etag = const Value.absent(),
+    this.periodMs = const Value.absent(),
+    this.nextWriteAtMs = const Value.absent(),
+    this.blocksReplacePending = const Value.absent(),
+    this.blockKeyVersion = const Value.absent(),
+    this.ownNameCert = const Value.absent(),
+    this.ownNameCertAtMs = const Value.absent(),
+    this.restoreNoticeDue = const Value.absent(),
+    this.restoreSavedAtMs = const Value.absent(),
+    this.restoreUnreadable = const Value.absent(),
+  });
+  ContactSyncStatesCompanion.insert({
+    this.slot = const Value.absent(),
+    this.restored = const Value.absent(),
+    this.etag = const Value.absent(),
+    required int periodMs,
+    required int nextWriteAtMs,
+    this.blocksReplacePending = const Value.absent(),
+    this.blockKeyVersion = const Value.absent(),
+    this.ownNameCert = const Value.absent(),
+    this.ownNameCertAtMs = const Value.absent(),
+    this.restoreNoticeDue = const Value.absent(),
+    this.restoreSavedAtMs = const Value.absent(),
+    this.restoreUnreadable = const Value.absent(),
+  }) : periodMs = Value(periodMs),
+       nextWriteAtMs = Value(nextWriteAtMs);
+  static Insertable<ContactSyncStateRow> custom({
+    Expression<int>? slot,
+    Expression<bool>? restored,
+    Expression<String>? etag,
+    Expression<int>? periodMs,
+    Expression<int>? nextWriteAtMs,
+    Expression<bool>? blocksReplacePending,
+    Expression<int>? blockKeyVersion,
+    Expression<Uint8List>? ownNameCert,
+    Expression<int>? ownNameCertAtMs,
+    Expression<bool>? restoreNoticeDue,
+    Expression<int>? restoreSavedAtMs,
+    Expression<bool>? restoreUnreadable,
+  }) {
+    return RawValuesInsertable({
+      if (slot != null) 'slot': slot,
+      if (restored != null) 'restored': restored,
+      if (etag != null) 'etag': etag,
+      if (periodMs != null) 'period_ms': periodMs,
+      if (nextWriteAtMs != null) 'next_write_at_ms': nextWriteAtMs,
+      if (blocksReplacePending != null)
+        'blocks_replace_pending': blocksReplacePending,
+      if (blockKeyVersion != null) 'block_key_version': blockKeyVersion,
+      if (ownNameCert != null) 'own_name_cert': ownNameCert,
+      if (ownNameCertAtMs != null) 'own_name_cert_at_ms': ownNameCertAtMs,
+      if (restoreNoticeDue != null) 'restore_notice_due': restoreNoticeDue,
+      if (restoreSavedAtMs != null) 'restore_saved_at_ms': restoreSavedAtMs,
+      if (restoreUnreadable != null) 'restore_unreadable': restoreUnreadable,
+    });
+  }
+
+  ContactSyncStatesCompanion copyWith({
+    Value<int>? slot,
+    Value<bool>? restored,
+    Value<String?>? etag,
+    Value<int>? periodMs,
+    Value<int>? nextWriteAtMs,
+    Value<bool>? blocksReplacePending,
+    Value<int?>? blockKeyVersion,
+    Value<Uint8List?>? ownNameCert,
+    Value<int?>? ownNameCertAtMs,
+    Value<bool>? restoreNoticeDue,
+    Value<int?>? restoreSavedAtMs,
+    Value<bool>? restoreUnreadable,
+  }) {
+    return ContactSyncStatesCompanion(
+      slot: slot ?? this.slot,
+      restored: restored ?? this.restored,
+      etag: etag ?? this.etag,
+      periodMs: periodMs ?? this.periodMs,
+      nextWriteAtMs: nextWriteAtMs ?? this.nextWriteAtMs,
+      blocksReplacePending: blocksReplacePending ?? this.blocksReplacePending,
+      blockKeyVersion: blockKeyVersion ?? this.blockKeyVersion,
+      ownNameCert: ownNameCert ?? this.ownNameCert,
+      ownNameCertAtMs: ownNameCertAtMs ?? this.ownNameCertAtMs,
+      restoreNoticeDue: restoreNoticeDue ?? this.restoreNoticeDue,
+      restoreSavedAtMs: restoreSavedAtMs ?? this.restoreSavedAtMs,
+      restoreUnreadable: restoreUnreadable ?? this.restoreUnreadable,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (slot.present) {
+      map['slot'] = Variable<int>(slot.value);
+    }
+    if (restored.present) {
+      map['restored'] = Variable<bool>(restored.value);
+    }
+    if (etag.present) {
+      map['etag'] = Variable<String>(etag.value);
+    }
+    if (periodMs.present) {
+      map['period_ms'] = Variable<int>(periodMs.value);
+    }
+    if (nextWriteAtMs.present) {
+      map['next_write_at_ms'] = Variable<int>(nextWriteAtMs.value);
+    }
+    if (blocksReplacePending.present) {
+      map['blocks_replace_pending'] = Variable<bool>(
+        blocksReplacePending.value,
+      );
+    }
+    if (blockKeyVersion.present) {
+      map['block_key_version'] = Variable<int>(blockKeyVersion.value);
+    }
+    if (ownNameCert.present) {
+      map['own_name_cert'] = Variable<Uint8List>(ownNameCert.value);
+    }
+    if (ownNameCertAtMs.present) {
+      map['own_name_cert_at_ms'] = Variable<int>(ownNameCertAtMs.value);
+    }
+    if (restoreNoticeDue.present) {
+      map['restore_notice_due'] = Variable<bool>(restoreNoticeDue.value);
+    }
+    if (restoreSavedAtMs.present) {
+      map['restore_saved_at_ms'] = Variable<int>(restoreSavedAtMs.value);
+    }
+    if (restoreUnreadable.present) {
+      map['restore_unreadable'] = Variable<bool>(restoreUnreadable.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('ContactSyncStatesCompanion(')
+          ..write('slot: $slot, ')
+          ..write('restored: $restored, ')
+          ..write('etag: $etag, ')
+          ..write('periodMs: $periodMs, ')
+          ..write('nextWriteAtMs: $nextWriteAtMs, ')
+          ..write('blocksReplacePending: $blocksReplacePending, ')
+          ..write('blockKeyVersion: $blockKeyVersion, ')
+          ..write('ownNameCert: $ownNameCert, ')
+          ..write('ownNameCertAtMs: $ownNameCertAtMs, ')
+          ..write('restoreNoticeDue: $restoreNoticeDue, ')
+          ..write('restoreSavedAtMs: $restoreSavedAtMs, ')
+          ..write('restoreUnreadable: $restoreUnreadable')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$SnowDatabase extends GeneratedDatabase {
   _$SnowDatabase(QueryExecutor e) : super(e);
   $SnowDatabaseManager get managers => $SnowDatabaseManager(this);
   late final $LocalMessagesTable localMessages = $LocalMessagesTable(this);
   late final $ConversationsTable conversations = $ConversationsTable(this);
-  late final $ContactsTable contacts = $ContactsTable(this);
   late final $SignalSessionsTable signalSessions = $SignalSessionsTable(this);
   late final $SignalPreKeysTable signalPreKeys = $SignalPreKeysTable(this);
   late final $LocalAttachmentsTable localAttachments = $LocalAttachmentsTable(
@@ -15861,6 +17344,10 @@ abstract class _$SnowDatabase extends GeneratedDatabase {
   late final $DirectOutboxJobsTable directOutboxJobs = $DirectOutboxJobsTable(
     this,
   );
+  late final $ContactListTable contactList = $ContactListTable(this);
+  late final $PeerNamesTable peerNames = $PeerNamesTable(this);
+  late final $ContactSyncStatesTable contactSyncStates =
+      $ContactSyncStatesTable(this);
   late final Index idxMessagesPeerClient = Index(
     'idx_messages_peer_client',
     'CREATE UNIQUE INDEX idx_messages_peer_client ON local_messages (sender_snowchat_id, peer_client_id)',
@@ -15907,6 +17394,7 @@ abstract class _$SnowDatabase extends GeneratedDatabase {
   late final DirectOutboxDao directOutboxDao = DirectOutboxDao(
     this as SnowDatabase,
   );
+  late final ContactDao contactDao = ContactDao(this as SnowDatabase);
   late final Gv2SenderKeyStore gv2SenderKeyStore = Gv2SenderKeyStore(
     this as SnowDatabase,
   );
@@ -15920,7 +17408,6 @@ abstract class _$SnowDatabase extends GeneratedDatabase {
   List<DatabaseSchemaEntity> get allSchemaEntities => [
     localMessages,
     conversations,
-    contacts,
     signalSessions,
     signalPreKeys,
     localAttachments,
@@ -15946,6 +17433,9 @@ abstract class _$SnowDatabase extends GeneratedDatabase {
     gv2BackupStates,
     blockedAccounts,
     directOutboxJobs,
+    contactList,
+    peerNames,
+    contactSyncStates,
     idxMessagesPeerClient,
     idxGv2MembersSnow,
     idxGv2InboxLane,
@@ -17109,225 +18599,6 @@ typedef $$ConversationsTableProcessedTableManager =
         BaseReferences<_$SnowDatabase, $ConversationsTable, Conversation>,
       ),
       Conversation,
-      PrefetchHooks Function()
-    >;
-typedef $$ContactsTableCreateCompanionBuilder =
-    ContactsCompanion Function({
-      required String snowChatId,
-      Value<String?> displayName,
-      Value<String?> publicKeyHex,
-      Value<bool> isBlocked,
-      Value<bool> isTrusted,
-      required DateTime addedAt,
-      Value<int> rowid,
-    });
-typedef $$ContactsTableUpdateCompanionBuilder =
-    ContactsCompanion Function({
-      Value<String> snowChatId,
-      Value<String?> displayName,
-      Value<String?> publicKeyHex,
-      Value<bool> isBlocked,
-      Value<bool> isTrusted,
-      Value<DateTime> addedAt,
-      Value<int> rowid,
-    });
-
-class $$ContactsTableFilterComposer
-    extends Composer<_$SnowDatabase, $ContactsTable> {
-  $$ContactsTableFilterComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnFilters<String> get snowChatId => $composableBuilder(
-    column: $table.snowChatId,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get displayName => $composableBuilder(
-    column: $table.displayName,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get publicKeyHex => $composableBuilder(
-    column: $table.publicKeyHex,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<bool> get isBlocked => $composableBuilder(
-    column: $table.isBlocked,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<bool> get isTrusted => $composableBuilder(
-    column: $table.isTrusted,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<DateTime> get addedAt => $composableBuilder(
-    column: $table.addedAt,
-    builder: (column) => ColumnFilters(column),
-  );
-}
-
-class $$ContactsTableOrderingComposer
-    extends Composer<_$SnowDatabase, $ContactsTable> {
-  $$ContactsTableOrderingComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnOrderings<String> get snowChatId => $composableBuilder(
-    column: $table.snowChatId,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get displayName => $composableBuilder(
-    column: $table.displayName,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get publicKeyHex => $composableBuilder(
-    column: $table.publicKeyHex,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<bool> get isBlocked => $composableBuilder(
-    column: $table.isBlocked,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<bool> get isTrusted => $composableBuilder(
-    column: $table.isTrusted,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<DateTime> get addedAt => $composableBuilder(
-    column: $table.addedAt,
-    builder: (column) => ColumnOrderings(column),
-  );
-}
-
-class $$ContactsTableAnnotationComposer
-    extends Composer<_$SnowDatabase, $ContactsTable> {
-  $$ContactsTableAnnotationComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  GeneratedColumn<String> get snowChatId => $composableBuilder(
-    column: $table.snowChatId,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get displayName => $composableBuilder(
-    column: $table.displayName,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get publicKeyHex => $composableBuilder(
-    column: $table.publicKeyHex,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<bool> get isBlocked =>
-      $composableBuilder(column: $table.isBlocked, builder: (column) => column);
-
-  GeneratedColumn<bool> get isTrusted =>
-      $composableBuilder(column: $table.isTrusted, builder: (column) => column);
-
-  GeneratedColumn<DateTime> get addedAt =>
-      $composableBuilder(column: $table.addedAt, builder: (column) => column);
-}
-
-class $$ContactsTableTableManager
-    extends
-        RootTableManager<
-          _$SnowDatabase,
-          $ContactsTable,
-          Contact,
-          $$ContactsTableFilterComposer,
-          $$ContactsTableOrderingComposer,
-          $$ContactsTableAnnotationComposer,
-          $$ContactsTableCreateCompanionBuilder,
-          $$ContactsTableUpdateCompanionBuilder,
-          (Contact, BaseReferences<_$SnowDatabase, $ContactsTable, Contact>),
-          Contact,
-          PrefetchHooks Function()
-        > {
-  $$ContactsTableTableManager(_$SnowDatabase db, $ContactsTable table)
-    : super(
-        TableManagerState(
-          db: db,
-          table: table,
-          createFilteringComposer: () =>
-              $$ContactsTableFilterComposer($db: db, $table: table),
-          createOrderingComposer: () =>
-              $$ContactsTableOrderingComposer($db: db, $table: table),
-          createComputedFieldComposer: () =>
-              $$ContactsTableAnnotationComposer($db: db, $table: table),
-          updateCompanionCallback:
-              ({
-                Value<String> snowChatId = const Value.absent(),
-                Value<String?> displayName = const Value.absent(),
-                Value<String?> publicKeyHex = const Value.absent(),
-                Value<bool> isBlocked = const Value.absent(),
-                Value<bool> isTrusted = const Value.absent(),
-                Value<DateTime> addedAt = const Value.absent(),
-                Value<int> rowid = const Value.absent(),
-              }) => ContactsCompanion(
-                snowChatId: snowChatId,
-                displayName: displayName,
-                publicKeyHex: publicKeyHex,
-                isBlocked: isBlocked,
-                isTrusted: isTrusted,
-                addedAt: addedAt,
-                rowid: rowid,
-              ),
-          createCompanionCallback:
-              ({
-                required String snowChatId,
-                Value<String?> displayName = const Value.absent(),
-                Value<String?> publicKeyHex = const Value.absent(),
-                Value<bool> isBlocked = const Value.absent(),
-                Value<bool> isTrusted = const Value.absent(),
-                required DateTime addedAt,
-                Value<int> rowid = const Value.absent(),
-              }) => ContactsCompanion.insert(
-                snowChatId: snowChatId,
-                displayName: displayName,
-                publicKeyHex: publicKeyHex,
-                isBlocked: isBlocked,
-                isTrusted: isTrusted,
-                addedAt: addedAt,
-                rowid: rowid,
-              ),
-          withReferenceMapper: (p0) => p0
-              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
-              .toList(),
-          prefetchHooksCallback: null,
-        ),
-      );
-}
-
-typedef $$ContactsTableProcessedTableManager =
-    ProcessedTableManager<
-      _$SnowDatabase,
-      $ContactsTable,
-      Contact,
-      $$ContactsTableFilterComposer,
-      $$ContactsTableOrderingComposer,
-      $$ContactsTableAnnotationComposer,
-      $$ContactsTableCreateCompanionBuilder,
-      $$ContactsTableUpdateCompanionBuilder,
-      (Contact, BaseReferences<_$SnowDatabase, $ContactsTable, Contact>),
-      Contact,
       PrefetchHooks Function()
     >;
 typedef $$SignalSessionsTableCreateCompanionBuilder =
@@ -23205,6 +24476,7 @@ typedef $$BlockedAccountsTableCreateCompanionBuilder =
       required bool blocked,
       Value<bool> synced,
       required int updatedAtMs,
+      Value<String?> nickname,
       Value<int> rowid,
     });
 typedef $$BlockedAccountsTableUpdateCompanionBuilder =
@@ -23213,6 +24485,7 @@ typedef $$BlockedAccountsTableUpdateCompanionBuilder =
       Value<bool> blocked,
       Value<bool> synced,
       Value<int> updatedAtMs,
+      Value<String?> nickname,
       Value<int> rowid,
     });
 
@@ -23242,6 +24515,11 @@ class $$BlockedAccountsTableFilterComposer
 
   ColumnFilters<int> get updatedAtMs => $composableBuilder(
     column: $table.updatedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get nickname => $composableBuilder(
+    column: $table.nickname,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -23274,6 +24552,11 @@ class $$BlockedAccountsTableOrderingComposer
     column: $table.updatedAtMs,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get nickname => $composableBuilder(
+    column: $table.nickname,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$BlockedAccountsTableAnnotationComposer
@@ -23298,6 +24581,9 @@ class $$BlockedAccountsTableAnnotationComposer
     column: $table.updatedAtMs,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get nickname =>
+      $composableBuilder(column: $table.nickname, builder: (column) => column);
 }
 
 class $$BlockedAccountsTableTableManager
@@ -23341,12 +24627,14 @@ class $$BlockedAccountsTableTableManager
                 Value<bool> blocked = const Value.absent(),
                 Value<bool> synced = const Value.absent(),
                 Value<int> updatedAtMs = const Value.absent(),
+                Value<String?> nickname = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => BlockedAccountsCompanion(
                 snowId: snowId,
                 blocked: blocked,
                 synced: synced,
                 updatedAtMs: updatedAtMs,
+                nickname: nickname,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -23355,12 +24643,14 @@ class $$BlockedAccountsTableTableManager
                 required bool blocked,
                 Value<bool> synced = const Value.absent(),
                 required int updatedAtMs,
+                Value<String?> nickname = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => BlockedAccountsCompanion.insert(
                 snowId: snowId,
                 blocked: blocked,
                 synced: synced,
                 updatedAtMs: updatedAtMs,
+                nickname: nickname,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -23659,6 +24949,875 @@ typedef $$DirectOutboxJobsTableProcessedTableManager =
       DirectOutboxRow,
       PrefetchHooks Function()
     >;
+typedef $$ContactListTableCreateCompanionBuilder =
+    ContactListCompanion Function({
+      required String snowId,
+      Value<bool> inMyList,
+      Value<bool> addedMe,
+      Value<int?> hiddenAtMs,
+      Value<String?> nickname,
+      Value<int?> nameIssuedAtMs,
+      Value<Uint8List?> accountPub,
+      Value<int> notFoundCount,
+      Value<int?> removedMeAtMs,
+      required int createdAtMs,
+      required int updatedAtMs,
+      Value<int> rowid,
+    });
+typedef $$ContactListTableUpdateCompanionBuilder =
+    ContactListCompanion Function({
+      Value<String> snowId,
+      Value<bool> inMyList,
+      Value<bool> addedMe,
+      Value<int?> hiddenAtMs,
+      Value<String?> nickname,
+      Value<int?> nameIssuedAtMs,
+      Value<Uint8List?> accountPub,
+      Value<int> notFoundCount,
+      Value<int?> removedMeAtMs,
+      Value<int> createdAtMs,
+      Value<int> updatedAtMs,
+      Value<int> rowid,
+    });
+
+class $$ContactListTableFilterComposer
+    extends Composer<_$SnowDatabase, $ContactListTable> {
+  $$ContactListTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get snowId => $composableBuilder(
+    column: $table.snowId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get inMyList => $composableBuilder(
+    column: $table.inMyList,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get addedMe => $composableBuilder(
+    column: $table.addedMe,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get hiddenAtMs => $composableBuilder(
+    column: $table.hiddenAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get nickname => $composableBuilder(
+    column: $table.nickname,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get nameIssuedAtMs => $composableBuilder(
+    column: $table.nameIssuedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<Uint8List> get accountPub => $composableBuilder(
+    column: $table.accountPub,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get notFoundCount => $composableBuilder(
+    column: $table.notFoundCount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get removedMeAtMs => $composableBuilder(
+    column: $table.removedMeAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAtMs => $composableBuilder(
+    column: $table.createdAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAtMs => $composableBuilder(
+    column: $table.updatedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$ContactListTableOrderingComposer
+    extends Composer<_$SnowDatabase, $ContactListTable> {
+  $$ContactListTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get snowId => $composableBuilder(
+    column: $table.snowId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get inMyList => $composableBuilder(
+    column: $table.inMyList,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get addedMe => $composableBuilder(
+    column: $table.addedMe,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get hiddenAtMs => $composableBuilder(
+    column: $table.hiddenAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get nickname => $composableBuilder(
+    column: $table.nickname,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get nameIssuedAtMs => $composableBuilder(
+    column: $table.nameIssuedAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<Uint8List> get accountPub => $composableBuilder(
+    column: $table.accountPub,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get notFoundCount => $composableBuilder(
+    column: $table.notFoundCount,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get removedMeAtMs => $composableBuilder(
+    column: $table.removedMeAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAtMs => $composableBuilder(
+    column: $table.createdAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAtMs => $composableBuilder(
+    column: $table.updatedAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$ContactListTableAnnotationComposer
+    extends Composer<_$SnowDatabase, $ContactListTable> {
+  $$ContactListTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get snowId =>
+      $composableBuilder(column: $table.snowId, builder: (column) => column);
+
+  GeneratedColumn<bool> get inMyList =>
+      $composableBuilder(column: $table.inMyList, builder: (column) => column);
+
+  GeneratedColumn<bool> get addedMe =>
+      $composableBuilder(column: $table.addedMe, builder: (column) => column);
+
+  GeneratedColumn<int> get hiddenAtMs => $composableBuilder(
+    column: $table.hiddenAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get nickname =>
+      $composableBuilder(column: $table.nickname, builder: (column) => column);
+
+  GeneratedColumn<int> get nameIssuedAtMs => $composableBuilder(
+    column: $table.nameIssuedAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<Uint8List> get accountPub => $composableBuilder(
+    column: $table.accountPub,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get notFoundCount => $composableBuilder(
+    column: $table.notFoundCount,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get removedMeAtMs => $composableBuilder(
+    column: $table.removedMeAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAtMs => $composableBuilder(
+    column: $table.createdAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get updatedAtMs => $composableBuilder(
+    column: $table.updatedAtMs,
+    builder: (column) => column,
+  );
+}
+
+class $$ContactListTableTableManager
+    extends
+        RootTableManager<
+          _$SnowDatabase,
+          $ContactListTable,
+          ContactRow,
+          $$ContactListTableFilterComposer,
+          $$ContactListTableOrderingComposer,
+          $$ContactListTableAnnotationComposer,
+          $$ContactListTableCreateCompanionBuilder,
+          $$ContactListTableUpdateCompanionBuilder,
+          (
+            ContactRow,
+            BaseReferences<_$SnowDatabase, $ContactListTable, ContactRow>,
+          ),
+          ContactRow,
+          PrefetchHooks Function()
+        > {
+  $$ContactListTableTableManager(_$SnowDatabase db, $ContactListTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ContactListTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ContactListTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ContactListTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> snowId = const Value.absent(),
+                Value<bool> inMyList = const Value.absent(),
+                Value<bool> addedMe = const Value.absent(),
+                Value<int?> hiddenAtMs = const Value.absent(),
+                Value<String?> nickname = const Value.absent(),
+                Value<int?> nameIssuedAtMs = const Value.absent(),
+                Value<Uint8List?> accountPub = const Value.absent(),
+                Value<int> notFoundCount = const Value.absent(),
+                Value<int?> removedMeAtMs = const Value.absent(),
+                Value<int> createdAtMs = const Value.absent(),
+                Value<int> updatedAtMs = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => ContactListCompanion(
+                snowId: snowId,
+                inMyList: inMyList,
+                addedMe: addedMe,
+                hiddenAtMs: hiddenAtMs,
+                nickname: nickname,
+                nameIssuedAtMs: nameIssuedAtMs,
+                accountPub: accountPub,
+                notFoundCount: notFoundCount,
+                removedMeAtMs: removedMeAtMs,
+                createdAtMs: createdAtMs,
+                updatedAtMs: updatedAtMs,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String snowId,
+                Value<bool> inMyList = const Value.absent(),
+                Value<bool> addedMe = const Value.absent(),
+                Value<int?> hiddenAtMs = const Value.absent(),
+                Value<String?> nickname = const Value.absent(),
+                Value<int?> nameIssuedAtMs = const Value.absent(),
+                Value<Uint8List?> accountPub = const Value.absent(),
+                Value<int> notFoundCount = const Value.absent(),
+                Value<int?> removedMeAtMs = const Value.absent(),
+                required int createdAtMs,
+                required int updatedAtMs,
+                Value<int> rowid = const Value.absent(),
+              }) => ContactListCompanion.insert(
+                snowId: snowId,
+                inMyList: inMyList,
+                addedMe: addedMe,
+                hiddenAtMs: hiddenAtMs,
+                nickname: nickname,
+                nameIssuedAtMs: nameIssuedAtMs,
+                accountPub: accountPub,
+                notFoundCount: notFoundCount,
+                removedMeAtMs: removedMeAtMs,
+                createdAtMs: createdAtMs,
+                updatedAtMs: updatedAtMs,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$ContactListTableProcessedTableManager =
+    ProcessedTableManager<
+      _$SnowDatabase,
+      $ContactListTable,
+      ContactRow,
+      $$ContactListTableFilterComposer,
+      $$ContactListTableOrderingComposer,
+      $$ContactListTableAnnotationComposer,
+      $$ContactListTableCreateCompanionBuilder,
+      $$ContactListTableUpdateCompanionBuilder,
+      (
+        ContactRow,
+        BaseReferences<_$SnowDatabase, $ContactListTable, ContactRow>,
+      ),
+      ContactRow,
+      PrefetchHooks Function()
+    >;
+typedef $$PeerNamesTableCreateCompanionBuilder =
+    PeerNamesCompanion Function({
+      required String peer,
+      Value<String?> name,
+      Value<int?> issuedAtMs,
+      Value<int?> announcedIssuedAtMs,
+      Value<int> rowid,
+    });
+typedef $$PeerNamesTableUpdateCompanionBuilder =
+    PeerNamesCompanion Function({
+      Value<String> peer,
+      Value<String?> name,
+      Value<int?> issuedAtMs,
+      Value<int?> announcedIssuedAtMs,
+      Value<int> rowid,
+    });
+
+class $$PeerNamesTableFilterComposer
+    extends Composer<_$SnowDatabase, $PeerNamesTable> {
+  $$PeerNamesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get peer => $composableBuilder(
+    column: $table.peer,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get issuedAtMs => $composableBuilder(
+    column: $table.issuedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get announcedIssuedAtMs => $composableBuilder(
+    column: $table.announcedIssuedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$PeerNamesTableOrderingComposer
+    extends Composer<_$SnowDatabase, $PeerNamesTable> {
+  $$PeerNamesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get peer => $composableBuilder(
+    column: $table.peer,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get issuedAtMs => $composableBuilder(
+    column: $table.issuedAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get announcedIssuedAtMs => $composableBuilder(
+    column: $table.announcedIssuedAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$PeerNamesTableAnnotationComposer
+    extends Composer<_$SnowDatabase, $PeerNamesTable> {
+  $$PeerNamesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get peer =>
+      $composableBuilder(column: $table.peer, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<int> get issuedAtMs => $composableBuilder(
+    column: $table.issuedAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get announcedIssuedAtMs => $composableBuilder(
+    column: $table.announcedIssuedAtMs,
+    builder: (column) => column,
+  );
+}
+
+class $$PeerNamesTableTableManager
+    extends
+        RootTableManager<
+          _$SnowDatabase,
+          $PeerNamesTable,
+          PeerNameRow,
+          $$PeerNamesTableFilterComposer,
+          $$PeerNamesTableOrderingComposer,
+          $$PeerNamesTableAnnotationComposer,
+          $$PeerNamesTableCreateCompanionBuilder,
+          $$PeerNamesTableUpdateCompanionBuilder,
+          (
+            PeerNameRow,
+            BaseReferences<_$SnowDatabase, $PeerNamesTable, PeerNameRow>,
+          ),
+          PeerNameRow,
+          PrefetchHooks Function()
+        > {
+  $$PeerNamesTableTableManager(_$SnowDatabase db, $PeerNamesTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$PeerNamesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$PeerNamesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$PeerNamesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> peer = const Value.absent(),
+                Value<String?> name = const Value.absent(),
+                Value<int?> issuedAtMs = const Value.absent(),
+                Value<int?> announcedIssuedAtMs = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => PeerNamesCompanion(
+                peer: peer,
+                name: name,
+                issuedAtMs: issuedAtMs,
+                announcedIssuedAtMs: announcedIssuedAtMs,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String peer,
+                Value<String?> name = const Value.absent(),
+                Value<int?> issuedAtMs = const Value.absent(),
+                Value<int?> announcedIssuedAtMs = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => PeerNamesCompanion.insert(
+                peer: peer,
+                name: name,
+                issuedAtMs: issuedAtMs,
+                announcedIssuedAtMs: announcedIssuedAtMs,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$PeerNamesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$SnowDatabase,
+      $PeerNamesTable,
+      PeerNameRow,
+      $$PeerNamesTableFilterComposer,
+      $$PeerNamesTableOrderingComposer,
+      $$PeerNamesTableAnnotationComposer,
+      $$PeerNamesTableCreateCompanionBuilder,
+      $$PeerNamesTableUpdateCompanionBuilder,
+      (
+        PeerNameRow,
+        BaseReferences<_$SnowDatabase, $PeerNamesTable, PeerNameRow>,
+      ),
+      PeerNameRow,
+      PrefetchHooks Function()
+    >;
+typedef $$ContactSyncStatesTableCreateCompanionBuilder =
+    ContactSyncStatesCompanion Function({
+      Value<int> slot,
+      Value<bool> restored,
+      Value<String?> etag,
+      required int periodMs,
+      required int nextWriteAtMs,
+      Value<bool> blocksReplacePending,
+      Value<int?> blockKeyVersion,
+      Value<Uint8List?> ownNameCert,
+      Value<int?> ownNameCertAtMs,
+      Value<bool> restoreNoticeDue,
+      Value<int?> restoreSavedAtMs,
+      Value<bool> restoreUnreadable,
+    });
+typedef $$ContactSyncStatesTableUpdateCompanionBuilder =
+    ContactSyncStatesCompanion Function({
+      Value<int> slot,
+      Value<bool> restored,
+      Value<String?> etag,
+      Value<int> periodMs,
+      Value<int> nextWriteAtMs,
+      Value<bool> blocksReplacePending,
+      Value<int?> blockKeyVersion,
+      Value<Uint8List?> ownNameCert,
+      Value<int?> ownNameCertAtMs,
+      Value<bool> restoreNoticeDue,
+      Value<int?> restoreSavedAtMs,
+      Value<bool> restoreUnreadable,
+    });
+
+class $$ContactSyncStatesTableFilterComposer
+    extends Composer<_$SnowDatabase, $ContactSyncStatesTable> {
+  $$ContactSyncStatesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get slot => $composableBuilder(
+    column: $table.slot,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get restored => $composableBuilder(
+    column: $table.restored,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get etag => $composableBuilder(
+    column: $table.etag,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get periodMs => $composableBuilder(
+    column: $table.periodMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get nextWriteAtMs => $composableBuilder(
+    column: $table.nextWriteAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get blocksReplacePending => $composableBuilder(
+    column: $table.blocksReplacePending,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get blockKeyVersion => $composableBuilder(
+    column: $table.blockKeyVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<Uint8List> get ownNameCert => $composableBuilder(
+    column: $table.ownNameCert,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get ownNameCertAtMs => $composableBuilder(
+    column: $table.ownNameCertAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get restoreNoticeDue => $composableBuilder(
+    column: $table.restoreNoticeDue,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get restoreSavedAtMs => $composableBuilder(
+    column: $table.restoreSavedAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get restoreUnreadable => $composableBuilder(
+    column: $table.restoreUnreadable,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$ContactSyncStatesTableOrderingComposer
+    extends Composer<_$SnowDatabase, $ContactSyncStatesTable> {
+  $$ContactSyncStatesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get slot => $composableBuilder(
+    column: $table.slot,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get restored => $composableBuilder(
+    column: $table.restored,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get etag => $composableBuilder(
+    column: $table.etag,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get periodMs => $composableBuilder(
+    column: $table.periodMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get nextWriteAtMs => $composableBuilder(
+    column: $table.nextWriteAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get blocksReplacePending => $composableBuilder(
+    column: $table.blocksReplacePending,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get blockKeyVersion => $composableBuilder(
+    column: $table.blockKeyVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<Uint8List> get ownNameCert => $composableBuilder(
+    column: $table.ownNameCert,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get ownNameCertAtMs => $composableBuilder(
+    column: $table.ownNameCertAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get restoreNoticeDue => $composableBuilder(
+    column: $table.restoreNoticeDue,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get restoreSavedAtMs => $composableBuilder(
+    column: $table.restoreSavedAtMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get restoreUnreadable => $composableBuilder(
+    column: $table.restoreUnreadable,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$ContactSyncStatesTableAnnotationComposer
+    extends Composer<_$SnowDatabase, $ContactSyncStatesTable> {
+  $$ContactSyncStatesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get slot =>
+      $composableBuilder(column: $table.slot, builder: (column) => column);
+
+  GeneratedColumn<bool> get restored =>
+      $composableBuilder(column: $table.restored, builder: (column) => column);
+
+  GeneratedColumn<String> get etag =>
+      $composableBuilder(column: $table.etag, builder: (column) => column);
+
+  GeneratedColumn<int> get periodMs =>
+      $composableBuilder(column: $table.periodMs, builder: (column) => column);
+
+  GeneratedColumn<int> get nextWriteAtMs => $composableBuilder(
+    column: $table.nextWriteAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get blocksReplacePending => $composableBuilder(
+    column: $table.blocksReplacePending,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get blockKeyVersion => $composableBuilder(
+    column: $table.blockKeyVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<Uint8List> get ownNameCert => $composableBuilder(
+    column: $table.ownNameCert,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get ownNameCertAtMs => $composableBuilder(
+    column: $table.ownNameCertAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get restoreNoticeDue => $composableBuilder(
+    column: $table.restoreNoticeDue,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get restoreSavedAtMs => $composableBuilder(
+    column: $table.restoreSavedAtMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<bool> get restoreUnreadable => $composableBuilder(
+    column: $table.restoreUnreadable,
+    builder: (column) => column,
+  );
+}
+
+class $$ContactSyncStatesTableTableManager
+    extends
+        RootTableManager<
+          _$SnowDatabase,
+          $ContactSyncStatesTable,
+          ContactSyncStateRow,
+          $$ContactSyncStatesTableFilterComposer,
+          $$ContactSyncStatesTableOrderingComposer,
+          $$ContactSyncStatesTableAnnotationComposer,
+          $$ContactSyncStatesTableCreateCompanionBuilder,
+          $$ContactSyncStatesTableUpdateCompanionBuilder,
+          (
+            ContactSyncStateRow,
+            BaseReferences<
+              _$SnowDatabase,
+              $ContactSyncStatesTable,
+              ContactSyncStateRow
+            >,
+          ),
+          ContactSyncStateRow,
+          PrefetchHooks Function()
+        > {
+  $$ContactSyncStatesTableTableManager(
+    _$SnowDatabase db,
+    $ContactSyncStatesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$ContactSyncStatesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$ContactSyncStatesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$ContactSyncStatesTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<int> slot = const Value.absent(),
+                Value<bool> restored = const Value.absent(),
+                Value<String?> etag = const Value.absent(),
+                Value<int> periodMs = const Value.absent(),
+                Value<int> nextWriteAtMs = const Value.absent(),
+                Value<bool> blocksReplacePending = const Value.absent(),
+                Value<int?> blockKeyVersion = const Value.absent(),
+                Value<Uint8List?> ownNameCert = const Value.absent(),
+                Value<int?> ownNameCertAtMs = const Value.absent(),
+                Value<bool> restoreNoticeDue = const Value.absent(),
+                Value<int?> restoreSavedAtMs = const Value.absent(),
+                Value<bool> restoreUnreadable = const Value.absent(),
+              }) => ContactSyncStatesCompanion(
+                slot: slot,
+                restored: restored,
+                etag: etag,
+                periodMs: periodMs,
+                nextWriteAtMs: nextWriteAtMs,
+                blocksReplacePending: blocksReplacePending,
+                blockKeyVersion: blockKeyVersion,
+                ownNameCert: ownNameCert,
+                ownNameCertAtMs: ownNameCertAtMs,
+                restoreNoticeDue: restoreNoticeDue,
+                restoreSavedAtMs: restoreSavedAtMs,
+                restoreUnreadable: restoreUnreadable,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> slot = const Value.absent(),
+                Value<bool> restored = const Value.absent(),
+                Value<String?> etag = const Value.absent(),
+                required int periodMs,
+                required int nextWriteAtMs,
+                Value<bool> blocksReplacePending = const Value.absent(),
+                Value<int?> blockKeyVersion = const Value.absent(),
+                Value<Uint8List?> ownNameCert = const Value.absent(),
+                Value<int?> ownNameCertAtMs = const Value.absent(),
+                Value<bool> restoreNoticeDue = const Value.absent(),
+                Value<int?> restoreSavedAtMs = const Value.absent(),
+                Value<bool> restoreUnreadable = const Value.absent(),
+              }) => ContactSyncStatesCompanion.insert(
+                slot: slot,
+                restored: restored,
+                etag: etag,
+                periodMs: periodMs,
+                nextWriteAtMs: nextWriteAtMs,
+                blocksReplacePending: blocksReplacePending,
+                blockKeyVersion: blockKeyVersion,
+                ownNameCert: ownNameCert,
+                ownNameCertAtMs: ownNameCertAtMs,
+                restoreNoticeDue: restoreNoticeDue,
+                restoreSavedAtMs: restoreSavedAtMs,
+                restoreUnreadable: restoreUnreadable,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$ContactSyncStatesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$SnowDatabase,
+      $ContactSyncStatesTable,
+      ContactSyncStateRow,
+      $$ContactSyncStatesTableFilterComposer,
+      $$ContactSyncStatesTableOrderingComposer,
+      $$ContactSyncStatesTableAnnotationComposer,
+      $$ContactSyncStatesTableCreateCompanionBuilder,
+      $$ContactSyncStatesTableUpdateCompanionBuilder,
+      (
+        ContactSyncStateRow,
+        BaseReferences<
+          _$SnowDatabase,
+          $ContactSyncStatesTable,
+          ContactSyncStateRow
+        >,
+      ),
+      ContactSyncStateRow,
+      PrefetchHooks Function()
+    >;
 
 class $SnowDatabaseManager {
   final _$SnowDatabase _db;
@@ -23667,8 +25826,6 @@ class $SnowDatabaseManager {
       $$LocalMessagesTableTableManager(_db, _db.localMessages);
   $$ConversationsTableTableManager get conversations =>
       $$ConversationsTableTableManager(_db, _db.conversations);
-  $$ContactsTableTableManager get contacts =>
-      $$ContactsTableTableManager(_db, _db.contacts);
   $$SignalSessionsTableTableManager get signalSessions =>
       $$SignalSessionsTableTableManager(_db, _db.signalSessions);
   $$SignalPreKeysTableTableManager get signalPreKeys =>
@@ -23719,4 +25876,10 @@ class $SnowDatabaseManager {
       $$BlockedAccountsTableTableManager(_db, _db.blockedAccounts);
   $$DirectOutboxJobsTableTableManager get directOutboxJobs =>
       $$DirectOutboxJobsTableTableManager(_db, _db.directOutboxJobs);
+  $$ContactListTableTableManager get contactList =>
+      $$ContactListTableTableManager(_db, _db.contactList);
+  $$PeerNamesTableTableManager get peerNames =>
+      $$PeerNamesTableTableManager(_db, _db.peerNames);
+  $$ContactSyncStatesTableTableManager get contactSyncStates =>
+      $$ContactSyncStatesTableTableManager(_db, _db.contactSyncStates);
 }

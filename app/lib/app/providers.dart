@@ -3,7 +3,26 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (SC-18: after a group message is sent while the socket is down, the queue is fetched — this device's own row is acknowledged before the server's push grace runs out, so the sender's phone shows no notification of its own message. Also: sealedSenderAutoInitProvider builds SealedSenderService from the server
+/// @lastUpdated 2026-11-23 (callProvider gets the "Show caller name on calls" reader — SettingsNotifier.callShowCallerNameForCall). Earlier 2026-11-22 (notificationServiceProvider no longer asks the microphone — askStartupPrompts in PushService owns the start prompts). Earlier 2026-11-22 (review fixes: contactSyncProvider runs a ContactSyncRunner — one run at a
+///              time, one timer, cancelled on dispose, re-armed when a block / unblock makes the
+///              backup write due sooner (writeSoon, 1–10 minutes later); a contact notice is handed
+///              on with its answer mark; the queue names an unnamed sender from this device's names
+///              (peerName); a peer's prekey message makes the next message to it carry the name
+///              certificate again (onNewInboundSession → NameCertService.forgetAnnounced); the outbox
+///              reads the server's status events (statusEvents — the delivered mark); community
+///              avatars through communityAvatarBytesProvider — authHeaderProvider is gone (no file
+///              is fetched by a URL any more). No account or
+///              conversation id in a log line — logRef). Earlier 2026-11-22 (friend graph off the server — design 2026-11-22: contactDaoProvider,
+///              nameCertServiceProvider, contactStoreProvider, contactLookupProvider,
+///              contactBackupProvider and contactSyncProvider (restore once, block tags replaced,
+///              the periodic backup write — on every connect and on a timer); the queue hands
+///              contact notices to the contact store (a local notification while the app is open)
+///              and name certificates to NameCertService; a block / unblock writes the backup at
+///              once; the outbox attaches name certificates; pendingFriendBadgeProvider counts the
+///              received requests on this device; no presenceServiceProvider (no presence);
+///              contactRestoreNoticeProvider — the restore notice not shown yet; the outbox tells
+///              the contact store what the server said about a recipient (onRecipientChecked)).
+///              Earlier 2026-11-22 (appBadgeUpdaterProvider writes the unread sum again on every resume — a pushed badge stayed after the message was read as it arrived; the microphone is asked once on the first run, right after the notification prompt — askMicrophoneOnce; a first call answered from the lock screen could not show the prompt and never connected. SC-18: after a group message is sent while the socket is down, the queue is fetched — this device's own row is acknowledged before the server's push grace runs out, so the sender's phone shows no notification of its own message. Also: sealedSenderAutoInitProvider builds SealedSenderService from the server
 ///              keys pinned in the build — no /auth/server-key fetch, SC-06; the session manager's
 ///              sessionResetNotifier is the handler's sealed sendSealedSessionReset, SC-05; CallService
 ///              gets the fingerprint signing seed and the peer's bound Ed25519 key, SC-10). Earlier 2026-11-22 (passcodeStoreProvider — the app passcode, salted Argon2id; startup asks it
@@ -38,7 +57,11 @@
 ///  - notificationServiceProvider: NotificationService provider
 ///  - pushServiceProvider: PushService provider
 ///  - pushTokenAutoSyncProvider: auto-registers the FCM token whenever authToken transitions to non-null (fresh signup / restore / login / restart)
-///  - presenceServiceProvider: PresenceService provider
+///  - contactDaoProvider / contactStoreProvider / nameCertServiceProvider / contactLookupProvider /
+///    contactBackupProvider / contactSyncProvider: the friend list on this device (core/contacts)
+///  - pendingFriendBadgeProvider: received friend requests on this device (Friends tab badge)
+///  - contactRestoreNoticeProvider: the restore notice not shown yet (the main shell shows it)
+///  - communityAvatarBytesProvider: a community avatar's image (POST /files/fetch), per file id
 ///  - linkPreviewServiceProvider: LinkPreviewService provider
 ///  - solanaNetworkProvider: Solana network (Devnet/Mainnet) state provider
 ///  - solanaConfigProvider: SolanaConfig provider for the current network
@@ -46,6 +69,7 @@
 
 import '../core/security/passcode.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'app_config.dart';
 
@@ -57,6 +81,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../core/blocking/block_list.dart';
+import '../core/contacts/contact_backup.dart';
+import '../core/contacts/contact_lookup.dart';
+import '../core/contacts/contact_notice.dart';
+import '../core/contacts/contact_store.dart';
+import '../core/contacts/contact_sync_runner.dart';
+import '../core/contacts/name_cert_service.dart';
 import '../core/call/call_service.dart';
 import '../core/call/call_signaling.dart';
 import '../core/call/callkit_manager.dart';
@@ -94,9 +124,9 @@ import '../core/crypto/signal_session_manager.dart';
 import '../core/network/api_client.dart';
 import '../core/network/api_endpoints.dart';
 import '../core/network/file_service.dart';
+import '../core/network/contact_backup_client.dart';
 import '../core/network/gv2_backup_client.dart';
 import '../core/network/link_preview_service.dart';
-import '../core/network/presence_service.dart';
 import '../core/network/socket_manager.dart';
 import '../core/network/auth_service.dart';
 import '../core/network/token_manager.dart';
@@ -106,6 +136,7 @@ import '../core/storage/daos/conversation_dao.dart';
 import '../core/storage/daos/attachment_dao.dart';
 import '../core/storage/daos/ai_message_dao.dart';
 import '../core/storage/daos/identity_verification_dao.dart';
+import '../core/storage/daos/contact_dao.dart';
 import '../core/storage/secure_storage.dart';
 import '../core/storage/encrypted_database.dart';
 import '../core/storage/local_file_protection.dart';
@@ -118,6 +149,7 @@ import '../features/wallet/services/transfer_service.dart';
 export '../features/wallet/rpc/rpc_config.dart' show SolanaNetwork;
 
 import '../features/wallet/rpc/rpc_config.dart' show SolanaNetwork;
+import '../core/diagnostics/log_ref.dart';
 
 final solanaNetworkProvider = StateProvider<SolanaNetwork>((ref) {
   return SolanaNetwork.devnet;
@@ -253,7 +285,7 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   }
 
   final snowId = await identityManager.getSnowChatId();
-  debugPrint('[AppStartup] Identity found: $snowId');
+  debugPrint('[AppStartup] Identity found: ${logRef(snowId)}');
 
   // Step 1.5 (Phase 11): hydrate TokenManager from storage. Restores a
   // previously-saved snapshot (v2 envelope or legacy slot migration) so the
@@ -544,24 +576,6 @@ final authTokenProvider = StateProvider<String?>(
   (ref) => ref.read(tokenSnapshotProvider)?.access,
 );
 
-/// Authorization header for raw network calls that bypass the Dio interceptor
-/// (Image.network on `/api/v2/files/:fileId` for channel/user avatars, etc.).
-///
-/// Phase 11 cut over moved Authorization injection from a Dio default header
-/// to a per-request interceptor (`ApiClient.onRequest`). The previous pattern
-/// `ref.read(apiClientProvider).dio.options.headers['Authorization']` now
-/// reads null → Image.network sends no auth header → server `/files/:fileId`
-/// returns 401 → `errorBuilder` fallback fires → user sees the initials
-/// placeholder instead of the uploaded avatar (manifests as "save 가 안 됨"
-/// because the upload + PUT both succeed but the next render cannot fetch
-/// the file). Watching `tokenSnapshotProvider` here makes consumers rebuild
-/// automatically on token rotation, so a refresh in flight does not leave a
-/// stale header behind.
-final authHeaderProvider = Provider<String?>((ref) {
-  final snap = ref.watch(tokenSnapshotProvider);
-  return snap != null ? 'Bearer ${snap.access}' : null;
-});
-
 // One-shot sync glue — listens to tokenSnapshotProvider and rewrites
 // authTokenProvider on every change. Keep alive (KeepAlive) for the app
 // lifetime so listeners never see stale values. Wired via app.dart's
@@ -616,16 +630,12 @@ final socketManagerProvider = Provider<SocketManager>((ref) {
     }
   });
 
-  // expiredHard from TokenManager → run logout-side effects + clear.
-  final eventSub = tokenManager.events.listen((event) async {
-    if (event.type == TokenEventType.expiredHard) {
-      try {
-        final authService = ref.read(authServiceProvider);
-        await authService.logout();
-      } catch (_) {/* best-effort */}
-      // tokenManager.clear() already ran inside _doRefresh on expiredHard.
-      manager.disconnect();
-    }
+  // expiredHard from TokenManager: the session is over (tokenManager.clear()
+  // already ran inside _doRefresh). No request can be authorized any more —
+  // the server drops this device's push tokens itself when it refuses the
+  // expired refresh token.
+  final eventSub = tokenManager.events.listen((event) {
+    if (event.type == TokenEventType.expiredHard) manager.disconnect();
   });
 
   ref.onDispose(() {
@@ -685,12 +695,26 @@ final conversationDaoProvider = Provider<ConversationDao>((ref) {
 /// — read-receipts, navigations, and any drift mutation that changes
 /// unread counts flow through here). app.dart must `ref.watch` this for
 /// the subscription to stay live.
+///
+/// The badge has a second writer: a push's aps.badge (the server's count of
+/// rows not yet acknowledged when it pushed). A message read as it arrived
+/// (its chat open — opened by tapping that very push) never moves the drift
+/// sum, so nothing here would correct the pushed count: on every resume the
+/// current sum is written again, whatever was written last.
 final appBadgeUpdaterProvider = Provider<void>((ref) {
   final dao = ref.read(conversationDaoProvider);
+  var latest = 0;
   final sub = dao.watchTotalUnreadCount().listen((count) {
+    latest = count;
     BadgeService.instance.setCount(count);
   });
-  ref.onDispose(sub.cancel);
+  final lifecycle = AppLifecycleListener(
+    onResume: () => BadgeService.instance.setCount(latest, force: true),
+  );
+  ref.onDispose(() {
+    lifecycle.dispose();
+    unawaited(sub.cancel());
+  });
 });
 
 final attachmentDaoProvider = Provider<AttachmentDao>((ref) {
@@ -820,6 +844,21 @@ final transferEventBusProvider = Provider<TransferEventBus>((ref) {
   return bus;
 });
 
+// --- Community avatars ---
+/// The image of a community's avatar (its uploaded file [fileId]), fetched
+/// once with the account's login — POST /files/fetch, the file id in the
+/// body, never in a URL — and kept for the run. Null when it cannot be
+/// fetched (the avatar shows initials).
+final communityAvatarBytesProvider =
+    FutureProvider.family<Uint8List?, String>((ref, fileId) async {
+  try {
+    return await ref.read(fileServiceProvider).downloadEncryptedFile(fileId);
+  } catch (e) {
+    debugPrint('[Avatar] community avatar not fetched: ${e.runtimeType}');
+    return null;
+  }
+});
+
 // --- Blocked accounts (X1) ---
 // The accounts this user blocked, on this device: read once, and brought in
 // step with the server now and on every connect (BlockList.sync). What a
@@ -828,6 +867,7 @@ final blockListProvider = Provider<BlockList>((ref) {
   final list = BlockList(
     store: ref.read(snowDatabaseProvider).blockListDao,
     api: ref.read(apiClientProvider),
+    mySnowId: () => ref.read(currentSnowIdProvider) ?? '',
   );
   unawaited(list.load());
   unawaited(list.sync());
@@ -852,6 +892,143 @@ final blockedAccountsProvider = StreamProvider<Set<String>>((ref) async* {
   yield* list.changes;
 });
 
+// --- The friend list on this device (design 2026-11-22-friend-graph-off-server) ---
+
+final contactDaoProvider = Provider<ContactDao>(
+    (ref) => ref.read(snowDatabaseProvider).contactDao);
+
+/// Names from name certificates: this account's own (fetched, cached) and
+/// the peers' (verified offline against the pinned Sealed Sender keys).
+final nameCertServiceProvider = Provider<NameCertService>((ref) {
+  final api = ref.read(apiClientProvider);
+  final service = NameCertService(
+    dao: ref.read(contactDaoProvider),
+    conversations: ref.read(conversationDaoProvider),
+    fetchOwn: () async {
+      final res = await api.post<dynamic>(ApiEndpoints.nameCert, data: {});
+      final data = res.data;
+      final cert = data is Map ? data['cert'] : null;
+      if (cert is! String) throw const FormatException('name certificate');
+      return base64Decode(cert);
+    },
+    trustedKeys: sealedTrustedServerKeys,
+    mySnowId: () => ref.read(currentSnowIdProvider) ?? '',
+  );
+  // The names an incoming call reads synchronously (cachedName).
+  unawaited(service.warmUp());
+  return service;
+});
+
+/// The rows and rules of the friend list; notices go through the 1:1
+/// outbox, the user's own choices are vouched for.
+// Typed: it and directOutboxProvider read each other (lazily, inside
+// closures), which top-level inference cannot follow.
+final Provider<ContactStore> contactStoreProvider =
+    Provider<ContactStore>((ref) {
+  return ContactStore(
+    dao: ref.read(contactDaoProvider),
+    send: (peer, notice) =>
+        ref.read(directOutboxProvider).enqueueNotice(peer: peer, notice: notice),
+    vouch: ref.read(verifiedIdentityStoreProvider).vouch,
+  );
+});
+
+/// Finding an account by nickname or snowId (key checked against the id).
+final contactLookupProvider =
+    Provider<ContactLookup>((ref) => ContactLookup(ref.read(apiClientProvider)));
+
+/// The sealed contact backup. A block or an unblock writes it at once.
+final contactBackupProvider = Provider<ContactBackup>((ref) {
+  final blocks = ref.read(blockListProvider);
+  final verified = ref.read(verifiedIdentityStoreProvider);
+  final backup = ContactBackup(
+    dao: ref.read(contactDaoProvider),
+    api: ContactBackupClient(ref.read(apiClientProvider)),
+    key: ref.read(identityManagerProvider).deriveContactBackupKey,
+    hooks: ContactBackupHooks(
+      blockedAccounts: blocks.blockedWithNames,
+      mergeBlocks: blocks.mergeRestored,
+      replaceServerBlocks: blocks.replaceOnServer,
+      restoredInMyList: (snowId, accountPub) async {
+        await verified.vouch(snowId, VouchSource.restored);
+        if (accountPub != null) await verified.pinAccountKey(snowId, accountPub);
+      },
+    ),
+  );
+  blocks.onUserChange = () => unawaited(backup.writeSoon());
+  // A block tag key version that changed replaces the server's tags once.
+  blocks.onKeyVersion = (v) => unawaited(backup.noteBlockKeyVersion(v));
+  ref.onDispose(() {
+    blocks.onUserChange = null;
+    blocks.onKeyVersion = null;
+  });
+  return backup;
+});
+
+/// Runs the contact backup while an account is signed in: restore once on a
+/// new install, replace the server's block tags when due, and the periodic
+/// write — at start, on every connect, when the next write is due and when
+/// a block / unblock made it due sooner (ContactSyncRunner). Watched by
+/// app.dart.
+final contactSyncProvider = Provider<void>((ref) {
+  final snowId = ref.watch(currentSnowIdProvider);
+  final token = ref.watch(authTokenProvider);
+  if (snowId == null || snowId.isEmpty || token == null) return;
+  final runner = ContactSyncRunner(
+    backup: ref.read(contactBackupProvider),
+    connectionChanges: ref.read(socketManagerProvider).onConnectionChange,
+  )..start();
+  ref.onDispose(runner.dispose);
+});
+
+/// The restore notice not shown yet (design §5.10): what the restore of this
+/// install found — a backup and its date, or none — until the user saw it
+/// (ContactBackup.dismissRestoreNotice). Null otherwise. The main shell
+/// shows it once.
+final contactRestoreNoticeProvider =
+    StreamProvider<ContactRestoreReport?>((ref) {
+  final snowId = ref.watch(currentSnowIdProvider);
+  if (snowId == null || snowId.isEmpty) return Stream.value(null);
+  return ref.watch(contactBackupProvider).watchRestoreNotice();
+});
+
+/// What a sealed contact notice does here: the contact store takes it, the
+/// name certificate it carried names the sender, and — while the app is in
+/// the foreground — a request or an acceptance gets a local notification
+/// (in the background the server's "New message" push covers it).
+Future<void> _applyContactNotice(
+  Ref ref,
+  String sender,
+  String notice,
+  String? nameCert,
+  bool isAnswer,
+) async {
+  final store = ref.read(contactStoreProvider);
+  final names = ref.read(nameCertServiceProvider);
+  if (notice == contactRemovedType) {
+    await store.onContactRemoved(sender);
+    return;
+  }
+  if (notice != contactAddedType) return;
+  final effect = await store.onContactAdded(sender, isAnswer: isAnswer);
+  if (nameCert != null) await names.receive(sender, nameCert);
+  if (effect == ContactNoticeEffect.none) return;
+  if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+    return;
+  }
+  final name = await names.nameOf(sender) ?? shortSnowId(sender);
+  await NotificationService().showFriendNotification(
+    name: name,
+    peer: sender,
+    accepted: effect == ContactNoticeEffect.requestAccepted,
+  );
+}
+
+/// A snowId shortened for display when no name is known.
+String shortSnowId(String snowId) => snowId.length > 12
+    ? '${snowId.substring(0, 8)}…${snowId.substring(snowId.length - 4)}'
+    : snowId;
+
 // --- Encrypted Message Handler ---
 final encryptedMessageHandlerProvider =
     Provider<EncryptedMessageHandler>((ref) {
@@ -863,6 +1040,10 @@ final encryptedMessageHandlerProvider =
     senderCertificateManager: ref.read(senderCertificateManagerProvider),
     transferEventBus: ref.read(transferEventBusProvider),
     isBlocked: ref.read(blockListProvider).isBlocked,
+    // A peer started a new session (it may have reinstalled): its next
+    // message from this account carries the name certificate again.
+    onNewInboundSession: (peer) =>
+        ref.read(nameCertServiceProvider).forgetAnnounced(peer),
   );
   // B-2: instantiating the handler subscribes it to identity store events.
   ref.read(identityChangeHandlerProvider);
@@ -934,6 +1115,16 @@ final messageQueueProvider = Provider<MessageQueue>((ref) {
     );
     if (stored) queue.onGv2InviteKept?.call();
   };
+  // Contact notices go to the contact store (before the ack); a message's
+  // name certificate names its sender (before it is stored and notified).
+  queue.onContactNotice = (sender, notice, nameCert, isAnswer) =>
+      _applyContactNotice(ref, sender, notice, nameCert, isAnswer);
+  // A message from a sender whose room has no name yet: the name this
+  // device knows (the list, certificates) before the short snowId.
+  queue.peerName = (snowId) => ref.read(nameCertServiceProvider).nameOf(snowId);
+  queue.onPeerNameCert = (sender, cert) async {
+    await ref.read(nameCertServiceProvider).receive(sender, cert);
+  };
   // B-2: instantiating the handler subscribes it to identity store events.
   ref.read(identityChangeHandlerProvider);
   return queue;
@@ -943,7 +1134,8 @@ final messageQueueProvider = Provider<MessageQueue>((ref) {
 // Sends outgoing 1:1 messages whenever the socket is connected and keeps them
 // until the server acks them (core/messaging/direct_outbox.dart). Started
 // with the global router (app.dart); one instance for the app.
-final directOutboxProvider = Provider<DirectOutbox>((ref) {
+final Provider<DirectOutbox> directOutboxProvider =
+    Provider<DirectOutbox>((ref) {
   final socket = ref.read(socketManagerProvider);
   final db = ref.read(snowDatabaseProvider);
   final outbox = DirectOutbox(
@@ -954,10 +1146,23 @@ final directOutboxProvider = Provider<DirectOutbox>((ref) {
     handler: () => ref.read(encryptedMessageHandlerProvider),
     isConnected: () => socket.isReadyToSend,
     connectionChanges: socket.onConnectionChange,
+    // The server's status events (they name each send by its wire id).
+    statusEvents: socket.onMessageStatus,
     upload: (data, hash) =>
         ref.read(fileServiceProvider).uploadEncryptedFile(data, hash),
     documentsPath: () async => (await getApplicationDocumentsDirectory()).path,
     expiring: ref.read(expiringMessageManagerProvider),
+    // This account's name goes with a contact notice and with the first
+    // message to a peer (and the next one after a rename).
+    nameCerts: ref.read(nameCertServiceProvider),
+    // The server's word on a recipient goes to the friend list: an account
+    // it refuses again and again as not existing shows as unavailable.
+    onRecipientChecked: (peer, notFound) {
+      final store = ref.read(contactStoreProvider);
+      return notFound
+          ? store.noteRecipientNotFound(peer)
+          : store.noteRecipientReached(peer);
+    },
   );
   ref.onDispose(() => unawaited(outbox.stop()));
   return outbox;
@@ -969,9 +1174,6 @@ final globalMessageRouterProvider = Provider<GlobalMessageRouter>((ref) {
     socketManager: ref.read(socketManagerProvider),
     queue: ref.read(messageQueueProvider),
     sessionManager: ref.read(signalSessionManagerProvider),
-    messageDao: ref.read(messageDaoProvider),
-    attachmentDao: ref.read(attachmentDaoProvider),
-    ref: ref,
   );
   ref.onDispose(router.stop);
   return router;
@@ -1124,8 +1326,10 @@ final gv2RuntimeProvider = Provider<Gv2Runtime?>((ref) {
 // --- Notification Service ---
 final notificationServiceProvider = Provider<NotificationService>((ref) {
   final service = NotificationService();
-  // Initialize async — callers should await initialize() before showing notifications
-  service.initialize();
+  // Initialize async — callers should await initialize() before showing
+  // notifications. The prompts (notifications, then the microphone) are
+  // PushService's, through askStartupPrompts.
+  unawaited(service.initialize());
   return service;
 });
 
@@ -1243,23 +1447,20 @@ final pushTokenAutoSyncProvider = Provider<void>((ref) {
   ref.onDispose(sub.cancel);
 });
 
-// --- Presence Service ---
-final presenceServiceProvider =
-    ChangeNotifierProvider<PresenceService>((ref) {
-  final socketManager = ref.read(socketManagerProvider);
-  return PresenceService(socketManager);
-});
-
 // --- Link Preview Service ---
 final linkPreviewServiceProvider = Provider<LinkPreviewService>((ref) {
   return LinkPreviewService();
 });
 
 // --- Friend Request Badge ---
-/// Global counter for pending friend requests. Updated by
-/// ConversationListNotifier when friend_request_received socket event
-/// arrives. Router reads this to show a badge on the Friends tab.
-final pendingFriendBadgeProvider = StateProvider<int>((ref) => 0);
+/// The received friend requests on this device (contact rows the account
+/// added this user to, not added back, not declined). The router shows it
+/// on the Friends tab.
+final pendingFriendBadgeProvider = StreamProvider<int>((ref) {
+  return ref.watch(contactStoreProvider).watch().map((rows) => rows
+      .where((r) => r.isVisible && r.label == ContactLabel.requestReceived)
+      .length);
+});
 
 // =====================================================================
 // Phase 8.2 VoIP — voice calls (WebRTC P2P + Sealed Sender signaling)
@@ -1318,6 +1519,9 @@ final callServiceProvider = Provider<CallService?>((ref) {
     fingerprintSigningSeed: () =>
         signaling.sessionManager.signal.signingKeySeed,
     peerFingerprintKey: signaling.sessionManager.getPeerEd25519PublicKey,
+    // An incoming call is named by this device (contact, then certificate),
+    // never by the name the caller puts in its invite.
+    peerName: ref.read(nameCertServiceProvider).cachedName,
   );
   // v2.5 (2026-05-03): wire CallService → VoipNativeBridge audio session
   // events. The previous design had CallService register its own
@@ -1362,6 +1566,10 @@ final callProvider = StateNotifierProvider<CallNotifier, CallState>((ref) {
     callService: service,
     callKitManager: ref.read(callKitManagerProvider),
     ref: ref, // V1.0.1: dao access for inserting missed-call system messages
+    // "Show caller name on calls": waits for the stored value, false while
+    // it cannot be read — a system call UI stays "SnowChat Call" then.
+    showCallerNameOnSystemUi: () =>
+        ref.read(settingsProvider.notifier).callShowCallerNameForCall(),
   );
 });
 
@@ -1393,7 +1601,6 @@ class _IdleCallNotifier extends CallNotifier {
     required String recipientSnowchatId,
     required bool alwaysRelay,
     String? remoteDisplayName,
-    String? senderDisplayName,
   }) async {
     _ref.invalidate(sealedSenderAutoInitProvider);
     throw StateError(

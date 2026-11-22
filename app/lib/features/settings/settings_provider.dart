@@ -3,7 +3,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (autoLockSeconds — lock again after the app was in the background that long,
+/// @lastUpdated 2026-11-23 (callShowCallerName — system call screens show the caller's name,
+///              default on; callShowCallerNameForCall() is what call code reads: it waits for the
+///              stored value and answers false while that value cannot be read).
+///              Earlier 2026-11-22 (autoLockSeconds — lock again after the app was in the background that long,
 ///              default 1 min; biometricLockEnabled is persisted — it was lost on restart).
 ///              Earlier 2026-04-26 (header + inline English translation; Phase I §25: callRequirePin toggle added)
 ///
@@ -22,6 +25,8 @@
 ///  - setCallRequirePin(): require PIN on call accept — default false (Signal UX)
 ///  - setAutoLockSeconds(): auto-lock delay after the app goes to the background (default 60 s)
 ///  - setBiometricLock(): biometric unlock (now persisted)
+///  - setCallShowCallerName(): caller name on system call screens (persisted, default on)
+///  - callShowCallerNameForCall(): the stored value for a call — false while it cannot be read
 
 import 'dart:ui' show PlatformDispatcher;
 
@@ -50,6 +55,12 @@ class SettingsState {
   /// in seconds (0 = at once). Cold start always locks.
   final int autoLockSeconds;
 
+  /// Whether the system call screens (iOS CallKit, Android incoming call
+  /// notification and screen) show the name this device knows for the other
+  /// party. Off: "SnowChat Call" only. The name never comes from the server.
+  /// Default on (Signal-like). In-app call screens always show the name.
+  final bool callShowCallerName;
+
   const SettingsState({
     this.notificationsEnabled = true,
     this.biometricLockEnabled = false,
@@ -61,6 +72,7 @@ class SettingsState {
     this.callAlwaysRelay = false,
     this.callRequirePin = false,
     this.autoLockSeconds = kDefaultAutoLockSeconds,
+    this.callShowCallerName = true,
   });
 
   SettingsState copyWith({
@@ -74,6 +86,7 @@ class SettingsState {
     bool? callAlwaysRelay,
     bool? callRequirePin,
     int? autoLockSeconds,
+    bool? callShowCallerName,
   }) {
     return SettingsState(
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
@@ -87,6 +100,7 @@ class SettingsState {
       callAlwaysRelay: callAlwaysRelay ?? this.callAlwaysRelay,
       callRequirePin: callRequirePin ?? this.callRequirePin,
       autoLockSeconds: autoLockSeconds ?? this.autoLockSeconds,
+      callShowCallerName: callShowCallerName ?? this.callShowCallerName,
     );
   }
 }
@@ -107,6 +121,7 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     _loadCallAlwaysRelay();
     _loadCallRequirePin();
     _loadLock();
+    _loadCallShowCallerName();
   }
 
   /// Initial language from device locale. Falls back to English for unsupported locales.
@@ -205,6 +220,43 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     if (!mounted) return;
     if (stored != state.callRequirePin) {
       state = state.copyWith(callRequirePin: stored);
+    }
+  }
+
+  /// True once [SettingsState.callShowCallerName] holds the stored value (or
+  /// one the user set) rather than the default.
+  bool _callShowCallerNameKnown = false;
+
+  /// "Show caller name on calls" toggle. Persisted immediately.
+  Future<void> setCallShowCallerName(bool enabled) async {
+    _callShowCallerNameKnown = true;
+    state = state.copyWith(callShowCallerName: enabled);
+    await _storage.storeCallShowCallerName(enabled);
+  }
+
+  /// Whether this call's system UI may show the caller's name. Waits for the
+  /// stored value — a call can cold-start the app before the startup load
+  /// finished, and the default (on) must not stand in for a stored "off".
+  /// While the store cannot be read (device locked since boot) the answer is
+  /// false: the system UI stays "SnowChat Call". The next call reads again.
+  Future<bool> callShowCallerNameForCall() async {
+    if (!_callShowCallerNameKnown) await _loadCallShowCallerName();
+    return _callShowCallerNameKnown && state.callShowCallerName;
+  }
+
+  /// Load the persisted callShowCallerName. Absent = on. A read error leaves
+  /// the value unknown (see [callShowCallerNameForCall]).
+  Future<void> _loadCallShowCallerName() async {
+    final bool stored;
+    try {
+      stored = await _storage.getCallShowCallerName();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || _callShowCallerNameKnown) return;
+    _callShowCallerNameKnown = true;
+    if (stored != state.callShowCallerName) {
+      state = state.copyWith(callShowCallerName: stored);
     }
   }
 }

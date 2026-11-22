@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-11
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - SenderCertificateManager: Certificate cache/renewal management class
@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
+import '../diagnostics/log_ref.dart';
 import '../network/api_client.dart';
 import 'sender_certificate.dart';
 
@@ -149,7 +150,7 @@ class SenderCertificateManager {
 
     debugPrint(
       '[SenderCertificateManager] Certificate received: '
-      'sender=${cert.senderSnowchatId}, '
+      'sender=${logRef(cert.senderSnowchatId)}, '
       'expiry=${DateTime.fromMillisecondsSinceEpoch(cert.expiryMs).toIso8601String()}',
     );
 

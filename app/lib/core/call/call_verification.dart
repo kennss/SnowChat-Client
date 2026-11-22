@@ -4,7 +4,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-22 (SC-10: the signature binds the call — "SnowChat-Call-DTLS-v1|callId|
+/// @lastUpdated 2026-11-22 (signatureField throws CallVerificationException when it cannot sign —
+///              a signature is mandatory, so an SDP is never sent without one). Earlier 2026-11-22 (Part 3 E: the signature is mandatory — an SDP without fpSig is refused
+///              (the build-1000 peers that did not sign are gone); no `unsigned` outcome). Earlier
+///              2026-11-22 (SC-10: the signature binds the call — "SnowChat-Call-DTLS-v1|callId|
 ///              fingerprint" — so it cannot be carried over to another call; signatureField /
 ///              checkRemote are what CallService signs its own SDP and checks the peer's with). Earlier 2026-04-26 (header + inline English translation)
 ///
@@ -14,7 +17,7 @@
 ///  - CallVerification.signFingerprint(callId, fp, seed): Ed25519 signature
 ///  - CallVerification.verifyFingerprint(callId, fp, sig, pubKey): Ed25519 verification
 ///  - CallVerification.signatureField(callId, sdp, seed): the fpSig field of an SDP this device sends
-///  - CallVerification.checkRemote(fpSig, callId, sdp, peerKey): unsigned / verified / refused for a received SDP
+///  - CallVerification.checkRemote(fpSig, callId, sdp, peerKey): verified / refused for a received SDP
 ///  - CallVerification.computeSas(localFp, remoteFp): HKDF-SHA256 → 4-digit SAS
 ///  - CallVerificationException: verification failure exception
 
@@ -34,13 +37,11 @@ class CallVerificationException implements Exception {
 
 /// The result of checking a received SDP's fingerprint signature (SC-10).
 enum RemoteFingerprintCheck {
-  /// No signature: a peer on build 1000, which does not sign (accepted).
-  unsigned,
-
   /// The signature verifies under the peer's key, for this call.
   verified,
 
-  /// A signature that does not verify, or cannot be checked — end the call.
+  /// No signature, a signature that does not verify, or one that cannot be
+  /// checked — end the call.
   refused,
 }
 
@@ -111,20 +112,21 @@ class CallVerification {
   }
 
   /// The `fpSig` field of an SDP this device sends for [callId]: its DTLS
-  /// fingerprint signed with [signingKeySeed] (base64). Empty when there is
-  /// nothing to sign with, no call id, or no fingerprint in [sdp].
+  /// fingerprint signed with [signingKeySeed] (base64). The signature is
+  /// mandatory on the receiving side, so there is no unsigned answer: throws
+  /// [CallVerificationException] when there is nothing to sign with, no call
+  /// id, no SDP or no fingerprint in [sdp].
   static Map<String, String> signatureField({
     required String? callId,
     required String? sdp,
     required Uint8List? signingKeySeed,
   }) {
-    if (callId == null || sdp == null || signingKeySeed == null) return const {};
-    final String fingerprint;
-    try {
-      fingerprint = parseFingerprint(sdp);
-    } on CallVerificationException {
-      return const {};
+    if (callId == null) throw CallVerificationException('no call id');
+    if (sdp == null) throw CallVerificationException('no SDP');
+    if (signingKeySeed == null) {
+      throw CallVerificationException('no signing key');
     }
+    final fingerprint = parseFingerprint(sdp);
     final signature = signFingerprint(
       callId: callId,
       fingerprint: fingerprint,
@@ -133,21 +135,16 @@ class CallVerification {
     return {'fpSig': base64Encode(signature)};
   }
 
-  /// Check the `fpSig` ([fpSig]) a peer sent with [sdp] for [callId].
-  ///
-  /// - None: [RemoteFingerprintCheck.unsigned] — a build-1000 peer. The
-  ///   signaling is sealed and Double-Ratchet encrypted, so the server can
-  ///   neither strip a signature nor change the SDP; the SAS stays.
-  /// - Present: it must verify under the peer's account-bound Ed25519 key
-  ///   ([peerKey]) for this call and this fingerprint — anything else (no
-  ///   key, malformed, wrong) is [RemoteFingerprintCheck.refused].
+  /// Check the `fpSig` ([fpSig]) a peer sent with [sdp] for [callId]. It is
+  /// mandatory: it must verify under the peer's account-bound Ed25519 key
+  /// ([peerKey]) for this call and this fingerprint — anything else (none,
+  /// no key, malformed, wrong) is [RemoteFingerprintCheck.refused].
   static Future<RemoteFingerprintCheck> checkRemote({
     required Object? fpSig,
     required Object? callId,
     required String sdp,
     required Future<Uint8List?> Function() peerKey,
   }) async {
-    if (fpSig == null) return RemoteFingerprintCheck.unsigned;
     if (fpSig is! String || callId is! String) return RemoteFingerprintCheck.refused;
     final String fingerprint;
     final Uint8List signature;

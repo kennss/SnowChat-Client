@@ -1,11 +1,11 @@
 /// @file        pick_candidates.dart
 /// @description The accounts a group picker offers (new group from the
-///              contacts or from a community roster, add members), each
-///              marked known or not. The lists are the server's word: the
-///              contact list holds every community co-member, a roster can
-///              hold an account the server made up, and an invite gives an
-///              account the group's master key for good (whether or not it
-///              joins, even after it is removed). So "known" means this
+///              friend list and chosen 1:1 peers, or from a community
+///              roster; add members), each marked known or not. A roster is
+///              the server's word (it can hold an account the server made
+///              up), every name is, and an invite gives an account the
+///              group's master key for good (whether or not it joins, even
+///              after it is removed). So "known" means this
 ///              user chose the account by an action of their own on this
 ///              device — VerifiedIdentityStore.isVouched (a friend request
 ///              sent or accepted, a message written in a 1:1, a safety
@@ -15,7 +15,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21 (requests sent by nickname and since accepted are vouched for before the
+/// @lastUpdated 2026-11-22 (description: the contact candidates are no server list — only a roster
+///              and the names are the server's word). Earlier 2026-11-22 (friend graph off the server —
+///              design §5.6: the contact candidates are
+///              this user's list (friends and sent requests) and the 1:1 peers this user vouched
+///              for; no server contact list, no nickname-request settling (a request names its
+///              account when it is made)). Earlier 2026-11-21 (requests sent by nickname and since accepted are vouched for before the
 ///              known / not-known split — settleNickFriendRequests). Earlier 2026-11-21 (X1: the contact candidates leave out this device's blocked accounts). Earlier 2026-11-21 (from roster_candidates.dart: known = vouched, not the identity latch; the
 ///              contacts of the pickers too)
 ///
@@ -26,8 +31,8 @@
 ///  - contactCandidates(): the contacts, without this account, blocked
 ///    accounts, [exclude] (e.g. members already in the group), duplicates
 ///    and what is not a snowId
-///  - contactPickCandidatesProvider: contactCandidates() of the contact list,
-///    marked by VerifiedIdentityStore.isVouched
+///  - contactPickCandidatesProvider: contactCandidates() of this user's list and the vouched
+///    1:1 peers, marked by VerifiedIdentityStore.isVouched
 ///  - PickSelection: the picked accounts, at most a given number
 library;
 
@@ -35,7 +40,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/crypto/identity_binding.dart';
-import '../../channels/providers/channel_provider.dart';
+import '../../chat/models/conversation.dart';
+import '../../chat/providers/conversation_list_provider.dart';
 import '../../contacts/contact_provider.dart';
 
 /// One account a picker offers.
@@ -144,20 +150,30 @@ Future<List<PickCandidate>> contactCandidates({
       isKnown: isKnown,
     );
 
-/// The contact list as picker candidates (recomputed when it changes).
+/// The picker candidates of the contacts (recomputed when they change):
+/// this user's list (friends and sent requests) and the 1:1 peers this user
+/// vouched for (design §5.6). A received request alone is not a candidate.
 final contactPickCandidatesProvider =
     FutureProvider.autoDispose<List<PickCandidate>>((ref) async {
-  final contacts = ref.watch(contactProvider);
+  final contacts =
+      ref.watch(contactProvider).where((c) => c.inMyList).toList();
   // The accounts this user blocked (this device's list) are left out too.
   final blocked = await ref.watch(blockedAccountsProvider.future);
   final store = ref.read(verifiedIdentityStoreProvider);
-  // Requests sent by nickname and since accepted vouch now — before the
-  // known / not-known split (settleNickFriendRequests). A friend list that
-  // cannot be had leaves them for the next time.
-  try {
-    final friends = await ref.read(friendListProvider.future);
-    await settleNickFriendRequests(store, friends);
-  } catch (_) {}
+  final listed = {for (final c in contacts) c.snowChatId};
+  for (final conv in ref.watch(conversationListProvider)) {
+    // A 1:1 room's id is the peer's snowId.
+    if (conv.type != ConversationType.direct || listed.contains(conv.id)) {
+      continue;
+    }
+    if (!await store.isVouched(conv.id)) continue;
+    contacts.add(Contact(
+      snowChatId: conv.id,
+      displayName: (conv.title != null && conv.title != conv.id) ? conv.title : null,
+      addedAt: conv.createdAt,
+    ));
+    listed.add(conv.id);
+  }
   return contactCandidates(
     contacts: contacts,
     mySnowId: ref.read(currentSnowIdProvider),

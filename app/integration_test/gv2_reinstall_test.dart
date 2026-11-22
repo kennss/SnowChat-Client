@@ -12,7 +12,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-20
-/// @lastUpdated 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
+/// @lastUpdated 2026-11-22 (friend graph off the server: an invitee is added to this device's list with a request (ContactNotifier.request); the identity directory is POST /keys/identity/fetch). Earlier 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
 ///
 /// @functions
 ///  - main(): one test; what it does is chosen by GV4_ROLE
@@ -164,15 +164,11 @@ void main() {
     }
 
     if (_role == 'owner') {
-      // The contact list is the server's; an invitee it does not hold yet
-      // is added for the run once it loaded — a load replaces the list.
-      final contacts = d.container.read(contactProvider.notifier);
-      await d.until('the contacts are loaded', () => contacts.isLoaded ? true : null);
+      // The contact list is this device's: an invitee it does not hold yet
+      // is added for the run with a friend request.
       for (final id in [_member, _again]) {
         if (!d.container.read(contactProvider).any((c) => c.snowChatId == id)) {
-          d.container.read(contactProvider.notifier).addContact(
-            Contact(snowChatId: id, addedAt: DateTime.now()),
-          );
+          await d.container.read(contactProvider.notifier).request(id);
         }
       }
       unawaited(d.router().push('/create-group'));
@@ -246,7 +242,10 @@ void main() {
       final api = d.container.read(apiClientProvider);
       Future<bool> listed() async {
         try {
-          await api.get<Object?>(ApiEndpoints.identityForUser(_again));
+          await api.post<Object?>(
+            ApiEndpoints.identityFetch,
+            data: {'snowchatId': _again},
+          );
           return true;
         } catch (_) {
           return false;

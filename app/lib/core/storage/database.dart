@@ -9,10 +9,17 @@
 ///              Schema v17: direct_outbox (the 1:1 outbox — DirectOutboxDao) and
 ///              local_messages.peer_client_id with its unique index (a message the sender sent
 ///              again is stored once)
+///              Schema v18: the friend list moves to this device — contact_list, peer_names,
+///              contact_sync_state (ContactDao) replace the unused contacts table;
+///              blocked_accounts.nickname
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (v17: direct_outbox + local_messages.peer_client_id / idx_messages_peer_client
+/// @lastUpdated 2026-11-22 (the v17 → v18 upgrade writes the contact sync state as restored with
+///              the block replace pending: an install upgraded in place has no backup to restore and
+///              its block list goes to the server as a whole — design §5.10). Earlier 2026-11-22 (v18: contact_list / peer_names / contact_sync_state and ContactDao
+///              replace the unused contacts table; blocked_accounts.nickname — design
+///              2026-11-22-friend-graph-off-server §5.1, §5.9, §5.10). Earlier 2026-11-21 (v17: direct_outbox + local_messages.peer_client_id / idx_messages_peer_client
 ///              — the 1:1 outbox and the receiver's duplicate guard). Earlier 2026-11-21 (v16: blocked_accounts — X1, the accounts this user blocked, on this device; BlockListDao). Earlier 2026-11-21 (v15: gv2_heads.stored_at_ms, gv2_groups.my_key_at_ms, gv2_backup_state.write_due_at_ms — the backup write is made at a random time 1–6 h after what changed it). Earlier 2026-11-20 (Schema v14: data only — the conversations of the v1 groups and rooms, and any other conversation whose id is neither a peer's snowId nor a group protocol v2 group id, go with their messages and attachment rows; the files stay). Earlier same day (Schema v13: gv2_groups.change_sent_at_ms — a group change whose answer never came). Earlier 2026-11-20 (Schema v11: group protocol v2 state tables and Gv2Store, then the local inbox tables and Gv2InboxStore, then the verified log points, v4 Sender Keys, key deliveries and the outbox, then the handled message ids; schema v12: gv2_backup_state and gv2_groups.reset_pending — a new version because development devices already carry v11; every schema version is now dumped to drift_schemas/ and the migration is tested against it). Earlier 2026-04-26 (header + inline English translation; previous: 2026-04-20 Schema v9: PendingTransfers + DAO — Wallet V2 Phase 1)
 ///
 /// @functions
@@ -51,6 +58,8 @@ import 'daos/identity_verification_dao.dart';
 import 'daos/pending_transfer_dao.dart';
 import 'daos/block_list_dao.dart';
 import 'daos/direct_outbox_dao.dart';
+import 'daos/contact_dao.dart';
+import '../contacts/contact_backup.dart' show drawContactWritePeriodMs;
 import '../group_v2/gv2_inbox_store.dart';
 import '../group_v2/gv2_outbox.dart';
 import '../group_v2/gv2_sender_key_store.dart';
@@ -59,7 +68,7 @@ import '../group_v2/gv2_store.dart';
 part 'database.g.dart';
 
 /// The main drift database for SnowChat.
-/// Stores decrypted messages, conversations, contacts, and E2EE session state.
+/// Stores decrypted messages, conversations, the friend list, and E2EE session state.
 ///
 /// Schema v2 changes:
 ///  - LocalMessages: 9 → 21 columns (Signal 3-timestamp, read, receipts, etc.)
@@ -72,7 +81,6 @@ part 'database.g.dart';
   tables: [
     LocalMessages,
     Conversations,
-    Contacts,
     SignalSessions,
     SignalPreKeys,
     LocalAttachments,
@@ -98,6 +106,9 @@ part 'database.g.dart';
     Gv2BackupStates,
     BlockedAccounts,
     DirectOutboxJobs,
+    ContactList,
+    PeerNames,
+    ContactSyncStates,
   ],
   daos: [
     MessageDao,
@@ -113,6 +124,7 @@ part 'database.g.dart';
     Gv2InboxStore,
     BlockListDao,
     DirectOutboxDao,
+    ContactDao,
     Gv2SenderKeyStore,
     Gv2OutboxStore,
   ],
@@ -121,7 +133,7 @@ class SnowDatabase extends _$SnowDatabase {
   SnowDatabase(super.e);
 
   @override
-  int get schemaVersion => 17;
+  int get schemaVersion => 18;
 
   @override
   MigrationStrategy get migration {
@@ -350,6 +362,33 @@ class SnowDatabase extends _$SnowDatabase {
           await m.createIndex(idxDirectOutboxPeer);
           await m.addColumn(localMessages, localMessages.peerClientId);
           await m.createIndex(idxMessagesPeerClient);
+        }
+        if (from < 18 && to >= 18) {
+          // The friend list moves to this device (design 2026-11-22): the
+          // one-sided contact list, the names learned from name
+          // certificates, and the contact backup state. The old contacts
+          // table was never written: it goes. A blocked account keeps its
+          // name (a database below v16 got the column with the table).
+          await m.deleteTable('contacts');
+          await m.createTable(contactList);
+          await m.createTable(peerNames);
+          await m.createTable(contactSyncStates);
+          if (from >= 16) {
+            await m.addColumn(blockedAccounts, blockedAccounts.nickname);
+          }
+          // An install upgraded in place has no contact backup: it never
+          // restores (taking "no backup" for a restore would tell the user
+          // nothing could be restored). Its block list goes to the server as a
+          // whole on the first sync (design §5.10).
+          final now = DateTime.now().millisecondsSinceEpoch;
+          final period = drawContactWritePeriodMs();
+          await into(contactSyncStates).insert(ContactSyncStatesCompanion.insert(
+            slot: const Value(0),
+            restored: const Value(true),
+            periodMs: period,
+            nextWriteAtMs: now + period,
+            blocksReplacePending: const Value(true),
+          ));
         }
         debugPrint('[Perf] 💾 drift onUpgrade complete: ${sw.elapsedMilliseconds}ms');
       },

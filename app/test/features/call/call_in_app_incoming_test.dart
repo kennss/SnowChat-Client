@@ -8,7 +8,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-23 (_CallKit records showIncoming / updateCallerName: the Android branch
+///              of CallNotifier now runs under debugDefaultTargetPlatformOverride)
 ///
 /// @functions
 ///  - _Signaling: records sealed signaling; no events of its own
@@ -78,6 +79,13 @@ class _CallKit extends Fake implements CallKitManager {
   void clearLastShownIncomingId() => shownAt = null;
   @override
   Future<void> endCall(String callId) async => ended.add(callId);
+  @override
+  Future<void> showIncoming({required String callId}) async {}
+  @override
+  Future<void> updateCallerName({
+    required String callId,
+    required String callerName,
+  }) async {}
 }
 
 const _caller = 'snow0123456789abcdef0123456789abcdef';

@@ -14,7 +14,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-19
-/// @lastUpdated 2026-11-21 (lastShownIncomingAt: when the last CallKit incoming window was shown —
+/// @lastUpdated 2026-11-23 (every IOSParams passes includesCallsInRecents=false — the plugin
+///              defaulted it to true and calls went to the Phone app's Recents, §7.1;
+///              showIncoming is always anonymous ("SnowChat Call", empty handle) and
+///              updateCallerName names a call already on screen — the name stays in plugin
+///              memory, never in its stored call list; startOutgoing sends an empty handle).
+///              Earlier 2026-11-21 (lastShownIncomingAt: when the last CallKit incoming window was shown —
 ///              CallNotifier's V3 in-app incoming fallback asks whether CallKit is up for the
 ///              ringing call). Earlier 2026-05-03 (v205: startOutgoing IOSParams pin
 ///              audioSessionPreferredSampleRate=48_000 + IOBufferDuration=0.005
@@ -34,7 +39,8 @@
 ///              id anyway.)
 ///
 /// @functions
-///  - CallKitManager.showIncoming(...): show system incoming call UI
+///  - CallKitManager.showIncoming(callId): show the system incoming call UI, anonymous
+///  - CallKitManager.updateCallerName(callId, callerName): name the caller of a call on screen
 ///  - CallKitManager.endCall(callId): dismiss system UI (when ended/declined in-app)
 ///  - CallKitManager.startOutgoing(...): register system active call on outgoing (optional)
 ///  - CallKitManager.events: user action stream (accept/decline/ended/timeout)
@@ -48,6 +54,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+
+/// The caller name every system call UI shows until the app names the call —
+/// and for good when the user turned "Show caller name on calls" off. The FCM
+/// background isolate (voip_push_handler.dart) uses this constant; the PushKit
+/// report (VoipPushBridge.swift) carries the same literal: §2.6.1.
+const String kAnonymousCallName = 'SnowChat Call';
 
 /// CallKit user action kinds.
 enum CallKitAction {
@@ -170,17 +182,16 @@ class CallKitManager {
   /// Display incoming call. callId must match the callId in the signal payload so
   /// we can match it when the user accepts.
   ///
-  /// [handle] is the sender ID shown in the system UI (e.g. SnowChat ID prefix).
-  /// Phone numbers/emails are not exposed by policy.
-  Future<void> showIncoming({
-    required String callId,
-    required String callerName,
-    required String handle,
-  }) async {
+  /// Always anonymous ([kAnonymousCallName], empty handle): the plugin keeps
+  /// the parameters of a raised call in its stored call list (Android
+  /// SharedPreferences), so a name never goes in here. CallNotifier names the
+  /// call afterwards with [updateCallerName] when the user allows it — that
+  /// name stays in plugin memory only.
+  Future<void> showIncoming({required String callId}) async {
     final params = CallKitParams(
       id: callId,
-      nameCaller: callerName,
-      handle: handle,
+      nameCaller: kAnonymousCallName,
+      handle: '',
       type: 0, // 0 = audio (MVP supportsVideo=false)
       duration: 60000, // 60s ringer timeout
       textAccept: 'Accept',
@@ -209,6 +220,7 @@ class CallKitManager {
         supportsHolding: false,
         supportsGrouping: false,
         supportsUngrouping: false,
+        includesCallsInRecents: false, // §7.1 — never in the Phone app's Recents
         ringtonePath: 'system_ringtone_default',
       ),
       android: const AndroidParams(
@@ -244,15 +256,18 @@ class CallKitManager {
   ///
   /// Android: needed for ConnectionService Self-Managed integration so the
   /// system telecom layer recognizes the active call.
+  ///
+  /// [calleeName] is what the system UI shows — the callee's name or
+  /// [kAnonymousCallName], decided by CallNotifier from the user's setting.
+  /// The handle is empty: no account id goes into the system call.
   Future<void> startOutgoing({
     required String callId,
     required String calleeName,
-    required String handle,
   }) async {
     final params = CallKitParams(
       id: callId,
       nameCaller: calleeName,
-      handle: handle,
+      handle: '',
       type: 0,
       ios: const IOSParams(
         iconName: 'CallKitLogo',
@@ -270,6 +285,7 @@ class CallKitManager {
         // contribute to AURemoteIO startup failures on the outbound path.
         audioSessionPreferredSampleRate: 48000.0,
         audioSessionPreferredIOBufferDuration: 0.005,
+        includesCallsInRecents: false, // §7.1 — never in the Phone app's Recents
       ),
       android: const AndroidParams(
         isCustomNotification: true,
@@ -281,6 +297,26 @@ class CallKitManager {
       ),
     );
     await FlutterCallkitIncoming.startCall(params);
+  }
+
+  /// Name the caller of the system call UI [callId] (ringing or ongoing) —
+  /// the name this device knows for the caller, never one the caller sent.
+  /// The window was raised anonymously (PushKit report, FCM background
+  /// isolate, [showIncoming]); this is the only way a name reaches it.
+  ///
+  /// iOS: a CXCallUpdate with only the caller name — the handle the call was
+  /// reported with stays (generic, empty). The id must be UUID-shaped (the
+  /// plugin ignores other ids; skipped here so nothing crosses the channel).
+  /// Android: Telecom Connection display name, incoming / ongoing
+  /// notification and full-screen screen; kept in plugin memory until the
+  /// call ends. Nothing is logged.
+  Future<void> updateCallerName({
+    required String callId,
+    required String callerName,
+  }) async {
+    if (callerName.isEmpty) return;
+    if (Platform.isIOS && !_uuidPattern.hasMatch(callId)) return;
+    await FlutterCallkitIncoming.updateCallerName(callId, callerName);
   }
 
   /// Dismiss system UI. Called on in-app end/decline/timeout.

@@ -11,7 +11,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-20
-/// @lastUpdated 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
+/// @lastUpdated 2026-11-22 (friend graph off the server: an invitee is added to this device's list with a request (ContactNotifier.request)). Earlier 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
 ///
 /// @functions
 ///  - main(): one test; what it does is chosen by GV3_ROLE
@@ -110,15 +110,13 @@ void main() {
 
     if (_role == 'owner') {
       // ---- Create the group with both invited ----
-      // The contact list is the server's (who this account can reach); an
-      // invitee it does not hold yet is added for the run once it loaded —
-      // a load replaces the list.
+      // The contact list is this device's: an invitee it does not hold yet
+      // is added for the run with a friend request.
       final contacts = d.container.read(contactProvider.notifier);
-      await d.until('the contacts are loaded', () => contacts.isLoaded ? true : null);
       for (final id in [_admin, _out]) {
         if (!d.container.read(contactProvider).any((c) => c.snowChatId == id)) {
-          contacts.addContact(Contact(snowChatId: id, addedAt: DateTime.now()));
-          _say('an invitee was not a contact: added for this run');
+          await contacts.request(id);
+          _say('an invitee was not a contact: requested for this run');
         }
       }
       unawaited(d.router().push('/create-group'));

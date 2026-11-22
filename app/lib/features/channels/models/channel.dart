@@ -1,30 +1,25 @@
 /// @file        channel.dart
-/// @description Channel data models — discover/search results, channel info, invite info, friend info.
+/// @description Channel data models — discover/search results, channel info, invite info (communities).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-05
-/// @lastUpdated 2026-11-20 (v1 groups removed: a community has no rooms — no ChannelRoom, no rooms / defaultRoom / systemRoom / userRooms — and no mute flag; InviteInfo names the community by channelId / channelName). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (friend graph off the server: no PERSONAL channel — FriendInfo,
+///              FriendRequest, the request creator fields of PendingChannel, ChannelType.personal and
+///              isPersonal are gone; friends live on this device, features/contacts). Earlier
+///              2026-11-20 (v1 groups removed: a community has no rooms — no ChannelRoom, no rooms / defaultRoom / systemRoom / userRooms — and no mute flag; InviteInfo names the community by channelId / channelName). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
-///  - ChannelType: channel type enum (community, personal)
+///  - ChannelType: channel type enum (community — the only kind the server keeps)
 ///  - ChannelInfo: channel discover/search result model
 ///  - PendingChannel: channel awaiting join approval
 ///  - InviteInfo: invite-link info model (the community it joins)
 ///  - JoinPolicy: join policy enum
-///  - FriendInfo: PERSONAL channel friend info model
-///  - FriendRequest: PERSONAL channel friend request model
 
-/// Channel type: COMMUNITY (default) or PERSONAL (friend channel).
-enum ChannelType { community, personal }
+/// Channel type. The server keeps communities only (friends are not
+/// channels any more); a type this build does not know is a community.
+enum ChannelType { community }
 
-ChannelType parseChannelType(String? value) {
-  switch (value) {
-    case 'PERSONAL':
-      return ChannelType.personal;
-    default:
-      return ChannelType.community;
-  }
-}
+ChannelType parseChannelType(String? value) => ChannelType.community;
 
 enum JoinPolicy { open, approval, inviteOnly }
 
@@ -79,7 +74,6 @@ class ChannelInfo {
     );
   }
 
-  bool get isPersonal => type == ChannelType.personal;
   bool get isCommunity => type == ChannelType.community;
 
   bool get isOwner => role == 'OWNER';
@@ -100,9 +94,6 @@ class PendingChannel {
   final String? avatarUrl;
   final String? category;
   final String appliedAt;
-  // Phase 9.1: creator info for PERSONAL channels (friend request display)
-  final String? creatorSnowchatId;
-  final String? creatorDisplayName;
 
   const PendingChannel({
     required this.id,
@@ -111,8 +102,6 @@ class PendingChannel {
     this.avatarUrl,
     this.category,
     this.appliedAt = '',
-    this.creatorSnowchatId,
-    this.creatorDisplayName,
   });
 
   factory PendingChannel.fromJson(Map<String, dynamic> json) {
@@ -123,12 +112,9 @@ class PendingChannel {
       avatarUrl: json['avatarUrl'] as String?,
       category: json['category'] as String?,
       appliedAt: json['appliedAt'] as String? ?? '',
-      creatorSnowchatId: json['creatorSnowchatId'] as String?,
-      creatorDisplayName: json['creatorDisplayName'] as String?,
     );
   }
 
-  bool get isPersonal => type == ChannelType.personal;
   bool get isCommunity => type == ChannelType.community;
 }
 
@@ -158,60 +144,6 @@ class InviteInfo {
       category: json['category'] as String?,
       memberCount: json['memberCount'] as int? ?? 0,
       joinPolicy: parseJoinPolicy(json['joinPolicy'] as String?),
-    );
-  }
-}
-
-/// Friend info from PERSONAL channel accepted member list.
-/// Matches server `GET /channels/personal` → friends[] response.
-class FriendInfo {
-  final String userId;
-  final String snowchatId;
-  final String? displayName;
-  final DateTime? lastSeenAt;
-
-  const FriendInfo({
-    required this.userId,
-    required this.snowchatId,
-    this.displayName,
-    this.lastSeenAt,
-  });
-
-  factory FriendInfo.fromJson(Map<String, dynamic> json) {
-    return FriendInfo(
-      userId: json['userId'] as String,
-      snowchatId: json['snowchatId'] as String,
-      displayName: json['displayName'] as String?,
-      lastSeenAt: json['lastSeenAt'] != null
-          ? DateTime.tryParse(json['lastSeenAt'] as String)
-          : null,
-    );
-  }
-}
-
-/// Pending friend request from PERSONAL channel.
-/// Matches server `GET /channels/personal` → pendingRequests[] response.
-class FriendRequest {
-  final String userId;
-  final String snowchatId;
-  final String? displayName;
-  final DateTime? requestedAt;
-
-  const FriendRequest({
-    required this.userId,
-    required this.snowchatId,
-    this.displayName,
-    this.requestedAt,
-  });
-
-  factory FriendRequest.fromJson(Map<String, dynamic> json) {
-    return FriendRequest(
-      userId: json['userId'] as String,
-      snowchatId: json['snowchatId'] as String,
-      displayName: json['displayName'] as String?,
-      requestedAt: json['requestedAt'] != null
-          ? DateTime.tryParse(json['requestedAt'] as String)
-          : null,
     );
   }
 }

@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-06
-/// @lastUpdated 2026-11-20 (delete confirmation no longer mentions rooms). Earlier 2026-11-12 (removed the owner-only "Community NFT Fee Share" section with the NFT marketplace feature). Earlier 2026-08-05 ("Channel"→"Community" UI strings; NFT "Community Fee Share" copy left as-is). Earlier 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (the avatar is fetched with POST /files/fetch through
+///              communityAvatarBytesProvider — the file id is not in a URL). Earlier 2026-11-20 (delete confirmation no longer mentions rooms). Earlier 2026-11-12 (removed the owner-only "Community NFT Fee Share" section with the NFT marketplace feature). Earlier 2026-08-05 ("Channel"→"Community" UI strings; NFT "Community Fee Share" copy left as-is). Earlier 2026-04-26 (header + inline English translation; channel avatar upload/change UI added)
 ///
 /// @functions
 ///  - ChannelAdminScreen: channel settings + member management + pending approval + invite link + delete
@@ -12,7 +13,6 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -21,13 +21,13 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../app/providers.dart';
+import '../../../core/diagnostics/log_ref.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/toast.dart';
 import '../../../core/network/api_endpoints.dart';
 import '../../chat/providers/conversation_list_provider.dart';
-import '../models/channel.dart';
 import '../providers/channel_provider.dart';
 
 /// Channel detail provider for admin screen.
@@ -390,32 +390,26 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
                       fit: BoxFit.cover,
                     )
                   else if (_currentAvatarUrl != null)
-                    Image.network(
-                      '${ApiEndpoints.getBaseUrl()}/files/${_currentAvatarUrl!}',
-                      // 서버 GET /files/:fileId 는 auth 필수 — 토큰 없으면
-                      // 401 → errorBuilder 의 generic icon 으로 fallback →
-                      // 사용자 입장에선 "save 가 안 됨" 으로 보임.
-                      // (서버 저장은 됐지만 client 가 표시 못 함.)
-                      //
-                      // Phase 11 (2026-05-04 회귀 fix): 이전엔 Dio default
-                      // headers 에 Authorization 박혀있었지만 cut over 후
-                      // 매 request interceptor 가 동적 주입 → default 는 비었음
-                      // → 옛 lookup 이 null → 401. authHeaderProvider 가
-                      // tokenSnapshotProvider 를 watch 해서 token 회전 시
-                      // 자동 rebuild.
-                      headers: () {
-                        final h = ref.watch(authHeaderProvider);
-                        return h != null ? {'Authorization': h} : null;
-                      }(),
-                      width: 80,
-                      height: 80,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Icon(
+                    // The avatar file is fetched with the account's login
+                    // (POST /files/fetch — no file id in a URL).
+                    () {
+                      const failed = Icon(
                         Icons.groups_rounded,
                         color: SnowColors.textTertiary,
                         size: 32,
-                      ),
-                    )
+                      );
+                      final bytes = ref
+                          .watch(communityAvatarBytesProvider(_currentAvatarUrl!))
+                          .valueOrNull;
+                      if (bytes == null) return failed;
+                      return Image.memory(
+                        bytes,
+                        width: 80,
+                        height: 80,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => failed,
+                      );
+                    }()
                   else
                     const Icon(
                       Icons.camera_alt_rounded,
@@ -662,7 +656,8 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
   }
 
   Future<void> _handleApprove(String userId) async {
-    debugPrint('[ChannelAdmin] Approving userId=$userId channelId=${widget.channelId}');
+    debugPrint('[ChannelAdmin] Approving user=${logRef(userId)} '
+        'channel=${logRef(widget.channelId)}');
     final success = await ref
         .read(channelActionsProvider)
         .approveApplication(widget.channelId, userId);
@@ -1040,7 +1035,8 @@ class _ChannelAdminScreenState extends ConsumerState<ChannelAdminScreen> {
       ),
     );
     if (confirmed == true) {
-      debugPrint('[ChannelAdmin] Transferring ownership to $userId ($displayName) for channel ${widget.channelId}');
+      debugPrint('[ChannelAdmin] Transferring ownership to ${logRef(userId)} '
+          'for channel ${logRef(widget.channelId)}');
       final success = await ref
           .read(channelActionsProvider)
           .transferOwnership(widget.channelId, userId);

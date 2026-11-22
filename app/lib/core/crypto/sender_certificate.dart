@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-11
-/// @lastUpdated 2026-11-22 (verify() takes the trusted key list pinned in the build and accepts a
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (verify() takes the trusted key list pinned in the build and accepts a
 ///              signature of any of them — key rotation; SC-06). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
@@ -17,6 +17,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:pinenacl/ed25519.dart' as ed;
+
+import '../diagnostics/log_ref.dart';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -269,7 +271,7 @@ class SenderCertificate {
 
   @override
   String toString() =>
-      'SenderCertificate(v$version, sender=$senderSnowchatId, '
+      'SenderCertificate(v$version, sender=${logRef(senderSnowchatId)}, '
       'device=$senderDeviceId, '
       'expiry=${DateTime.fromMillisecondsSinceEpoch(expiryMs).toIso8601String()})';
 }

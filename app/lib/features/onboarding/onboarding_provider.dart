@@ -3,7 +3,12 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (setProfile stores the passcode of a chosen kind through PasscodeStore —
+/// @lastUpdated 2026-11-23 (no display name in a log line). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (setProfile: a nickname the server took drops this account's cached
+///              name certificate — NameCertService.invalidateOwn). Earlier 2026-11-22 (friend graph off the server: sign-up never overwrites an identity on this
+///              device — createIdentity() reuses the one an earlier attempt made (IdentityManager
+///              refuses to overwrite) and an account the server already knows goes on to log in;
+///              a new account writes its empty contact backup (ContactBackup.markNewAccount); the
+///              restore reads its own name with POST /users/resolve). Earlier 2026-11-22 (a build with the wallet compiled out (AppConfig.enableWallet false) derives no wallet at sign-up or restore — no POST /wallet, no balance, price or token-list lookups (Solana RPC, CoinGecko, Jupiter: each told a third party this device's IP); _completeOnboarding logs neither the snowId nor a stack trace. Also: setProfile stores the passcode of a chosen kind through PasscodeStore —
 ///              salted Argon2id instead of an unsalted SHA-256). Earlier 2026-08-04 (setProfile now reflects the new nickname into currentDisplayNameProvider immediately, so a create-identity flow following an in-session reset shows the correct name without a cold start). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
@@ -26,9 +31,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
+import '../../app/app_config.dart';
 import '../../app/providers.dart';
+import '../../core/network/api_endpoints.dart';
 import '../../core/security/passcode.dart';
 import '../wallet/wallet_provider.dart' hide secureStorageProvider;
+import '../../core/diagnostics/log_ref.dart';
 
 // --- Onboarding state ---
 
@@ -120,6 +128,8 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         await apiClient.put('/users/profile', data: {
           'displayName': nickname,
         });
+        // A certificate cached under the old name is not carried any more.
+        await _ref.read(nameCertServiceProvider).invalidateOwn();
       }
     } catch (e) {
       debugPrint('[Onboarding] Server profile update failed: $e');
@@ -148,7 +158,8 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
 
   /// Create a new identity, register with the server, and authenticate.
   Future<void> createIdentity({String? displayName}) async {
-    debugPrint('[Onboarding] createIdentity called, displayName=$displayName, state.displayName=${state.displayName}');
+    debugPrint('[Onboarding] createIdentity called, '
+        'hasDisplayName=${displayName != null || state.displayName != null}');
     state = state.copyWith(isLoading: true, error: null);
 
     try {
@@ -158,14 +169,34 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       final identityManager = _ref.read(identityManagerProvider);
       final authService = _ref.read(authServiceProvider);
 
-      // Step 1: Generate identity (BIP39 mnemonic + Ed25519 keypair)
-      final mnemonic = await identityManager.createIdentity();
+      // Step 1: Generate identity (BIP39 mnemonic + Ed25519 keypair) — only
+      // when this device holds none. An identity already here (an earlier
+      // attempt that stopped at a taken nickname, or an account whose login
+      // was refused) is used as it is: its seed is never overwritten
+      // (IdentityManager.createIdentity refuses).
+      final hadIdentity = await identityManager.hasIdentity();
+      final List<String> mnemonic;
+      if (hadIdentity) {
+        final stored = await identityManager.getMnemonic();
+        if (stored == null) {
+          state = state.copyWith(
+            isLoading: false,
+            error: 'This device holds an account without its recovery phrase. '
+                'Restore it instead.',
+          );
+          return;
+        }
+        mnemonic = stored;
+      } else {
+        mnemonic = await identityManager.createIdentity();
+      }
       final snowId = await identityManager.getSnowChatId();
 
-      debugPrint('[Onboarding] Identity created: $snowId');
+      debugPrint('[Onboarding] Identity ready (existing=$hadIdentity)');
 
       // Step 2: Register with the server (use provided displayName or state)
       final name = displayName ?? state.displayName;
+      var newAccount = true;
       try {
         await authService.register(displayName: name);
         debugPrint('[Onboarding] Server registration successful');
@@ -175,20 +206,26 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         if (e is DioException && e.response?.data != null) {
           errMsg = e.response!.data.toString().toLowerCase();
         }
-        if (errMsg.contains('nickname') || errMsg.contains('already taken') ||
+        if (hadIdentity && errMsg.contains('already exists')) {
+          // The identity on this device is an account the server knows:
+          // log in with it (never a new one in its place).
+          newAccount = false;
+          debugPrint('[Onboarding] Account exists, proceeding to auth');
+        } else if (errMsg.contains('nickname') || errMsg.contains('already taken') ||
             errMsg.contains('displayname') || errMsg.contains('duplicate')) {
           state = state.copyWith(
             isLoading: false,
             error: 'This nickname is already taken. Please choose a different one.',
           );
           return;
+        } else {
+          debugPrint('[Onboarding] Server registration failed: $e');
+          state = state.copyWith(
+            isLoading: false,
+            error: 'Registration failed. Please try again.',
+          );
+          return;
         }
-        debugPrint('[Onboarding] Server registration failed: $e');
-        state = state.copyWith(
-          isLoading: false,
-          error: 'Registration failed. Please try again.',
-        );
-        return;
       }
 
       // Step 3: Authenticate (challenge-response) to get JWT pair
@@ -207,6 +244,13 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
 
         // Step 5: Derive wallet keypair and register with server.
         await _deriveAndRegisterWallet(mnemonic.join(' '));
+
+        // Step 6: A new account writes its empty contact backup now (the
+        // server learns a backup exists at sign-up, not with the first
+        // contact). An existing account restores from its backup instead.
+        if (newAccount) {
+          await _ref.read(contactBackupProvider).markNewAccount();
+        }
       } on StateError catch (e) {
         // PreKey upload exhausted retries — placeholder identity would
         // remain on the server, breaking group E2EE. Stop the flow and
@@ -265,7 +309,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       final snowId = await identityManager.restoreIdentity(words);
       _mark('identityManager.restoreIdentity (BIP39 + 4 writes)');
 
-      debugPrint('[Onboarding] Identity restored: $snowId');
+      debugPrint('[Onboarding] Identity restored: ${logRef(snowId)}');
 
       // Step 2: Check if already registered, if not → new user (needs nickname)
       var isNewUser = false;
@@ -292,8 +336,11 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
           if (!isNewUser) {
             try {
               final apiClient = _ref.read(apiClientProvider);
-              final res = await apiClient.get('/users/$snowId');
-              _mark('GET /users/\$snowId (network)');
+              final res = await apiClient.post(
+                ApiEndpoints.resolveUser,
+                data: {'snowchatId': snowId},
+              );
+              _mark('POST /users/resolve (network)');
               final name = (res.data as Map?)?['displayName'] as String?;
               if (name == null || name.isEmpty) {
                 isNewUser = true;
@@ -389,6 +436,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       final authService = _ref.read(authServiceProvider);
 
       // Step 1: Register with displayName
+      var newAccount = true;
       try {
         await authService.register(displayName: displayName);
         debugPrint('[Onboarding] Server registration successful');
@@ -407,6 +455,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         }
         if (errMsg.contains('already exists')) {
           // User already registered (race condition) — skip to auth
+          newAccount = false;
           debugPrint('[Onboarding] User already exists, proceeding to auth');
         } else {
           state = state.copyWith(isLoading: false, error: 'Registration failed: $e');
@@ -450,6 +499,10 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       if (mnemonic != null) {
         await _deriveAndRegisterWallet(mnemonic.join(' '));
       }
+      // A new account: the empty contact backup (see createIdentity).
+      if (newAccount) {
+        await _ref.read(contactBackupProvider).markNewAccount();
+      }
 
       state = state.copyWith(isLoading: false);
       return true;
@@ -472,8 +525,6 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
   }
 
   void _completeOnboarding(String snowId) {
-    debugPrint('[Onboarding] *** _completeOnboarding called with snowId=$snowId ***');
-    debugPrint('[Onboarding] *** Stack trace: ${StackTrace.current} ***');
     _ref.read(currentSnowIdProvider.notifier).state = snowId;
     _ref.read(isOnboardedProvider.notifier).state = true;
     state = state.copyWith(step: OnboardingStep.complete);
@@ -501,6 +552,12 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
   /// Derive wallet keypair from mnemonic and register with server.
   /// KeypairManager.createWallet() handles both derivation and server registration.
   Future<void> _deriveAndRegisterWallet(String mnemonic) async {
+    // Wallet compiled out: no keypair, no server registration, and none of
+    // the balance, price and token-list lookups that follow it (Solana RPC,
+    // CoinGecko, Jupiter) — each told a third party this device's address
+    // for a feature the user cannot see. The recovery phrase is kept by
+    // IdentityManager, so a build that turns the wallet on can derive it then.
+    if (!AppConfig.enableWallet) return;
     try {
       final walletNotifier = _ref.read(walletProvider.notifier);
       await walletNotifier.createFromMnemonic(mnemonic);
@@ -516,6 +573,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
 
   /// Derive wallet keypair locally without server registration.
   Future<void> _deriveWalletLocally(String mnemonic) async {
+    if (!AppConfig.enableWallet) return; // see _deriveAndRegisterWallet
     try {
       final walletNotifier = _ref.read(walletProvider.notifier);
       await walletNotifier.createFromMnemonic(mnemonic);

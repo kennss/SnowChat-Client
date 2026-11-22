@@ -7,7 +7,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (a `control` job — a contact notice — has no local_messages row: its
+///              id is a random UUID and its payload is the inner JSON itself). Earlier 2026-11-21
 ///
 /// @functions
 ///  - DirectOutboxJobs: one send job per outgoing 1:1 message (data class DirectOutboxRow)
@@ -32,13 +33,15 @@ class DirectOutboxJobs extends Table {
   @override
   String get tableName => 'direct_outbox';
 
-  /// The local message id (`msg_…`) — also the `cid` the peer deduplicates by.
+  /// The local message id (`msg_…`) — also the `cid` the peer deduplicates
+  /// by. A control job (kind `control`): a random UUID of its own.
   TextColumn get messageId => text()();
 
   /// The peer ("snow" + 32 hex). A 1:1 room's id is the peer's snowId.
   TextColumn get peer => text().withLength(min: 36, max: 36)();
 
-  /// `text`, `file` or `voice` (MessageType name).
+  /// `text`, `file` or `voice` (MessageType name), or `control` (a contact
+  /// notice — DirectOutbox.controlKind).
   TextColumn get kind => text()();
 
   /// DirectOutboxPhase.upload or DirectOutboxPhase.send.
@@ -47,8 +50,10 @@ class DirectOutboxJobs extends Table {
   /// What the job needs to send without the screen that started it (JSON):
   /// text, ttl, reply fields; for an attachment the kept copy's relative
   /// path, file name, MIME type, size, voice duration, and — once uploaded —
-  /// the E2EE metadata (file id and key). Encrypted at rest with the rest of
-  /// the database; never sent anywhere as it is.
+  /// the E2EE metadata (file id and key); for a control job the inner JSON,
+  /// whether it travels as a control row and whether it carries the name
+  /// certificate. Encrypted at rest with the rest of the database; never
+  /// sent anywhere as it is.
   TextColumn get payload => text()();
 
   /// When the message was written (local clock, ms). Orders a peer's jobs;

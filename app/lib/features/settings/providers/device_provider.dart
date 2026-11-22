@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (a device is removed with POST /devices/remove { deviceId } — no id in the URL path, contract §12.1). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - DeviceInfo: device-info data class
@@ -129,7 +129,10 @@ class DeviceNotifier extends StateNotifier<DeviceListState> {
   /// Remove a device by ID.
   Future<bool> removeDevice(String deviceId) async {
     try {
-      await _apiClient.delete(ApiEndpoints.device(deviceId));
+      await _apiClient.post(
+        ApiEndpoints.deviceRemove,
+        data: {'deviceId': deviceId},
+      );
       state = state.copyWith(
         devices: state.devices.where((d) => d.deviceId != deviceId).toList(),
       );

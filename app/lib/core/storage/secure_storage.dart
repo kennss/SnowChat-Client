@@ -10,7 +10,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (the PIN API (storePin / getPin / verifyPin / hasPin, unsalted SHA-256) moved to
+/// @lastUpdated 2026-11-23 (call_show_caller_name — whether system call screens show the
+///              caller's name; absent = on). Earlier 2026-11-22 (the PIN API (storePin / getPin / verifyPin / hasPin, unsalted SHA-256) moved to
 ///              PasscodeStore — salted Argon2id; auto-lock delay and biometric lock persisted).
 ///              Earlier 2026-04-30 (Phase E-2 v3.1: relaxed-key routing for VoIP
 ///              accept fetch; auth_refresh_token added to allowlist so BFU
@@ -26,6 +27,8 @@
 ///  - SecureStorageService.readAll(): read everything
 ///  - SecureStorageService.storeAutoLockSeconds() / getAutoLockSeconds(): app auto-lock delay
 ///  - SecureStorageService.storeBiometricLock() / getBiometricLock(): biometric unlock on/off
+///  - SecureStorageService.storeCallShowCallerName() / getCallShowCallerName(): caller name on
+///    system call screens (default on)
 ///    (the app passcode itself is core/security/passcode.dart — PasscodeStore)
 ///  - SecureStorageService.storeDisplayName(name): store nickname
 ///  - SecureStorageService.getDisplayName(): read nickname
@@ -159,6 +162,7 @@ class SecureStorageService {
   static const _preferredLanguageKey = 'preferred_lang';
   static const _callAlwaysRelayKey = 'call_always_relay';
   static const _callRequirePinKey = 'call_require_pin';
+  static const _callShowCallerNameKey = 'call_show_caller_name';
   static const _autoLockSecondsKey = 'app_auto_lock_seconds';
   static const _biometricLockKey = 'app_biometric_lock';
 
@@ -207,6 +211,21 @@ class SecureStorageService {
   Future<bool> getCallRequirePin() async {
     final stored = await read(_callRequirePinKey);
     return stored == 'true';
+  }
+
+  /// Whether the system call screens (iOS CallKit, Android incoming call
+  /// notification / full-screen screen / Telecom) show the name this device
+  /// knows for the other party, or only "SnowChat Call".
+  Future<void> storeCallShowCallerName(bool enabled) async {
+    await write(_callShowCallerNameKey, enabled ? 'true' : 'false');
+  }
+
+  /// Default on (Signal-like): only a stored 'false' turns it off. Throws
+  /// when the store cannot be read (device locked since boot) — the caller
+  /// decides what an unknown value means.
+  Future<bool> getCallShowCallerName() async {
+    final stored = await read(_callShowCallerNameKey);
+    return stored != 'false';
   }
 
   /// How long the app may stay in the background before it locks again

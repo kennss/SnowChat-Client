@@ -3,12 +3,14 @@
 ///              based on Ed25519 signatures and hands the result off as a
 ///              `TokenSnapshot` so the caller can store it via TokenManager.
 ///              Phase 11 (2026-05-03): refresh logic moved to TokenManager.
-///              This service ONLY handles register, authenticate, isRegistered,
-///              and logout (best-effort push-token unregister).
+///              This service ONLY handles register, authenticate and isRegistered.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-10 (B-2: the login nonce is signed via IdentityManager.signAuthChallenge (strict format — signing-oracle fix); deviceInfo carries identityKeyEd25519 + identityBinding so a freshly registered device row is bound from the start; records accountMaxIdentityBindingEpoch from the verify response (H1); on the 403 "deviceId is registered to another account" regenerates device_id and retries the full challenge once (L5); retries the 503 registration-conflict race with a short backoff without touching device_id). Earlier 2026-05-03 (Phase 11 — refreshToken/restoreToken removed; authenticate returns TokenSnapshot)
+/// @lastUpdated 2026-11-22 (no logout(): its only caller ran when the session had already ended
+///              (expiredHard — no bearer left), so its request could never be authorized; the server
+///              clears the push and VoIP tokens of a device whose refresh token ran out). Earlier
+///              2026-11-22 (the device id travels in the body: PUT /devices/push-token { deviceId, … } — contract §12.1). Earlier 2026-11-10 (B-2: the login nonce is signed via IdentityManager.signAuthChallenge (strict format — signing-oracle fix); deviceInfo carries identityKeyEd25519 + identityBinding so a freshly registered device row is bound from the start; records accountMaxIdentityBindingEpoch from the verify response (H1); on the 403 "deviceId is registered to another account" regenerates device_id and retries the full challenge once (L5); retries the 503 registration-conflict race with a short backoff without touching device_id). Earlier 2026-05-03 (Phase 11 — refreshToken/restoreToken removed; authenticate returns TokenSnapshot)
 ///
 /// @functions
 ///  - AuthService: authentication service class
@@ -18,7 +20,6 @@
 ///  - AuthService._isDeviceIdOwnedByAnotherAccount(): detect the 403 deviceId-conflict (L5)
 ///  - AuthService._authenticateWithConflictRetry(): 503 registration-race backoff
 ///  - AuthService.isRegistered(): check whether registered with the server
-///  - AuthService.logout(): best-effort push-token unregister (token wipe is TokenManager.clear())
 
 import 'dart:convert';
 import 'dart:io';
@@ -223,30 +224,6 @@ class AuthService {
       refresh: refreshToken,
       version: 1,
     );
-  }
-
-  /// Best-effort push-token unregister. Phase 11: token wipe is now driven by
-  /// `TokenManager.clear()` — this method only sends the side-effect API call.
-  ///
-  /// Callers (settings_screen reset path) typically:
-  ///   1. tokenManager.clear()  — wipes envelope + emits logout event
-  ///   2. authService.logout()  — best-effort server-side push unregister
-  ///
-  /// Calling order is not strict because the API itself uses the bearer JWT;
-  /// if the JWT is already wiped, the push unregister silently fails (network
-  /// 401) and we don't surface that to the user.
-  Future<void> logout() async {
-    try {
-      final deviceId = await secureStorage.read(_deviceIdKey);
-      if (deviceId != null) {
-        await apiClient.put(
-          ApiEndpoints.devicePushToken(deviceId),
-          data: {'pushToken': null, 'platform': null},
-        );
-      }
-    } catch (_) {
-      // Network failure on logout is OK — token will expire
-    }
   }
 
   /// Get stored device ID or create a new one.

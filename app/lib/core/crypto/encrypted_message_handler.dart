@@ -3,7 +3,26 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (SC-05: no non-sealed 1:1 send — sendEncryptedMessage and the unused
+/// @lastUpdated 2026-11-22 (review fixes: every sealed 1:1 plaintext is padded with spaces to a multiple
+///              of sealedPlaintextBlock (512 bytes — encodeSealedPlaintext), so a contact notice, a
+///              short message with a name certificate and one without travel in envelopes of the same
+///              size; sendSealedMessage takes the wire id from its caller (wireMessageId — the 1:1
+///              outbox maps the server's status events back to its message); a contact_added marked
+///              as an answer surfaces as metadata `answer`; a peer's metadata never carries a key of
+///              this device's own (`_…`) and a peer's inner type is never `system`; onNewInboundSession
+///              — a prekey message from a peer (a new session it started); no account id in a log
+///              line). Earlier 2026-11-22 (friend graph off the server — design 2026-11-22 §5.2, §12.2, §12.4: every
+///              sealed send carries a random UUID as its wire clientMessageId (no receipt_ / unsend_ /
+///              delchat_ / reset_ / retry_ / gv2inv_ prefixes, SC-25); sendSealedPayload() seals a
+///              raw inner payload after refreshing the peer's identity (the 1:1 outbox's control jobs
+///              — contact_added / contact_removed — and the wallet's transfer notices); a message
+///              may carry this account's name certificate (`nameCert`, top level) and the decrypt
+///              returns a peer's as Message.peerNameCert; contact_added / contact_removed surface as
+///              metadata `_isContactNotice`; an inner `type` this build does not know is consumed and
+///              never shown (`_isUnknownType`). Part 3 E: the non-sealed 1:1 receive path
+///              (decryptIncomingMessage) and the retry answer (sendSealedRetry — the server relays no
+///              retry requests any more) are gone, and so is the send log record they read).
+///              Earlier 2026-11-22 (SC-05: no non-sealed 1:1 send — sendEncryptedMessage and the unused
 ///              sendFileMessage / sendVoiceMessage are gone; session_reset and the retry answer are
 ///              sealed — sendSealedSessionReset / sendSealedRetry, and an inner `session_reset`
 ///              surfaces as metadata `_isSessionReset`; providers.dart sets sendSealedSessionReset as
@@ -12,14 +31,17 @@
 ///              sent again once). Earlier 2026-11-21 (X1: what an account this user blocked sent is decrypted — the session stays in step — and refused with BlockedSenderException before anything of it is acted on; isBlocked). Earlier 2026-11-21 (no IdentityKeyChangedException: the identity failure of a send or a sealed decrypt is IdentityBindingInvalidException alone). Earlier 2026-11-21 (comment: sendSealedDeleteChat is the only deletion signal — no server chat_deleted). Earlier 2026-11-20 (a decrypted 1:1 message's conversationId is its authenticated sender, never the envelope's. v1 groups removed: sendGroupMessage / decryptGroupMessage / sendGroupFileMessage / sendGroupVoiceMessage and the GroupSessionManager are gone. sendSealedGroupInvite() asks the identity directory first, so that an invite is never sealed to an identity the peer no longer has). Earlier 2026-11-13 (group protocol v2: sendSealedGroupInvite() — the 1:1 invite message, acknowledged by the server — and the sealed decrypt surfaces an incoming invite as metadata `_isGroupInviteV2` instead of a chat message). Earlier 2026-11-10 (B-2 Identity Binding v1: the send path no longer drops on an identity change — the Signal-style policy lives in IdentityAdmission (unverified legacy change → continue with notice; verified → IdentityKeyChangedException until re-verify; forged binding → IdentityBindingInvalidException) and both typed failures are rethrown untouched so callers mark the message failed without retry; user-visible notices come from VerifiedIdentityStore events. Receive paths pass the envelope / sealed-certificate deviceId to decrypt() for binding.deviceId matching and no longer cache an unverified incoming deviceId). Earlier 2026-09-04 (sealed delete-chat: sendSealedDeleteChat() sends inner type 'delete_chat' over the shared _sendSealedControl helper, and _doDecryptSealed surfaces it via metadata._isDeleteChat before the generic Message build so it never renders. Gives Delete-chat an offline-durable propagation path — the REST delete's chat_deleted socket event only reaches a peer connected at that instant). Earlier 2026-08-03 (F3: _doDecryptSealed now derives the Signal messageType from the unsealed DR ciphertext itself via resolveSealedMessageType() instead of the transport field socketEvent['messageType'] (which Sealed Sender never carries → always 1/0 → prekey first-contact messages misrouted as normal → X3DH responder session never built → first message to a brand-new contact lost). Also enforces Sealed Sender Step 9 identity cross-check on prekey messages). Earlier 2026-07-15 (sealed unsend: sendSealedUnsend() + inner type 'delete' over the shared _sendSealedControl helper (read-receipt path refactored onto it); _doDecryptSealed surfaces it via metadata._isUnsend. Sealed read receipt: sendSealedReadReceipt() sends a silent sealed_control envelope with inner type 'read_receipt'; surfaced via metadata._isReadReceipt before the generic Message build so it never renders). Earlier 2026-05-14 (decryptSealedMessage now accepts both 'sealedContent' (socket transport) and 'encryptedContent' (REST fetchPending) field names — swipe-killed cold-start sealed messages were silently lost because REST drain hit a StateError that placeholder + ACK swallowed)
 ///
 /// @functions
-///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class
-///  - EncryptedMessageHandler.decryptIncomingMessage(): Decrypt 1:1 incoming message (in-flight Future dedup)
-///  - EncryptedMessageHandler._doDecrypt(): Perform the actual Signal decryption (internal only)
+///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class (sealed 1:1 only)
 ///  - EncryptedMessageHandler.getDecryptedFileBytes(): Extract fileId/fileKey from message metadata, download and decrypt
 ///  - EncryptedMessageHandler.sendSealedMessage(): Send Sealed Sender 1:1 encrypted message (seal() wraps DR ciphertext)
+///  - EncryptedMessageHandler.sendSealedPayload(): Seal a raw inner payload (contact notices, wallet notices) after refreshing the peer's identity
 ///  - EncryptedMessageHandler.sendSealedSessionReset(): Sealed control telling the peer this device re-established the session
-///  - EncryptedMessageHandler.sendSealedRetry(): Sealed answer to a retry request (isRetry / originalMessageId inside)
+///  - EncryptedMessageHandler.sendSealedReadReceipt() / sendSealedUnsend() / sendSealedDeleteChat(): silent sealed controls
+///  - EncryptedMessageHandler.sendSealedGroupInvite(): the group protocol v2 invite over the sealed 1:1 path
 ///  - EncryptedMessageHandler.decryptSealedMessage(): Sealed Sender unseal + DR decrypt -> return Message
+///  - newWireMessageId(): a random UUID for a sealed send's wire clientMessageId
+///  - encodeSealedPlaintext(): the inner JSON as UTF-8, padded with spaces to a multiple of
+///    sealedPlaintextBlock
 ///  - EncryptedMessageHandler._tryDispatchTransfer(): wallet V2 Phase B — transfer_* type dispatch + EventBus emit
 ///  - EncryptedMessageHandler._validateTransferRequest(): Validate UUID v4 / amount / decimals / mint / sentAt
 ///  - EncryptedMessageHandler._validateTransferResponse(): Validate walletAddress / Sig / ataRentLamports
@@ -34,8 +56,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:solana/solana.dart' show Ed25519HDPublicKey;
+import 'package:uuid/uuid.dart';
 
 import '../blocking/block_list.dart' show BlockedSenderException;
+import '../contacts/contact_notice.dart';
 import '../../features/chat/models/message.dart';
 import '../../features/wallet/models/transfer_request.dart';
 import '../../features/wallet/services/transfer_event_bus.dart';
@@ -67,20 +91,47 @@ class SealedDecryptException implements Exception {
   const SealedDecryptException(
       this.senderSnowchatId, this.senderDeviceId, this.cause);
 
+  // The sender is not in the text: it ends up in log lines.
   @override
-  String toString() =>
-      'SealedDecryptException(from $senderSnowchatId): $cause';
+  String toString() => 'SealedDecryptException: $cause';
 }
 
-/// Integrates E2EE with the chat flow.
+/// A random UUID for the wire `clientMessageId` of a sealed send. The
+/// server echoes it back and stores it with the row; it must say nothing —
+/// not the kind of envelope, not the time, not the local message id
+/// (contract §12.2, SC-25).
+String newWireMessageId() => const Uuid().v4();
+
+/// Every sealed 1:1 plaintext is padded to a multiple of this many bytes
+/// (contract §12.4 "padding"). Measured (sealed_padding_test.dart): a contact
+/// notice with this account's name certificate, a short message with the
+/// certificate and a short message without it all fit one block, so their
+/// envelopes are the same size — first contact (a prekey message) and later
+/// alike.
+const int sealedPlaintextBlock = 512;
+
+/// [payload] as the plaintext of a sealed 1:1 envelope: its UTF-8 JSON
+/// followed by spaces (0x20) up to the next multiple of
+/// [sealedPlaintextBlock]. A JSON reader skips the spaces (they are JSON
+/// whitespace), so a receiver decodes it like an unpadded one.
+Uint8List encodeSealedPlaintext(Map<String, dynamic> payload) {
+  final json = utf8.encode(jsonEncode(payload));
+  final blocks = (json.length + sealedPlaintextBlock - 1) ~/ sealedPlaintextBlock;
+  final out = Uint8List((blocks == 0 ? 1 : blocks) * sealedPlaintextBlock)
+    ..setAll(0, json);
+  out.fillRange(json.length, out.length, 0x20);
+  return out;
+}
+
+/// Integrates E2EE with the chat flow — sealed 1:1 only (Part 3 E: the
+/// non-sealed 1:1 path is gone on both sides).
 ///
-/// - Encrypts outgoing messages before sending via socket
-/// - Decrypts incoming messages from socket events
-/// - Handles 1:1 E2EE (and carries the sealed invite of group protocol v2)
+/// - Encrypts and seals outgoing messages and controls before the socket
+/// - Unseals and decrypts incoming sealed envelopes
+/// - Carries the sealed invite of group protocol v2 and the contact notices
 ///
-/// Socket send payload matches server's PrivateMessagePayload:
-/// { recipientId, encryptedContent (base64), type ('e2ee_text'),
-///   clientMessageId, expiresIn? }
+/// Socket send payload: { recipientId, sealedContent (base64),
+///   clientMessageId (random UUID), expiresIn?, control? }
 ///
 /// IMPORTANT: This handler never logs plaintext message content.
 class EncryptedMessageHandler {
@@ -116,9 +167,8 @@ class EncryptedMessageHandler {
   /// environments). In production providers.dart always injects this.
   final TransferEventBus? _transferEventBus;
 
-  /// In-flight decrypt futures: prevents double-decryption when multiple
-  /// broadcast-stream listeners (ConversationListProvider + MessageRepository)
-  /// call decryptIncomingMessage concurrently for the same socket event.
+  /// In-flight decrypt futures: prevents double-decryption when two callers
+  /// ask decryptSealedMessage for the same envelope at the same time.
   ///
   /// The Signal Double Ratchet is stateful — decrypting the same ciphertext
   /// twice corrupts the session. Because both listeners start before either
@@ -138,6 +188,7 @@ class EncryptedMessageHandler {
     SenderCertificateManager? senderCertificateManager,
     TransferEventBus? transferEventBus,
     required Future<bool> Function(String snowId) isBlocked,
+    this.onNewInboundSession,
   })  : _sessionManager = sessionManager,
         _socketManager = socketManager,
         _fileService = fileService,
@@ -151,174 +202,12 @@ class EncryptedMessageHandler {
   /// [BlockedSenderException] — before anything of it is acted on.
   final Future<bool> Function(String snowId) _isBlocked;
 
-  // ---------------------------------------------------------------------------
-  // 1:1 Messaging
-  // ---------------------------------------------------------------------------
-
-  /// Decrypt an incoming 1:1 message from a socket event.
-  ///
-  /// The socket event (from server's 'new_message') contains:
-  /// - `senderId` / `senderSnowchatId`: SnowChat ID of the sender
-  /// - `senderDeviceId` / `deviceId`: sender's device ID
-  /// - `encryptedPayload`: base64-encoded ciphertext
-  /// - `messageType`: Signal message type (1=cipher, 2=prekey_msg)
-  /// - `conversationId`: conversation ID (may be absent for new conversations)
-  /// - `messageId` / `id`: server-assigned message ID
-  /// - `serverTimestamp` / `timestamp`: ISO 8601 timestamp
-  ///
-  /// For messageType 2 (pre-key message), the session is established
-  /// automatically during decryption -- this is the first message from
-  /// a new contact.
-  Future<Message> decryptIncomingMessage(
-    Map<String, dynamic> socketEvent,
-  ) async {
-    final messageId =
-        (socketEvent['messageId'] ?? socketEvent['id']) as String;
-
-    // If another listener already started decrypting this message, reuse
-    // its Future. This is checked synchronously (before any await) so the
-    // second broadcast-stream listener always finds the Future registered
-    // by the first listener.
-    final inflight = _inflightDecrypts[messageId];
-    if (inflight != null) {
-      debugPrint('[E2EE] Joining in-flight decrypt for $messageId');
-      return inflight;
-    }
-
-    // Register the decrypt Future synchronously before the first await.
-    // This guarantees the second listener will see it even though Dart's
-    // event loop hasn't yielded yet.
-    final future = _doDecrypt(socketEvent, messageId);
-    _inflightDecrypts[messageId] = future;
-
-    try {
-      return await future;
-    } finally {
-      _inflightDecrypts.remove(messageId);
-      // Evict stale entries (defensive — should be empty under normal flow)
-      if (_inflightDecrypts.length > 50) {
-        _inflightDecrypts.remove(_inflightDecrypts.keys.first);
-      }
-    }
-  }
-
-  /// Internal: performs actual Signal decryption for a single message.
-  Future<Message> _doDecrypt(
-    Map<String, dynamic> socketEvent,
-    String messageId,
-  ) async {
-    final senderId = (socketEvent['senderSnowchatId'] ??
-        socketEvent['senderId']) as String;
-    // Phase 8.7 Bug A: cached/consistent deviceId is preferred. On the very
-    // first interaction with a sender (cold start, no prior outbound), the
-    // cache may be empty — in that case adopt the senderDeviceId carried
-    // by the socket envelope so the (snowId, deviceId) session key matches
-    // what the peer used. Subsequent lookups continue to hit the cache.
-    final incomingDeviceId =
-        (socketEvent['senderDeviceId'] ?? socketEvent['deviceId']) as String?;
-    final deviceId = _sessionManager.peekDeviceIdForIncoming(
-      senderId,
-      incomingDeviceId,
-    );
-    final encryptedPayload =
-        socketEvent['encryptedContent'] ?? socketEvent['encryptedPayload'];
-    final messageType = socketEvent['messageType'] as int? ?? 1;
-    debugPrint('[E2EE] Decrypting: sender=$senderId device=$deviceId '
-        'msgType=$messageType hasContent=${encryptedPayload != null}');
-    // A 1:1 room is its sender's (keyed by the peer's snowId) — never a
-    // conversation id the envelope (the server) names.
-    final conversationId = senderId;
-    final timestamp = socketEvent['serverTimestamp'] != null
-        ? DateTime.parse(socketEvent['serverTimestamp'] as String)
-        : (socketEvent['timestamp'] != null
-            ? DateTime.parse(socketEvent['timestamp'] as String)
-            : DateTime.now());
-
-    // Decode the base64 ciphertext
-    Uint8List ciphertext;
-    if (encryptedPayload is String) {
-      ciphertext = Uint8List.fromList(base64Decode(encryptedPayload));
-    } else if (encryptedPayload is List<int>) {
-      ciphertext = Uint8List.fromList(encryptedPayload);
-    } else {
-      return _failedMessage(
-        messageId: messageId,
-        conversationId: conversationId,
-        senderId: senderId,
-        timestamp: timestamp,
-      );
-    }
-
-    try {
-      // Decrypt: for messageType 2, the Signal layer establishes the
-      // session from the pre-key message automatically
-      final plaintextBytes = await _sessionManager.decrypt(
-        senderId,
-        deviceId,
-        ciphertext,
-        messageType,
-        envelopeDeviceId: incomingDeviceId,
-      );
-      // X1: an account this user blocked — refused before anything of it is
-      // acted on (a transfer control, a session reset, a message).
-      if (await _isBlocked(senderId)) throw const BlockedSenderException();
-
-      // Parse the decrypted JSON payload
-      final payload = jsonDecode(utf8.decode(plaintextBytes))
-          as Map<String, dynamic>;
-
-      // Wallet V2 Phase B (2026-04-20): transfer_* type dispatch.
-      // If payload['type'] is one of the 4 kinds (transfer_request /
-      // response / completed / failed), emit on TransferEventBus and return
-      // a system Message marking. The caller (message_queue) inspects
-      // metadata['_isTransferControl'] to branch drift insert / UI handling
-      // (will be unified in Phase G).
-      final transferMsg = _tryDispatchTransfer(
-        payload: payload,
-        senderSnowchatId: senderId,
-        messageId: messageId,
-        conversationId: conversationId,
-        timestamp: timestamp,
-      );
-      if (transferMsg != null) return transferMsg;
-
-      final text = payload['text'] as String? ?? '';
-      final msgType = _parseMessageType(payload['type'] as String?);
-      final msgMetadata = payload['metadata'] as Map<String, dynamic>?;
-      final ttlSeconds = payload['ttl'] as int?;
-      final replyToId = payload['replyToId'] as String?;
-      final replyToPreview = payload['replyToPreview'] as String?;
-      final replyToSenderId = payload['replyToSenderId'] as String?;
-      final peerClientId = payload['cid'] as String?;
-
-      return Message(
-        id: messageId,
-        conversationId: conversationId,
-        senderSnowchatId: senderId,
-        plaintext: text,
-        timestamp: timestamp,
-        type: msgType,
-        status: MessageStatus.delivered,
-        metadata: msgMetadata,
-        expiresAt: ttlSeconds != null
-            ? timestamp.add(Duration(seconds: ttlSeconds))
-            : null,
-        ttlSeconds: ttlSeconds,
-        replyToId: replyToId,
-        replyToPreview: replyToPreview,
-        replyToSenderId: replyToSenderId,
-        peerClientId: peerClientId,
-      );
-    } catch (e, st) {
-      debugPrint('[EncryptedMessageHandler] Decryption failed for '
-          'message $messageId from $senderId: $e\n$st');
-      // Phase 6: Rethrow so the MessageQueue can retry / hold the message.
-      // Returning a failure placeholder caused the queue to ACK and lose
-      // the message permanently when decryption was actually recoverable
-      // (e.g. out-of-order ratchet, missing SKDM dependency).
-      rethrow;
-    }
-  }
+  /// A peer started a new session with this device: what it sent was a
+  /// prekey message (its first contact, a reinstall, a session reset). The
+  /// peer may have lost what this device told it before — e.g. this
+  /// account's name (NameCertService.forgetAnnounced). Awaited after the
+  /// decrypt; its failure does not fail the message.
+  final Future<void> Function(String peer)? onNewInboundSession;
 
   // ---------------------------------------------------------------------------
   // Sealed Sender (Phase 10.1)
@@ -341,11 +230,16 @@ class EncryptedMessageHandler {
   ///
   /// The server never learns the sender identity — only the recipient can
   /// unseal and discover who sent the message.
+  ///
+  /// [wireMessageId] is the wire `clientMessageId` — a new
+  /// [newWireMessageId] for every send, chosen by the caller so that it can
+  /// match the server's status events (which echo it) to its message.
   Future<void> sendSealedMessage({
     required String conversationId,
     required String recipientId,
     required String text,
     required String clientMessageId,
+    required String wireMessageId,
     String? attachmentFileKey,
     MessageType type = MessageType.text,
     Map<String, dynamic>? metadata,
@@ -353,6 +247,7 @@ class EncryptedMessageHandler {
     String? replyToId,
     String? replyToPreview,
     String? replyToSenderId,
+    String? nameCert,
     Function(dynamic)? onAck,
   }) async {
     if (_sealedSenderService == null || _senderCertificateManager == null) {
@@ -373,15 +268,14 @@ class EncryptedMessageHandler {
     // exactly that hazard. The architectural fix is to front-load every
     // operation that can throw so once encrypt() runs the only remaining
     // steps are in-memory crypto + socket emit (both effectively
-    // throw-free; transport failures here are absorbed by the same retry
-    // path as regular DR — recipient decrypt fails, retry_handler kicks
-    // session_reset, peer rebuilds on next message).
+    // throw-free; a message lost after that shows on the receiver as a
+    // placeholder and the session is reset from there).
     final certificate = await _senderCertificateManager!.getCertificate();
     final recipientIdentityPubKey =
         _sessionManager.signal.getRemoteIdentityKey(recipientId);
     if (recipientIdentityPubKey == null) {
       throw StateError(
-        'Sealed Sender: no cached identity key for $recipientId. '
+        'Sealed Sender: no cached identity key for the peer. '
         'Cannot seal without recipient IK.',
       );
     }
@@ -398,8 +292,9 @@ class EncryptedMessageHandler {
       replyToId: replyToId,
       replyToPreview: replyToPreview,
       replyToSenderId: replyToSenderId,
+      nameCert: nameCert,
     );
-    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+    final plaintextBytes = encodeSealedPlaintext(payload);
 
     // Step 4: Encrypt with Double Ratchet (ratchet advances here).
     final encrypted = await _sessionManager.encrypt(
@@ -417,23 +312,72 @@ class EncryptedMessageHandler {
       messageContext: sealedType1to1,
     );
 
-    // Step 6: Send via socket 'sealed_message' event.
+    // Step 6: Send via socket 'sealed_message' event. The wire id is a
+    // random UUID; [clientMessageId] travels only inside the E2EE payload
+    // (`cid`, the receiver's duplicate guard).
     _socketManager.sendSealedMessage(
       recipientId: recipientId,
       sealedContent: base64Encode(sealedEnvelope),
-      clientMessageId: clientMessageId,
+      clientMessageId: wireMessageId,
       expiresIn: ttlSeconds,
       onAck: onAck,
     );
+  }
 
-    // Step 7: Record plaintext in MessageSendLog so retry_handler can
-    // respond to blind-retry requests by re-encrypting under a fresh
-    // session. Mirrors the regular DR path's record() call at the end of
-    // sendEncryptedMessage.
-    _sessionManager.signal.messageSendLog.record(
-      clientMessageId,
-      plaintextBytes,
-      conversationId: conversationId,
+  /// Seal [payload] — a whole inner JSON object with its own `type` (a
+  /// contact notice, a wallet transfer notice) — to [recipientId] and hand
+  /// it to the socket; [onAck] gets the server's answer. [control] sends it
+  /// as a silent `sealed_control` row (no push); otherwise as an ordinary
+  /// sealed row, pushed like a message.
+  ///
+  /// The peer's identity is looked up in the directory first
+  /// (SignalSessionManager.refreshPeerIdentity), like for a group invite: a
+  /// notice is often the first envelope in a long while, and one sealed to an
+  /// identity the peer no longer has (it reinstalled) could never be opened.
+  ///
+  /// Throws StateError when Sealed Sender is not active, the socket is down
+  /// or the peer has no usable identity — nothing is encrypted then;
+  /// SignalProtocolException when the directory cannot be reached;
+  /// IdentityBindingInvalidException for a forged binding. The caller (the
+  /// 1:1 outbox) decides what to try again.
+  Future<void> sendSealedPayload({
+    required String recipientId,
+    required Map<String, dynamic> payload,
+    required bool control,
+    Function(dynamic)? onAck,
+  }) async {
+    if (_sealedSenderService == null || _senderCertificateManager == null) {
+      throw StateError('Sealed Sender not active');
+    }
+    if (!_socketManager.isReadyToSend) {
+      throw StateError('Socket not connected');
+    }
+    await _sessionManager.refreshPeerIdentity(recipientId);
+    await _sessionManager.ensureSession(recipientId);
+    final certificate = await _senderCertificateManager!.getCertificate();
+    final recipientIdentityPubKey =
+        _sessionManager.signal.getRemoteIdentityKey(recipientId);
+    if (recipientIdentityPubKey == null) {
+      throw StateError('Sealed Sender: no identity key for the peer');
+    }
+    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
+    final encrypted = await _sessionManager.encrypt(
+      recipientId,
+      deviceId,
+      encodeSealedPlaintext(payload),
+    );
+    final sealedEnvelope = _sealedSenderService!.seal(
+      recipientIdentityPubKey: recipientIdentityPubKey,
+      drCiphertext: encrypted['ciphertext'] as Uint8List,
+      certificate: certificate,
+      messageContext: sealedType1to1,
+    );
+    _socketManager.sendSealedMessage(
+      recipientId: recipientId,
+      sealedContent: base64Encode(sealedEnvelope),
+      clientMessageId: newWireMessageId(),
+      control: control,
+      onAck: onAck,
     );
   }
 
@@ -448,9 +392,8 @@ class EncryptedMessageHandler {
   ///
   /// [readIds] are server row ids — the drift PK both peers share for the
   /// same logical sealed message. Best-effort by design: a lost receipt only
-  /// costs a blue check, so there is no MessageSendLog record (receipts are
-  /// not retry-eligible; the peer drops undecryptable controls without
-  /// firing retry/session-reset storms), and we bail before advancing the
+  /// costs a blue check (the peer drops undecryptable controls without
+  /// firing session-reset storms), and we bail before advancing the
   /// Double Ratchet when the socket is down instead of burning a counter on
   /// an envelope that can never leave the device.
   Future<void> sendSealedReadReceipt({
@@ -465,7 +408,6 @@ class EncryptedMessageHandler {
         'readIds': readIds,
         'readAt': DateTime.now().millisecondsSinceEpoch,
       },
-      clientMessageIdPrefix: 'receipt',
     );
   }
 
@@ -497,7 +439,6 @@ class EncryptedMessageHandler {
         'deleteIds': deleteIds,
         'deletedAt': DateTime.now().millisecondsSinceEpoch,
       },
-      clientMessageIdPrefix: 'unsend',
     );
   }
 
@@ -525,7 +466,6 @@ class EncryptedMessageHandler {
         'type': 'delete_chat',
         'deletedAt': DateTime.now().millisecondsSinceEpoch,
       },
-      clientMessageIdPrefix: 'delchat',
     );
   }
 
@@ -545,56 +485,7 @@ class EncryptedMessageHandler {
         'type': 'session_reset',
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       },
-      clientMessageIdPrefix: 'reset',
     );
-  }
-
-  /// Answer a peer's retry request (RetryHandler): send the logged payload
-  /// of [originalMessageId] again, sealed, with `isRetry` and
-  /// `originalMessageId` added to its inner metadata so the peer fills the
-  /// placeholder of the message it could not decrypt. The session was reset
-  /// by the caller, so this is a prekey message. Returns false when Sealed
-  /// Sender is not active, the socket is down, or the peer's identity key is
-  /// not cached — nothing is sent then (never a non-sealed answer, SC-05).
-  Future<bool> sendSealedRetry({
-    required String recipientId,
-    required Uint8List loggedPayload,
-    required String originalMessageId,
-  }) async {
-    if (!isSealedSenderAvailable || !_socketManager.isConnected) return false;
-    final decoded = jsonDecode(utf8.decode(loggedPayload));
-    if (decoded is! Map<String, dynamic>) return false;
-    final payload = Map<String, dynamic>.from(decoded);
-    final metadata = payload['metadata'] is Map
-        ? Map<String, dynamic>.from(payload['metadata'] as Map)
-        : <String, dynamic>{};
-    metadata['isRetry'] = true;
-    metadata['originalMessageId'] = originalMessageId;
-    payload['metadata'] = metadata;
-
-    await _sessionManager.ensureSession(recipientId);
-    final certificate = await _senderCertificateManager!.getCertificate();
-    final recipientIdentityPubKey =
-        _sessionManager.signal.getRemoteIdentityKey(recipientId);
-    if (recipientIdentityPubKey == null) return false;
-    final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
-    final encrypted = await _sessionManager.encrypt(
-      recipientId,
-      deviceId,
-      Uint8List.fromList(utf8.encode(jsonEncode(payload))),
-    );
-    final sealedEnvelope = _sealedSenderService!.seal(
-      recipientIdentityPubKey: recipientIdentityPubKey,
-      drCiphertext: encrypted['ciphertext'] as Uint8List,
-      certificate: certificate,
-      messageContext: sealedType1to1,
-    );
-    _socketManager.sendSealedMessage(
-      recipientId: recipientId,
-      sealedContent: base64Encode(sealedEnvelope),
-      clientMessageId: 'retry_$originalMessageId',
-    );
-    return true;
   }
 
   /// Seal an inner control payload to [recipientId] over the sealed_control
@@ -607,7 +498,6 @@ class EncryptedMessageHandler {
   Future<bool> _sendSealedControl({
     required String recipientId,
     required Map<String, dynamic> payload,
-    required String clientMessageIdPrefix,
   }) async {
     if (_sealedSenderService == null || _senderCertificateManager == null) {
       throw StateError(
@@ -627,7 +517,7 @@ class EncryptedMessageHandler {
     }
     final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
 
-    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+    final plaintextBytes = encodeSealedPlaintext(payload);
 
     final encrypted = await _sessionManager.encrypt(
       recipientId,
@@ -646,8 +536,7 @@ class EncryptedMessageHandler {
     _socketManager.sendSealedMessage(
       recipientId: recipientId,
       sealedContent: base64Encode(sealedEnvelope),
-      clientMessageId:
-          '${clientMessageIdPrefix}_${DateTime.now().millisecondsSinceEpoch}',
+      clientMessageId: newWireMessageId(),
       control: true,
     );
     return true;
@@ -699,10 +588,10 @@ class EncryptedMessageHandler {
     if (recipientIdentityPubKey == null) return false;
     final deviceId = await _sessionManager.getDeviceIdForRecipient(recipientId);
 
-    final plaintextBytes = Uint8List.fromList(utf8.encode(jsonEncode({
+    final plaintextBytes = encodeSealedPlaintext({
       'type': gv2InviteInnerType,
       'invite': base64Encode(invite),
-    })));
+    });
     final encrypted = await _sessionManager.encrypt(
       recipientId,
       deviceId,
@@ -719,7 +608,7 @@ class EncryptedMessageHandler {
     _socketManager.sendSealedMessage(
       recipientId: recipientId,
       sealedContent: base64Encode(sealedEnvelope),
-      clientMessageId: 'gv2inv_${DateTime.now().millisecondsSinceEpoch}',
+      clientMessageId: newWireMessageId(),
       onAck: (response) {
         if (accepted.isCompleted) return;
         accepted.complete(response is Map && response['messageId'] is String);
@@ -735,7 +624,7 @@ class EncryptedMessageHandler {
   /// 2. Get our own identity key pair
   /// 3. Unseal with SealedSenderService.unseal() -> sender identity + DR ciphertext
   /// 4. Feed DR ciphertext into existing _sessionManager.decrypt() pipeline
-  /// 5. Return the same Message object as decryptIncomingMessage()
+  /// 5. Return the Message (or a control / notice marked in its metadata)
   ///
   /// The sender identity is extracted from the verified SenderCertificate
   /// embedded inside the sealed envelope.
@@ -749,7 +638,8 @@ class EncryptedMessageHandler {
     final messageId =
         (socketEvent['messageId'] ?? socketEvent['id']) as String;
 
-    // In-flight dedup (same as decryptIncomingMessage)
+    // In-flight dedup: a second caller for the same envelope shares the
+    // first decrypt (decrypting twice would break the session).
     final inflight = _inflightDecrypts[messageId];
     if (inflight != null) {
       debugPrint('[E2EE:Sealed] Joining in-flight decrypt for $messageId');
@@ -817,8 +707,7 @@ class EncryptedMessageHandler {
     final senderId = unsealed.senderSnowchatId;
     final senderDeviceId = unsealed.senderDeviceId;
 
-    debugPrint('[E2EE:Sealed] Unsealed: sender=$senderId device=$senderDeviceId '
-        'context=${unsealed.messageContext}');
+    debugPrint('[E2EE:Sealed] Unsealed: context=${unsealed.messageContext}');
 
     // B-2: the certificate's deviceId is cached by decrypt() only after the
     // DR decrypt (and binding verification) succeeded.
@@ -855,6 +744,16 @@ class EncryptedMessageHandler {
       // blocked — refused before anything of it is acted on (a transfer
       // control, a read receipt, an unsend, a group invite, a message).
       if (await _isBlocked(senderId)) throw const BlockedSenderException();
+
+      // A prekey message: the peer started a new session (first contact, a
+      // reinstall, a reset) and may have lost what it knew of this account.
+      if (messageType == 2) {
+        try {
+          await onNewInboundSession?.call(senderId);
+        } catch (e) {
+          debugPrint('[E2EE:Sealed] new session not noted: ${e.runtimeType}');
+        }
+      }
 
       // Step 6: Parse the decrypted JSON payload
       final payload = jsonDecode(utf8.decode(plaintextBytes))
@@ -977,14 +876,56 @@ class EncryptedMessageHandler {
         );
       }
 
+      // Contact notices (design 2026-11-22 §5.2): the peer added this user
+      // (a request, or the acceptance of this user's request) or removed
+      // them. Never a chat message: surfaced via metadata so MessageQueue
+      // hands it to the contact store and consumes it — no room, no bubble,
+      // no unread. The name certificate rides along (§12.4).
+      final innerType = payload['type'];
+      if (innerType == contactAddedType || innerType == contactRemovedType) {
+        final cert = payload['nameCert'];
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: {
+            '_isContactNotice': true,
+            'notice': innerType,
+            'answer': contactNoticeIsAnswer(payload),
+          },
+          peerNameCert: cert is String ? cert : null,
+        );
+      }
+
+      // A message. An inner `type` this build does not know (a later build's
+      // structured payload) is consumed and never shown — no room, no
+      // bubble, no notification (§12.4).
+      final msgType =
+          innerType == null ? MessageType.text : _parseMessageType(innerType);
+      if (msgType == null) {
+        return Message(
+          id: messageId,
+          conversationId: resolvedConversationId,
+          senderSnowchatId: senderId,
+          plaintext: '',
+          timestamp: timestamp,
+          type: MessageType.system,
+          status: MessageStatus.delivered,
+          metadata: const {'_isUnknownType': true},
+        );
+      }
       final text = payload['text'] as String? ?? '';
-      final msgType = _parseMessageType(payload['type'] as String?);
-      final msgMetadata = payload['metadata'] as Map<String, dynamic>?;
+      final msgMetadata = _peerMetadata(payload['metadata']);
       final ttlSeconds = payload['ttl'] as int?;
       final replyToId = payload['replyToId'] as String?;
       final replyToPreview = payload['replyToPreview'] as String?;
       final replyToSenderId = payload['replyToSenderId'] as String?;
       final peerClientId = payload['cid'] as String?;
+      final cert = payload['nameCert'];
 
       return Message(
         id: messageId,
@@ -1003,6 +944,7 @@ class EncryptedMessageHandler {
         replyToPreview: replyToPreview,
         replyToSenderId: replyToSenderId,
         peerClientId: peerClientId,
+        peerNameCert: cert is String ? cert : null,
       );
     } on IdentityBindingInvalidException {
       // B-2 hard failure — must reach the queue unwrapped so it is ACKed as a
@@ -1013,7 +955,7 @@ class EncryptedMessageHandler {
       rethrow;
     } catch (e, st) {
       debugPrint('[EncryptedMessageHandler:Sealed] Decryption failed for '
-          'message $messageId from $senderId: $e\n$st');
+          'message $messageId: $e\n$st');
       // Preserve the certificate-authenticated sender (bound at unseal, before
       // this try) so the queue can target the retry + placeholder + SPK
       // self-heal, instead of a blind sender=null retry the server rejects.
@@ -1363,7 +1305,8 @@ class EncryptedMessageHandler {
   /// [clientMessageId] travels as `cid`: this device's own id for the
   /// message. The 1:1 outbox sends a message again when the server's ack did
   /// not come back; the receiver stores it once per (sender, cid). Inside the
-  /// E2EE payload only — the server never sees it.
+  /// E2EE payload only — the server never sees it. [nameCert] (base64) is
+  /// this account's name certificate, at the top level (§12.4).
   Map<String, dynamic> _buildPayload({
     required String clientMessageId,
     required String text,
@@ -1374,6 +1317,7 @@ class EncryptedMessageHandler {
     String? replyToId,
     String? replyToPreview,
     String? replyToSenderId,
+    String? nameCert,
   }) {
     return {
       'cid': clientMessageId,
@@ -1386,28 +1330,15 @@ class EncryptedMessageHandler {
       if (replyToId != null) 'replyToId': replyToId,
       if (replyToPreview != null) 'replyToPreview': replyToPreview,
       if (replyToSenderId != null) 'replyToSenderId': replyToSenderId,
+      if (nameCert != null) 'nameCert': nameCert,
     };
   }
 
-  /// Return a placeholder message indicating decryption failure.
-  static Message _failedMessage({
-    required String messageId,
-    required String conversationId,
-    required String senderId,
-    required DateTime timestamp,
-  }) {
-    return Message(
-      id: messageId,
-      conversationId: conversationId,
-      senderSnowchatId: senderId,
-      plaintext: '[Unable to decrypt message]',
-      timestamp: timestamp,
-      type: MessageType.system,
-      status: MessageStatus.failed,
-    );
-  }
-
-  static MessageType _parseMessageType(String? type) {
+  /// The message type an inner `type` names, or null for one this build
+  /// does not know (consumed, never shown). `system` is never a peer's: it
+  /// is this device's own kind (its controls, its notices) — a peer naming it
+  /// gets nothing shown.
+  static MessageType? _parseMessageType(Object? type) {
     switch (type) {
       case 'text':
         return MessageType.text;
@@ -1415,10 +1346,21 @@ class EncryptedMessageHandler {
         return MessageType.file;
       case 'voice':
         return MessageType.voice;
-      case 'system':
-        return MessageType.system;
       default:
-        return MessageType.text;
+        return null;
     }
+  }
+
+  /// A message's metadata as the peer sent it, without the keys that start
+  /// with `_` — this device's own flags (`_isReadReceipt`, `_isUnsend`, …)
+  /// that only the decrypt sets. A peer that put one there would otherwise
+  /// make an ordinary message act as a control. Null when it is not a map.
+  static Map<String, dynamic>? _peerMetadata(Object? raw) {
+    if (raw is! Map) return null;
+    return {
+      for (final e in raw.entries)
+        if (e.key is String && !(e.key as String).startsWith('_'))
+          e.key as String: e.value,
+    };
   }
 }

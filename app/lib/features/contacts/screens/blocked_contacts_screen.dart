@@ -1,10 +1,13 @@
 /// @file        blocked_contacts_screen.dart
-/// @description Blocked-users list screen — this device's blocked accounts (named from the server's
-///              list) + unblock.
+/// @description Blocked-users list screen — this device's blocked accounts, each with the name kept
+///              on this device when it was blocked (nothing asked of the server), + unblock.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-08
-/// @lastUpdated 2026-11-21 (X1: the list is this device's (BlockList); unblock goes through it). Earlier 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (friend graph off the server: the names are the ones kept with each block
+///              on this device — no GET /users/blocked; an unblock does not bring the friend row back,
+///              the dialog says so). Earlier 2026-11-21 (X1: the list is this device's (BlockList);
+///              unblock goes through it). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - BlockedContactsScreen: blocked-contacts list ConsumerWidget
@@ -137,7 +140,9 @@ class BlockedContactsScreen extends ConsumerWidget {
           style: TextStyle(color: SnowColors.textPrimary),
         ),
         content: Text(
-          'Unblock $displayName? They will be able to send you messages again.',
+          'Unblock $displayName? They will be able to message and call you '
+          'again. What they sent while blocked does not come back, and they '
+          'are not added back to your friends.',
           style: const TextStyle(color: SnowColors.textSecondary),
         ),
         actions: [

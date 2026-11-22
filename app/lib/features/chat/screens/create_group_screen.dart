@@ -1,16 +1,20 @@
 /// @file        create_group_screen.dart
 /// @description Group-chat creation screen — pick accounts, enter a group name, create a group
-///              protocol v2 group and invite them. Picks from the contacts, or — opened from a
-///              community — from that community's roster. Either way the accounts this user
+///              protocol v2 group and invite them. Picks from this user's friends and the 1:1
+///              peers they chose (design 2026-11-22-friend-graph-off-server §5.6), or — opened from
+///              a community — from that community's roster. Either way the accounts this user
 ///              chose by an action of their own (VerifiedIdentityStore.isVouched) are listed as
 ///              known and "Select all" takes only them; the others are shown only after a
-///              warning, because the lists are the server's word and an invite gives an account
-///              the group's key for good (AccountPickerList). Every account shows its snowId.
+///              warning, because a roster and every name are the server's word and an invite
+///              gives an account the group's key for good (AccountPickerList). Every account
+///              shows its snowId.
 ///              Blocked accounts are not listed. A group holds up to gv2GroupSizeLimit accounts.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-11-21 (X1: the blocked accounts left out of the roster are this device's list (BlockList), not a server call). Earlier 2026-11-21 (community roster mode; known = vouched for by the user, in both modes;
+/// @lastUpdated 2026-11-22 (the picker's empty and error texts speak of friends — the candidates
+///              are this device's friend list and chosen 1:1 peers, not a server contact list).
+///              Earlier 2026-11-21 (X1: the blocked accounts left out of the roster are this device's list (BlockList), not a server call). Earlier 2026-11-21 (community roster mode; known = vouched for by the user, in both modes;
 ///              unknown accounts behind a warning; blocked accounts left out; the gv2GroupSizeLimit
 ///              cap — the list is AccountPickerList). Earlier 2026-11-20
 ///              (v1 groups removed: a new group is always a v2 group — no GMK, no server group
@@ -301,10 +305,13 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   Widget _pickerList() {
     if (!_rosterMode) {
       return ref.watch(contactPickCandidatesProvider).when(
-            data: (c) => _list(c, 'No contacts available'),
+            data: (c) => _list(
+                c,
+                'No one to add yet. Add friends first, or write to someone '
+                'in a 1:1 chat.'),
             loading: () =>
                 const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (_, _) => _message("Couldn't load your contacts."),
+            error: (_, _) => _message("Couldn't load your friends."),
           );
     }
     if (_rosterFailed) {

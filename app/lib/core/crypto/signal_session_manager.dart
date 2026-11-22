@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (SC-05: the session_reset notice goes only through sessionResetNotifier —
+/// @lastUpdated 2026-11-23 (no account id in an exception message — they reach log lines; logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (contract §12.1: no account id in a URL path — the prekey bundle is POST /keys/prekeys/fetch and the identity directory POST /keys/identity/fetch, both { snowchatId }; ensureSessionBatch and its POST /keys/prekeys/batch are gone (no caller; the route is removed)). Earlier 2026-11-22 (SC-05: the session_reset notice goes only through sessionResetNotifier —
 ///              a sealed control — never as a non-sealed private_message; the socket parameter is gone — nothing here sends). Earlier 2026-11-21 (legacy TOFU removed: no pending-key-change block or IdentityKeyChangedException; the identity store is always there; the peer Ed lookup admits only bound identities). Earlier 2026-11-20 (a peer whose directory device has no identity binding is refused — refuseUnbound(); v1 groups removed: the group Sender Key operations and saveGroupState() are gone. refreshPeerIdentity(): admit the peer's current directory identity and put aside sessions that do not match it — before a group invite, so that it is not sealed to an identity the peer no longer has. archivePeerSessions() is durable: the peer is recorded in secure storage first and the record cleared only once the store is saved; before initialize() only the record is made, and initialize() applies it right after loading the store — an archive asked for early is no longer lost. Optional sessionStorePath for tests. Earlier same day: archivePeerSessions(): a peer stated — with its own signature, group protocol v2 member_reset — that its sessions are gone; ours with it are archived and the next message starts a new one). Earlier 2026-11-13 (archiveAndResetSession(notifyPeer: false): group protocol v2 sends the first message of the new session itself, sealed over the group queue, instead of the non-sealed session_reset row). Earlier 2026-11-10 (B-2 Identity Binding v1: every POST /keys/prekeys body (full upload AND OPK replenish) carries identityKeyEd25519 + identityBinding; checkPreKeyCount() self-checks hasIdentityBinding/identityBindingEpoch against the server and repairs via PUT /keys/identity-binding; ensureSession picks the highest-epoch validly-bound device and never retries a hard identity rejection (memoized cooldown, no OPK burn); ensureSessionBatch is per-entry fault isolated; decrypt() hands the envelope deviceId + a cached non-consuming GET /keys/identity lookup to the Signal layer instead of pre-fetching a TOFU pin; the incoming deviceId is cached only after a verified decrypt; getPeerEd25519PublicKey returns the bound Ed (verified directory fallback). Removed dead _syncIdentityKeyToServer (posted keys without a binding)). Earlier 2026-05-05 (Fix A: pin-cache-first on msgType=2 decrypt — eliminates the ~500ms HTTP race that let sealed_call_signaling overtake an in-flight session_reset on long-idle pre-warm)
 ///
 /// @functions
@@ -47,6 +47,7 @@ import 'identity_manager.dart';
 import 'session_store.dart';
 import 'signal_protocol_service.dart';
 import 'verified_identity_store.dart';
+import '../diagnostics/log_ref.dart';
 
 /// Higher-level session manager that coordinates between [SignalProtocolService],
 /// the SnowChat API server, and local secure storage.
@@ -854,7 +855,7 @@ class SignalSessionManager {
     assert(
       recipientSnowchatId.length == 36 &&
           recipientSnowchatId.startsWith('snow'),
-      'Invalid SnowChat ID: $recipientSnowchatId',
+      'Invalid SnowChat ID: ${logRef(recipientSnowchatId)}',
     );
 
     // Check local session store first (fast path)
@@ -888,8 +889,9 @@ class SignalSessionManager {
     // (recipient may still be uploading prekeys after DB reset/restore)
     for (var attempt = 0; attempt <= _ensureSessionMaxRetries; attempt++) {
       try {
-        final response = await _apiClient.get<Map<String, dynamic>>(
-          ApiEndpoints.preKeysForUser(recipientSnowchatId),
+        final response = await _apiClient.post<Map<String, dynamic>>(
+          ApiEndpoints.preKeysFetch,
+          data: {'snowchatId': recipientSnowchatId},
         );
 
         final data = response.data;
@@ -902,7 +904,7 @@ class SignalSessionManager {
         final devices = data['devices'] as List<dynamic>?;
         if (devices == null || devices.isEmpty) {
           throw SignalProtocolException(
-            'No devices found for $recipientSnowchatId',
+            'No devices found for ${logRef(recipientSnowchatId)}',
           );
         }
 
@@ -944,7 +946,7 @@ class SignalSessionManager {
         if (is404 && attempt < _ensureSessionMaxRetries) {
           debugPrint(
               '[SignalSessionManager] Prekey bundle not ready for '
-              '$recipientSnowchatId, retry ${attempt + 1}/$_ensureSessionMaxRetries '
+              '${logRef(recipientSnowchatId)}, retry ${attempt + 1}/$_ensureSessionMaxRetries '
               'in ${_ensureSessionRetryDelays[attempt].inSeconds}s');
           await Future.delayed(_ensureSessionRetryDelays[attempt]);
           continue; // Retry
@@ -952,7 +954,7 @@ class SignalSessionManager {
 
         debugPrint(
             '[SignalSessionManager] Failed to ensure session with '
-            '$recipientSnowchatId after ${attempt + 1} attempts: $e');
+            '${logRef(recipientSnowchatId)} after ${attempt + 1} attempts: $e');
         rethrow;
       }
     }
@@ -982,11 +984,11 @@ class SignalSessionManager {
     } on DioException catch (e) {
       if (e.response?.statusCode == 404) return null;
       throw SignalProtocolException(
-          'Identity directory unavailable for $snowId (transient): '
+          'Identity directory unavailable for ${logRef(snowId)} (transient): '
           '${e.type.name}');
     }
     if (dir.devices.isEmpty) {
-      throw SignalProtocolException('No devices found for $snowId');
+      throw SignalProtocolException('No devices found for ${logRef(snowId)}');
     }
     final r = await IdentityAdmission(store)
         .admitDirectory(snowId: snowId, directory: dir);
@@ -1047,7 +1049,7 @@ class SignalSessionManager {
       }
       // The admitted device is not in the bundle (peer re-registered between
       // the requests) → treat as not-ready so the retry loop refetches.
-      throw SignalProtocolException('No devices found for $snowId');
+      throw SignalProtocolException('No devices found for ${logRef(snowId)}');
     }
     final store = _identityStore;
     Uint8List? account =
@@ -1064,7 +1066,7 @@ class SignalSessionManager {
       devices: parsed,
     );
     if (pick == null) {
-      throw SignalProtocolException('No devices found for $snowId');
+      throw SignalProtocolException('No devices found for ${logRef(snowId)}');
     }
     return (device: maps[pick.index], accountPublicKey: account);
   }
@@ -1101,21 +1103,21 @@ class SignalSessionManager {
   /// placeholder string 'primary' on cache miss. That caused the sender to
   /// store/encrypt under session key `(recipient, 'primary')` while the
   /// recipient stored under their real device UUID — permanent decrypt
-  /// failure. Callers MUST invoke [ensureSession] (or [ensureSessionBatch]
-  /// followed by [hasDeviceIdFor] verification) before calling this method.
+  /// failure. Callers MUST invoke [ensureSession] (followed by
+  /// [hasDeviceIdFor] verification) before calling this method.
   Future<String> getDeviceIdForRecipient(String recipientSnowchatId) async {
     final cached = _recipientDeviceIds[recipientSnowchatId];
     if (cached == null) {
       throw StateError(
         'getDeviceIdForRecipient: no cached deviceId for '
-        '$recipientSnowchatId. Caller must invoke ensureSession() first.',
+        '${logRef(recipientSnowchatId)}. Caller must invoke ensureSession() first.',
       );
     }
     return cached;
   }
 
   /// Phase 8.7 Bug A helper: check whether the device-id cache is populated
-  /// for the given recipient. Use after [ensureSessionBatch] to detect
+  /// for the given recipient. Use after [ensureSession] to detect
   /// stragglers that need an individual [ensureSession] retry before sending.
   bool hasDeviceIdFor(String recipientSnowchatId) =>
       _recipientDeviceIds.containsKey(recipientSnowchatId);
@@ -1138,7 +1140,7 @@ class SignalSessionManager {
       return incomingDeviceId;
     }
     throw StateError(
-      'peekDeviceIdForIncoming: no cached deviceId for $senderSnowchatId '
+      'peekDeviceIdForIncoming: no cached deviceId for ${logRef(senderSnowchatId)} '
       'and the incoming envelope did not provide one.',
     );
   }
@@ -1254,14 +1256,14 @@ class SignalSessionManager {
         final elapsed = DateTime.now().difference(lastReset);
         if (elapsed < _resetCooldown) {
           debugPrint('[SignalSessionManager] archiveAndResetSession SKIPPED '
-              'for $snowId — last reset ${elapsed.inSeconds}s ago '
+              'for ${logRef(snowId)} — last reset ${elapsed.inSeconds}s ago '
               '(cooldown: ${_resetCooldown.inSeconds}s)');
           return;
         }
       }
     } else {
       debugPrint('[SignalSessionManager] archiveAndResetSession FORCED '
-          'for $snowId — bypassing cooldown');
+          'for ${logRef(snowId)} — bypassing cooldown');
     }
 
     // B-2: a peer we hard-rejected or that awaits re-verification cannot be
@@ -1271,7 +1273,7 @@ class SignalSessionManager {
 
     final deviceId = _recipientDeviceIds[snowId];
     debugPrint('[SignalSessionManager] archiveAndResetSession START '
-        'snowId=$snowId cachedDeviceId=$deviceId');
+        'snowId=${logRef(snowId)} cachedDeviceId=$deviceId');
 
     // Step 1: Archive existing sessions (NOT delete).
     // This MUST complete before ensureSession() to guarantee atomicity.
@@ -1344,115 +1346,6 @@ class SignalSessionManager {
   /// archiveAndResetSession() which archives instead of hard-deleting.
   Future<void> resetSession(String snowId) async {
     await archiveAndResetSession(snowId);
-  }
-
-  /// Ensure sessions with multiple recipients in one batch API call (Phase 5.2).
-  /// Significantly faster than calling ensureSession() 1024 times sequentially.
-  Future<void> ensureSessionBatch(List<String> recipientIds) async {
-    // Filter to only those needing a new session
-    final needSession = <String>[];
-    for (final id in recipientIds) {
-      final cachedDeviceId = _recipientDeviceIds[id];
-      if (cachedDeviceId != null) {
-        final has = await _signal.hasSession(id, cachedDeviceId);
-        if (has) continue;
-      }
-      needSession.add(id);
-    }
-    if (needSession.isEmpty) return;
-
-    // B-2: skip peers in hard-rejection cooldown / awaiting re-verification
-    // (no bundle fetch → no OPK burn for a peer we will refuse anyway).
-    final unblocked = <String>[];
-    for (final id in needSession) {
-      try {
-        await _throwIfIdentityBlocked(id);
-        unblocked.add(id);
-      } catch (_) {}
-    }
-    if (unblocked.isEmpty) return;
-
-    // B-2 M4: non-consuming pre-admission per member (bounded concurrency)
-    // BEFORE the consuming batch call. Rejected / blocked members are dropped
-    // without burning their one-time prekeys; transient lookup failures are
-    // dropped too (callers' individual ensureSession fallback retries them).
-    final preAdmitted = <String, String?>{};
-    const concurrency = 8;
-    for (var i = 0; i < unblocked.length; i += concurrency) {
-      final chunk = unblocked.skip(i).take(concurrency).toList();
-      await Future.wait(chunk.map((id) async {
-        try {
-          preAdmitted[id] = await _preAdmit(id);
-        } on IdentityBindingInvalidException catch (e) {
-          _identityRejections[id] = (at: DateTime.now(), error: e);
-          debugPrint('[SignalSessionManager] batch: identity rejected for one '
-              'member (${e.reason.name}) — no bundle fetched');
-        } catch (e) {
-          debugPrint('[SignalSessionManager] batch: identity lookup for one '
-              'member failed (transient): ${e.runtimeType}');
-        }
-      }));
-    }
-    final eligible =
-        unblocked.where((id) => preAdmitted.containsKey(id)).toList();
-    if (eligible.isEmpty) return;
-
-    Map<String, dynamic> bundles;
-    try {
-      final response = await _apiClient.post<Map<String, dynamic>>(
-        '${ApiEndpoints.preKeys}/batch',
-        data: {'snowchatIds': eligible},
-      );
-      bundles = response.data?['bundles'] as Map<String, dynamic>? ?? {};
-    } catch (e) {
-      debugPrint('[SignalSessionManager] Batch session failed: $e');
-      // Request-level failure only: establish individually. A per-peer
-      // identity rejection never reaches this fallback (handled below).
-      for (final id in eligible) {
-        try {
-          await ensureSession(id);
-        } catch (_) {}
-      }
-      return;
-    }
-
-    // B-2 per-entry isolation: one bad bundle (forged or missing binding,
-    // missing SPK) must not fail the whole batch and trigger a
-    // re-fetch — and OPK re-consumption — for every other member.
-    for (final entry in bundles.entries) {
-      final snowchatId = entry.key;
-      try {
-        final bundleData = Map<String, dynamic>.from(entry.value as Map);
-        final devices = bundleData['devices'] as List<dynamic>?;
-        if (devices == null || devices.isEmpty) continue;
-        final selected = await _selectBundleDevice(
-          snowchatId,
-          bundleData['accountPublicKey'],
-          devices,
-          preferDeviceId: preAdmitted[snowchatId],
-        );
-        final deviceId = selected.device['deviceId'] as String;
-        _recipientDeviceIds[snowchatId] = deviceId;
-        final exists = await _signal.hasSession(snowchatId, deviceId);
-        if (!exists) {
-          await _establishSession(
-            snowchatId,
-            deviceId,
-            selected.device,
-            accountPublicKey: selected.accountPublicKey,
-          );
-        }
-      } on IdentityBindingInvalidException catch (e) {
-        _identityRejections[snowchatId] = (at: DateTime.now(), error: e);
-        _recipientDeviceIds.remove(snowchatId);
-        debugPrint('[SignalSessionManager] batch: identity rejected for one '
-            'member (${e.reason.name}) — skipped, not retried');
-      } catch (e) {
-        _recipientDeviceIds.remove(snowchatId);
-        debugPrint('[SignalSessionManager] batch: session for one member '
-            'failed (transient): ${e.runtimeType}');
-      }
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1630,7 +1523,7 @@ class SignalSessionManager {
       debugPrint('[SessionMgr] deleteSessionForPeer persist error '
           '(non-fatal): $e');
     }
-    debugPrint('[SessionMgr] deleteSessionForPeer($snowId) — local session '
+    debugPrint('[SessionMgr] deleteSessionForPeer(${logRef(snowId)}) — local session '
         'wiped (no peer notification)');
   }
 
@@ -1882,11 +1775,11 @@ class SignalSessionManager {
       );
 
       debugPrint(
-          '[SignalSessionManager] Session established with $recipientId:$deviceId');
+          '[SignalSessionManager] Session established with ${logRef(recipientId)}:$deviceId');
     } catch (e) {
       debugPrint(
           '[SignalSessionManager] Failed to establish session with '
-          '$recipientId:$deviceId: $e');
+          '${logRef(recipientId)}:$deviceId: $e');
       rethrow;
     }
   }
@@ -1950,13 +1843,15 @@ class SignalSessionManager {
     throw await admission.refuseUnbound(peerSnowchatId);
   }
 
-  /// B-2: non-consuming identity directory — `GET /keys/identity/:snowId` →
+  /// B-2: non-consuming identity directory — `POST /keys/identity/fetch
+  /// { snowchatId }` →
   /// `{accountPublicKey(hex), devices:[{deviceId, identityKey(b64),
   /// identityKeyEd25519(b64), identityBinding|null}]}`. Does NOT pop a
   /// one-time prekey and is not cached here (see decrypt's TTL cache).
   Future<RemoteIdentityDirectory> fetchIdentityDirectory(String snowId) async {
-    final response = await _apiClient.get<Map<String, dynamic>>(
-      ApiEndpoints.identityForUser(snowId),
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      ApiEndpoints.identityFetch,
+      data: {'snowchatId': snowId},
     );
     final data = response.data;
     if (data == null) {

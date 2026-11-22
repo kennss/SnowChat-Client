@@ -1,16 +1,23 @@
 /// @file        new_chat_screen.dart
-/// @description New-chat start screen — SnowChat ID input/validation, server user lookup, existing-conversation check, new-conversation creation
+/// @description New-chat start screen — SnowChat ID input/validation, account resolve, existing-conversation check, new-conversation creation (on this device)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-20 (the Group card shows only where groups can run (gv2GroupsAvailable);
+/// @lastUpdated 2026-11-22 (the list under the id field is the friends on this device (tap → their
+///              chat); a typed id of the friend list is not looked up on the server, any other is
+///              resolved once; the chat opens through openDirectChatWith (an account this user
+///              blocked asks to unblock first) in place of this screen; a rate-limited lookup is
+///              told apart from "not found"). Earlier 2026-11-22 (friend graph off the server —
+///              bindings only: the id is resolved with POST /users/resolve (ContactLookup); no
+///              find-or-create — the room is made on this device). Earlier 2026-11-20 (the Group card shows only where groups can run (gv2GroupsAvailable);
 ///              _startChat: the room id is the recipient's snowId — the server's reply only says
 ///              whether a 1:1 may start, it never names the room). Earlier 2026-04-26 (header English translation; previous: 2026-04-14)
 ///
 /// @functions
 ///  - NewChatScreen: ConsumerStatefulWidget for starting a new chat
-///  - _lookupUser(): user lookup on the server
-///  - _startChat(): start a conversation or navigate to an existing one
+///  - _lookupUser(): the typed SnowChat ID — a friend from this device, else POST /users/resolve
+///  - _startChat(): open the chat with the typed id (openDirectChatWith, in place of this screen)
+///  - _buildFriendItem(): a friend row (tap → its chat)
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,12 +26,13 @@ import '../../../app/providers.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
+import '../../../core/contacts/contact_lookup.dart' show FoundAccount;
 import '../../../core/crypto/key_derivation.dart';
-import '../../../core/network/api_endpoints.dart';
 import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../contacts/contact_provider.dart';
 import '../models/conversation.dart';
 import '../providers/conversation_list_provider.dart';
+import '../services/start_direct_chat.dart';
 
 class NewChatScreen extends ConsumerStatefulWidget {
   const NewChatScreen({super.key});
@@ -37,15 +45,12 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
   final _controller = TextEditingController();
   String? _error;
   bool _isSearching = false;
-  Map<String, dynamic>? _foundUser;
-  bool _isGroupMode = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Refresh contacts on screen open to pick up newly registered users
-    Future.microtask(() => ref.read(contactProvider.notifier).refresh());
-  }
+  /// The account the typed id names: its snowId and name (from the friend
+  /// list, or from the server's answer — then [_resolved] holds it).
+  ({String snowId, String? name})? _foundUser;
+  FoundAccount? _resolved;
+  bool _isGroupMode = false;
 
   @override
   void dispose() {
@@ -53,28 +58,42 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
     super.dispose();
   }
 
-  /// Look up a user by SnowChat ID on the server.
+  /// The account [snowId] names: a friend of this device's list (no server
+  /// call), else the server's answer (POST /users/resolve).
   Future<void> _lookupUser(String snowId) async {
+    for (final c in ref.read(contactProvider)) {
+      if (c.snowChatId == snowId) {
+        setState(() {
+          _error = null;
+          _resolved = null;
+          _foundUser = (snowId: snowId, name: c.displayName);
+        });
+        return;
+      }
+    }
     setState(() {
       _isSearching = true;
       _error = null;
       _foundUser = null;
+      _resolved = null;
     });
 
-    try {
-      final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.get(ApiEndpoints.userLookup(snowId));
-      final data = Map<String, dynamic>.from(response.data as Map);
-      setState(() {
-        _foundUser = data;
-        _isSearching = false;
-      });
-    } catch (e) {
-      setState(() {
-        _error = 'User not found';
-        _isSearching = false;
-      });
-    }
+    final result = await ref.read(contactLookupProvider).resolve(snowId);
+    if (!mounted || _controller.text.trim() != snowId) return;
+    final account = result.account;
+    setState(() {
+      _isSearching = false;
+      if (account == null) {
+        _error = result.notFound
+            ? 'User not found'
+            : result.rateLimited
+                ? 'Too many lookups. Please try again in a bit.'
+                : 'Could not look this ID up';
+      } else {
+        _resolved = account;
+        _foundUser = (snowId: account.snowId, name: account.displayName);
+      }
+    });
   }
 
   Future<void> _startChat() async {
@@ -98,63 +117,41 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
       return;
     }
 
-    // A 1:1 room's id is the peer's snowId.
-    final convId = snowId;
-
-    // Check if conversation already exists
-    final conversations = ref.read(conversationListProvider);
-    if (conversations.any(
-      (c) => c.type == ConversationType.direct && c.id == convId,
-    )) {
-      context.pop();
-      context.push('/chat/$convId');
+    // A chat with the account exists already: open it, nothing to look up.
+    final exists = ref.read(conversationListProvider).any(
+          (c) => c.type == ConversationType.direct && c.id == snowId,
+        );
+    if (exists) {
+      await openDirectChatWith(
+        context: context,
+        ref: ref,
+        recipientSnowchatId: snowId,
+        replaceCurrent: true,
+      );
       return;
     }
 
-    // Ask the server whether a 1:1 may start (a friend or a community
-    // co-member; refused otherwise). Its reply never names the room.
-    try {
-      final apiClient = ref.read(apiClientProvider);
-      await apiClient.post(
-        ApiEndpoints.conversationFindOrCreate,
-        data: {'recipientSnowchatId': snowId},
-      );
-
-      // Add to conversation list BEFORE navigating so chatProvider
-      // can resolve recipientSnowchatId immediately (avoids group fallback bug).
-      final notifier = ref.read(conversationListProvider.notifier);
-      final alreadyExists = ref
-          .read(conversationListProvider)
-          .any((c) => c.id == convId);
-      if (!alreadyExists) {
-        notifier.addConversation(
-          Conversation(
-            id: convId,
-            type: ConversationType.direct,
-            participantIds: [myId, snowId],
-            title: _foundUser?['displayName'] as String?,
-            createdAt: DateTime.now(),
-          ),
-        );
-      }
-
-      // Refresh full list in background (for server-accurate data)
-      notifier.refresh();
-
-      context.pop();
-      context.push('/chat/$convId');
-    } catch (e) {
-      debugPrint('[NewChat] Failed to create conversation: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to start conversation')),
-        );
-      }
-    }
+    // The typed id must be an account: looked up when that has not run for
+    // it yet (a friend needs no server call).
+    if (_foundUser?.snowId != snowId) await _lookupUser(snowId);
+    if (!mounted) return;
+    final found = _foundUser;
+    if (found == null || found.snowId != snowId) return;
+    // The room is made on this device (its id is the peer's snowId); the
+    // chat takes this screen's place.
+    await openDirectChatWith(
+      context: context,
+      ref: ref,
+      recipientSnowchatId: snowId,
+      recipientDisplayName: found.name,
+      resolved: _resolved,
+      replaceCurrent: true,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final friends = ref.watch(friendsProvider);
     return Scaffold(
       backgroundColor: SnowColors.background,
       appBar: AppBar(
@@ -225,7 +222,10 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
                 if (KeyDerivation.isValidSnowChatId(trimmed)) {
                   _lookupUser(trimmed);
                 } else {
-                  setState(() => _foundUser = null);
+                  setState(() {
+                    _foundUser = null;
+                    _resolved = null;
+                  });
                 }
               },
               style: const TextStyle(
@@ -269,9 +269,9 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
                 child: Row(
                   children: [
                     SnowAvatar(
-                      snowId: _foundUser!['snowchatId'] as String? ?? '',
+                      snowId: _foundUser!.snowId,
                       size: 40,
-                      displayName: _foundUser!['displayName'] as String? ?? '',
+                      displayName: _foundUser!.name ?? '',
                     ),
                     const SizedBox(width: SnowSizes.md),
                     Expanded(
@@ -279,14 +279,14 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            _foundUser!['displayName'] as String? ?? 'Unknown',
+                            _foundUser!.name ?? 'Unknown',
                             style: const TextStyle(
                               color: SnowColors.textPrimary,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                           Text(
-                            _foundUser!['snowchatId'] as String? ?? '',
+                            _foundUser!.snowId,
                             style: const TextStyle(
                               color: SnowColors.textTertiary,
                               fontSize: 11,
@@ -315,9 +315,9 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
 
             const SizedBox(height: SnowSizes.xl),
 
-            // Contacts
+            // Friends (this device's list)
             const Text(
-              'Contacts',
+              'Friends',
               style: TextStyle(
                 color: SnowColors.textSecondary,
                 fontSize: 14,
@@ -326,28 +326,26 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
             ),
             const SizedBox(height: SnowSizes.md),
 
-            ...ref
-                .watch(contactProvider)
-                .where((c) => !c.isBlocked)
-                .map(
-                  (c) => _buildContactItem(
-                    c.displayName ?? c.snowChatId,
-                    c.snowChatId,
-                  ),
-                ),
+            if (friends.isEmpty)
+              const Text(
+                'No friends yet — add one from the Friends tab, or enter a '
+                'SnowChat ID above.',
+                style: TextStyle(color: SnowColors.textTertiary, fontSize: 13),
+              )
+            else
+              for (final c in friends) _buildFriendItem(c),
           ],
         ),
       ),
     );
   }
 
-  /// Start chat directly from a contact tap.
-  void _startChatWithContact(String snowId) {
-    _controller.text = snowId;
-    _startChat();
-  }
-
-  Widget _buildContactItem(String name, String snowId) {
+  /// A friend: the tap opens (or makes) its chat in place of this screen.
+  Widget _buildFriendItem(Contact c) {
+    final snowId = c.snowChatId;
+    final name = (c.displayName?.isNotEmpty ?? false)
+        ? c.displayName!
+        : shortSnowId(snowId);
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: SnowAvatar(snowId: snowId, size: 40, displayName: name),
@@ -363,7 +361,13 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
           fontFamily: 'monospace',
         ),
       ),
-      onTap: () => _startChatWithContact(snowId),
+      onTap: () => openDirectChatWith(
+        context: context,
+        ref: ref,
+        recipientSnowchatId: snowId,
+        recipientDisplayName: c.displayName,
+        replaceCurrent: true,
+      ),
     );
   }
 }

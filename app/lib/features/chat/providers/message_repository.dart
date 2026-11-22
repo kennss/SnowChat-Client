@@ -3,18 +3,22 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-01
-/// @lastUpdated 2026-11-21 (persistOutgoingMessage makes a 1:1 room's row when it is gone — after the
+/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (no message-status listener: the status of an outgoing 1:1 message is the
+///              1:1 outbox's — it maps the server's status events, which name the random wire id, back
+///              to its message (DirectOutbox) — and a v2 group's is its outbox's; startSocketListeners,
+///              onMessageStatusChanged, parseStatus, updateOutgoingStatusWithAttachment, dispose() and the unused
+///              socket expiry helpers are gone).
+///              Earlier 2026-11-21 (persistOutgoingMessage makes a 1:1 room's row when it is gone — after the
 ///              peer deleted the chat, messages sent from the still-open screen had no row and the
 ///              chat vanished from the list on restart). Earlier 2026-11-21 (P5.6: a received attachment is written only under a checked file id and extension (AttachmentStorage.relativePathFor)). Earlier 2026-11-20 (v1 groups removed: recipientId / groupId are fixed by the chat's id; the per-chat message_deleted listener is gone — a remote unsend is applied once, by GlobalMessageRouter; deleteConversationLocally wipes the Signal session of the room's peer (its id) and translates its comments). Earlier 2026-11-11 (at-rest level 1: received attachments are written via AttachmentStorage.ensureDirectory() (iOS backup-excluded, CompleteUnlessOpen)). Earlier 2026-08-05 (added persistOutgoingMessage(): initial insert of a sent text/file/voice message now refreshes the drift `conversations` snippet in one transaction (via MessageDao.insertOutgoingMessage), mirroring the incoming path — the outgoing send path previously wrote only the message row, so an outgoing-last conversation hydrated from the drift cache as "No messages yet" after restart). Earlier 2026-08-03 (deleteConversationLocally: resolve the peer via ConversationDao.participantIdsOf() (tolerant CSV parse) instead of jsonDecode — participantIds is CSV so jsonDecode threw FormatException, left peerSnowIdToWipe null, and silently skipped the Signal session wipe, reintroducing the 2026-05-04 stale-ratchet/session_reset loop after deleting a 1:1). Earlier 2026-07-15 (read receipts now sealed E2EE: persistServerMessages sends via EncryptedMessageHandler.sendSealedReadReceipt for direct chats viewed in real-time, replacing plaintext SocketManager.sendReadReceipt). Earlier 2026-04-26 (header English translation; previous: 2026-04-12 Phase 10 P0-B: added decryption_failed mapping in parseOutgoingStatus)
 ///
 /// @functions
-///  - MessageRepository: message data layer (drift SSoT, server fetch, socket reception)
+///  - MessageRepository: message data layer (drift SSoT, server fetch)
 ///  - loadFromDrift(): load messages from drift DB
 ///  - fetchFromServer(): fetch messages from server API (offline support)
 ///  - persistMessage(): persist a single message into drift DB
 ///  - persistServerMessages(): batch-persist messages fetched from server
 ///  - watchMessages(): return a drift watch stream
-///  - startSocketListeners(): register the message-status listener
 ///  - convertToMessage(): LocalMessage -> Message conversion
 ///  - updateConversationListPreview(): update conversation-list preview
 ///  - deleteMessageLocally(): delete a single message + attachments + local files
@@ -37,7 +41,6 @@ import '../../../core/crypto/file_encryptor.dart';
 import '../../../core/network/api_client.dart';
 // Phase 6: api_endpoints removed — fetch is via MessageQueue.fetchPending()
 import '../../../core/network/file_service.dart';
-import '../../../core/network/socket_manager.dart';
 import '../../../core/storage/daos/attachment_dao.dart';
 import '../../../core/storage/local_file_protection.dart';
 import '../../../core/storage/daos/message_dao.dart';
@@ -47,6 +50,7 @@ import '../models/message.dart';
 import 'conversation_list_provider.dart';
 import 'expiring_message_manager.dart';
 import 'mark_read_helper.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 /// Data layer for chat messages. Handles drift DB, server API, and socket events.
 /// Separated from ChatNotifier to follow Signal's Repository pattern.
@@ -54,7 +58,6 @@ class MessageRepository {
   final String conversationId;
   final MessageDao _messageDao;
   final AttachmentDao? _attachmentDao;
-  final SocketManager? _socketManager;
   final ApiClient? _apiClient;
   final FileService? _fileService;
   final EncryptedMessageHandler? _e2eeHandler;
@@ -73,17 +76,10 @@ class MessageRepository {
   /// ChatNotifier sets this to update UI state immediately.
   void Function(Message message)? onIncomingMessage;
 
-  /// Callback for when message status changes (sent/delivered/read).
-  void Function(String messageId, MessageStatus newStatus, {String? serverMessageId})?
-      onMessageStatusChanged;
-
-  StreamSubscription<Map<String, dynamic>>? _messageStatusSubscription;
-
   MessageRepository({
     required this.conversationId,
     required MessageDao messageDao,
     AttachmentDao? attachmentDao,
-    SocketManager? socketManager,
     ApiClient? apiClient,
     FileService? fileService,
     EncryptedMessageHandler? e2eeHandler,
@@ -94,7 +90,6 @@ class MessageRepository {
     ExpiringMessageManager? expiringManager,
   })  : _messageDao = messageDao,
         _attachmentDao = attachmentDao,
-        _socketManager = socketManager,
         _apiClient = apiClient,
         _fileService = fileService,
         _e2eeHandler = e2eeHandler,
@@ -123,21 +118,6 @@ class MessageRepository {
         .catchError((e) {
       debugPrint('[MessageRepo] updateOutgoingStatus failed: $e');
     });
-  }
-
-  /// Atomically update message ID + attachment messageId in drift.
-  /// Prevents race condition where drift watch fires between the two updates.
-  Future<void> updateOutgoingStatusWithAttachment(
-      String localMessageId, String newStatus, String serverMessageId) async {
-    try {
-      // First: update attachment messageId
-      await _attachmentDao?.updateMessageId(localMessageId, serverMessageId);
-      // Then: update message ID in drift (triggers watch AFTER attachment is ready)
-      await _messageDao.updateOutgoingStatus(localMessageId, newStatus,
-          serverMessageId: serverMessageId);
-    } catch (e) {
-      debugPrint('[MessageRepo] updateOutgoingStatusWithAttachment failed: $e');
-    }
   }
 
   /// Physically delete a message + attachments + local files from drift.
@@ -227,7 +207,7 @@ class MessageRepository {
           await sessionMgr.deleteSessionForPeer(peerSnowIdToWipe);
         } catch (e) {
           debugPrint('[MessageRepo] signal session wipe for '
-              '$peerSnowIdToWipe failed (non-fatal): $e');
+              '${logRef(peerSnowIdToWipe)} failed (non-fatal): $e');
         }
       }
     } catch (e) {
@@ -279,7 +259,7 @@ class MessageRepository {
       final rows = await _messageDao.getMessagesForConversation(conversationId);
       return rows.map(convertToMessage).toList();
     } catch (e) {
-      debugPrint('[MessageRepo:$conversationId] Drift load failed: $e');
+      debugPrint('[MessageRepo:${logRef(conversationId)}] Drift load failed: $e');
       return [];
     }
   }
@@ -294,7 +274,7 @@ class MessageRepository {
     try {
       await _messageDao.upsertMessage(companion);
     } catch (e) {
-      debugPrint('[MessageRepo:$conversationId] Drift persist failed: $e');
+      debugPrint('[MessageRepo:${logRef(conversationId)}] Drift persist failed: $e');
     }
   }
 
@@ -336,7 +316,7 @@ class MessageRepository {
       );
     } catch (e) {
       debugPrint(
-          '[MessageRepo:$conversationId] Drift outgoing persist failed: $e');
+          '[MessageRepo:${logRef(conversationId)}] Drift outgoing persist failed: $e');
     }
   }
 
@@ -430,46 +410,6 @@ class MessageRepository {
             messageTime: lastMsg.timestamp,
           );
     } catch (_) {}
-  }
-
-  // ---------------------------------------------------------------------------
-  // Socket listeners
-  // ---------------------------------------------------------------------------
-
-  /// Phase 6: Subscribe only to message status events. Incoming messages
-  /// are handled by the global MessageQueue (1:1) and the group protocol v2
-  /// inbox, which write to drift; this repository observes drift via
-  /// watchMessages() and never decrypts. A remote unsend (message_deleted)
-  /// is applied once, by GlobalMessageRouter.
-  void startSocketListeners() {
-    final sm = _socketManager;
-    if (sm == null) return;
-
-    // Message status changes (sent → delivered → read)
-    _messageStatusSubscription = sm.onMessageStatus.listen(_handleMessageStatus);
-  }
-
-  void _handleMessageStatus(Map<String, dynamic> data) {
-    final serverMsgId = data['messageId'] as String?;
-    final statusStr = data['status'] as String?;
-    debugPrint('[DIAG:StatusRecv] messageId=$serverMsgId status=$statusStr convId=$conversationId');
-    if (statusStr == null) return;
-
-    final newStatus = parseStatus(statusStr);
-    if (newStatus == null) return;
-
-    if (newStatus == MessageStatus.sent) {
-      final clientMsgId = data['clientMessageId'] as String?;
-      if (clientMsgId == null && serverMsgId == null) return;
-      onMessageStatusChanged?.call(
-        clientMsgId ?? serverMsgId!,
-        newStatus,
-        serverMessageId: serverMsgId,
-      );
-    } else {
-      if (serverMsgId == null) return;
-      onMessageStatusChanged?.call(serverMsgId, newStatus);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -726,50 +666,5 @@ class MessageRepository {
       default:
         return MessageStatus.sent;
     }
-  }
-
-  static MessageStatus? parseStatus(String status) {
-    switch (status) {
-      case 'sent':
-        return MessageStatus.sent;
-      case 'delivered':
-        return MessageStatus.delivered;
-      case 'read':
-        return MessageStatus.read;
-      case 'failed':
-        return MessageStatus.failed;
-      default:
-        return null;
-    }
-  }
-
-  /// Parse TTL from socket data. Prefers exact expiresIn, falls back to bucket.
-  static int? _parseExpiryFromSocket(Map<String, dynamic> data) {
-    // Exact TTL (sent by client in socket payload)
-    final expiresIn = data['expiresIn'] as int?;
-    if (expiresIn != null && expiresIn > 0) return expiresIn;
-    // Fallback: bucket from server relay
-    return _bucketToSeconds(data['expiryBucket'] as String?);
-  }
-
-  /// Convert server expiryBucket to TTL seconds.
-  static int? _bucketToSeconds(String? bucket) {
-    switch (bucket) {
-      case '1m':
-        return 60;
-      case '5m':
-        return 300;
-      case '30m':
-        return 1800;
-      case '1h':
-        return 3600;
-      default:
-        return null;
-    }
-  }
-
-  /// Clean up subscriptions.
-  void dispose() {
-    _messageStatusSubscription?.cancel();
   }
 }

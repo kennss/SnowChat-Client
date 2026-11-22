@@ -1,12 +1,15 @@
 /// @file        conversation_tile.dart
-/// @description Conversation-list item widget — avatar, conversation name, last message, time, unread-message badge, online-status display
+/// @description Conversation-list item widget — avatar, conversation name, last message, time, unread-message badge
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation; previous: 2026-03-30)
+/// @lastUpdated 2026-11-22 (a 1:1 row's name comes from resolvePeerName — the friend list, the
+///              chat's name, a name certificate, the short snowId; never the server). Earlier
+///              2026-11-22 (no presence: the online dot and "last seen" are gone — the server keeps
+///              and sends no presence). Earlier 2026-04-26 (header English translation; previous: 2026-03-30)
 ///
 /// @functions
-///  - ConversationTile: ConsumerWidget rendering an individual conversation-list tile (online status included)
+///  - ConversationTile: ConsumerWidget rendering an individual conversation-list tile
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,6 +18,7 @@ import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../models/conversation.dart';
+import '../utils/sender_name_resolver.dart';
 
 class ConversationTile extends ConsumerWidget {
   final Conversation conversation;
@@ -29,19 +33,11 @@ class ConversationTile extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final myId = ref.watch(currentSnowIdProvider) ?? '';
-    final title = conversation.displayName(myId);
     final otherSnowId = conversation.otherParticipant(myId) ?? conversation.id;
+    final title = conversation.type == ConversationType.direct
+        ? resolvePeerName(ref, otherSnowId, conversationTitle: conversation.title)
+        : conversation.displayName(myId);
     final hasUnread = conversation.unreadCount > 0;
-
-    // Watch presence for 1:1 conversations
-    final presenceService = ref.watch(presenceServiceProvider);
-    final isOnline = conversation.type == ConversationType.direct
-        ? presenceService.isOnline(otherSnowId)
-        : false;
-    final lastSeenText = conversation.type == ConversationType.direct &&
-            !isOnline
-        ? presenceService.formatLastSeen(otherSnowId)
-        : null;
 
     return InkWell(
       onTap: onTap,
@@ -52,7 +48,7 @@ class ConversationTile extends ConsumerWidget {
         ),
         child: Row(
           children: [
-            // Avatar with online indicator
+            // Avatar (a group carries its mark)
             Stack(
               children: [
                 SnowAvatar(
@@ -79,23 +75,6 @@ class ConversationTile extends ConsumerWidget {
                         Icons.group_rounded,
                         size: 10,
                         color: SnowColors.textSecondary,
-                      ),
-                    ),
-                  )
-                else if (isOnline)
-                  Positioned(
-                    right: 1,
-                    bottom: 1,
-                    child: Container(
-                      width: 14,
-                      height: 14,
-                      decoration: BoxDecoration(
-                        color: SnowColors.primary,
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: SnowColors.background,
-                          width: 2,
-                        ),
                       ),
                     ),
                   ),
@@ -145,11 +124,7 @@ class ConversationTile extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: Text(
-                          lastSeenText != null &&
-                                  conversation.lastMessageText == null
-                              ? lastSeenText
-                              : (conversation.lastMessageText ??
-                                  'No messages yet'),
+                          conversation.lastMessageText ?? 'No messages yet',
                           style: TextStyle(
                             color: hasUnread
                                 ? SnowColors.textSecondary

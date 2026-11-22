@@ -5,7 +5,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-17
-/// @lastUpdated 2026-11-21 (X1: the call signals of an account this user blocked are decrypted and go no further — not dispatched, not parsed for accept / decline, no recovery sent back; isBlocked). Earlier 2026-11-21 (no IdentityKeyChangedException (the legacy identity policy is gone)). Earlier 2026-11-10 (B-2 Identity Binding v1: decrypt() receives the sealed-certificate deviceId for binding.deviceId matching and caches it only after a verified decrypt; a hard identity rejection (IdentityBindingInvalidException) or a pending re-verification (IdentityKeyChangedException) skips the archive-reset + retry_receipt recovery — re-handshaking cannot fix an identity failure and would loop). Earlier 2026-08-03 (F3: dispatch now derives the DR messageType from the unsealed ciphertext via resolveSealedMessageType() instead of the cleartext data['messageType'] (which Sealed Sender never carries → always 1 → a prekey first-contact invite was misrouted as normal → _receiveSession never ran → first call to a brand-new contact rang forever). Also enforces Sealed Sender Step 9 identity cross-check on prekey invites). Earlier 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-21 (X1: the call signals of an account this user blocked are decrypted and go no further — not dispatched, not parsed for accept / decline, no recovery sent back; isBlocked). Earlier 2026-11-21 (no IdentityKeyChangedException (the legacy identity policy is gone)). Earlier 2026-11-10 (B-2 Identity Binding v1: decrypt() receives the sealed-certificate deviceId for binding.deviceId matching and caches it only after a verified decrypt; a hard identity rejection (IdentityBindingInvalidException) or a pending re-verification (IdentityKeyChangedException) skips the archive-reset + retry_receipt recovery — re-handshaking cannot fix an identity failure and would loop). Earlier 2026-08-03 (F3: dispatch now derives the DR messageType from the unsealed ciphertext via resolveSealedMessageType() instead of the cleartext data['messageType'] (which Sealed Sender never carries → always 1 → a prekey first-contact invite was misrouted as normal → _receiveSession never ran → first call to a brand-new contact rang forever). Also enforces Sealed Sender Step 9 identity cross-check on prekey invites). Earlier 2026-05-06 (Fix D + Fix E enabler — emit signalType='end' for call_end so server can selectively enqueue durable MessageQueue rows + fire sendVoipCancel FCM. Also emits envelope callId metadata for call_end (was invite-only) so server can thread the same Telecom Connection id into the cancel-wake FCM. Same plaintext class as recipientSnowchatId per §2.6.2). Earlier 2026-05-05 (Fix B: hoist envelopeBase64 + senderId out of try so catch never re-unseals — sealed envelope is one-shot and the previous catch died with "Sealed message rejected" before either archive_reset or retry_receipt could fire)
 ///
 /// @functions
 ///  - CallSignaling.sendSealedSignaling(): wrap signaling event in Sealed envelope and send
@@ -27,6 +27,7 @@ import '../crypto/sender_certificate_manager.dart';
 import '../crypto/signal_session_manager.dart';
 import '../diagnostics/diag_log.dart';
 import '../network/socket_manager.dart';
+import '../diagnostics/log_ref.dart';
 
 /// Signaling event type (inside the envelope — server cannot see).
 class CallSignalingEvent {
@@ -470,7 +471,7 @@ class CallSignaling {
         // the outage. archive (vs delete) keeps in-flight envelopes for
         // any pending message_queue retry.
         debugPrint('[CallSignaling] dispatch error → archiveAndResetSession '
-            'with $senderId (force=true, decrypt-fail trigger)');
+            'with ${logRef(senderId)} (force=true, decrypt-fail trigger)');
         await _sessionManager.archiveAndResetSession(senderId, force: true);
 
         // 2) Signal Retry Receipt — 원본 envelope hash 를 sender 한테
@@ -480,7 +481,7 @@ class CallSignaling {
         // (X3DH bootstrap) 형식 → sender 가 자동으로 fresh session 생성.
         final envelopeHash = sha256.convert(utf8.encode(envelopeBase64)).toString();
         debugPrint('[CallSignaling] sending retry_receipt for envelope hash '
-            '${envelopeHash.substring(0, 12)}... to $senderId');
+            '${envelopeHash.substring(0, 12)}... to ${logRef(senderId)}');
         unawaited(sendSealedSignaling(
           recipientSnowchatId: senderId,
           eventType: 'retry_receipt',
@@ -582,11 +583,12 @@ class CallSignaling {
     // 한테 와서 cache 의 recipient 와 mismatch 면 abort (보안 가드).
     if (entry.recipientSnowchatId != fromSnowId) {
       debugPrint('[CallSignaling] retry_receipt: peer mismatch '
-          '(cache.recipient=${entry.recipientSnowchatId}, from=$fromSnowId) — abort');
+          '(cache.recipient=${logRef(entry.recipientSnowchatId)}, '
+          'from=${logRef(fromSnowId)}) — abort');
       return;
     }
     debugPrint('[CallSignaling] retry_receipt: re-encrypting '
-        'eventType=${entry.eventType} for $fromSnowId (Signal-style retry)');
+        'eventType=${entry.eventType} for ${logRef(fromSnowId)} (Signal-style retry)');
     // archive_reset 으로 fresh session 강제 (recipient 가 이미 reset 했으니
     // 양측 fresh start). archive_reset 의 5min cooldown 안에서 호출되면
     // 즉시 ensureSession(prekey fetch) 만 fire — 어쨌든 fresh session.

@@ -3,8 +3,8 @@
 ///              goes through Gv2ChatActions and never through the v1 group
 ///              paths. A text (with its reply and timer) is handed to the
 ///              group, one the group refuses shows as failed and is not
-///              stored, the socket's status events change nothing (a remote
-///              unsend is GlobalMessageRouter's, not the chat's), typing tells the server nothing, an unsend is the
+///              stored (the chat follows no socket status events — a 1:1's marks are
+///              the 1:1 outbox's), typing tells the server nothing, an unsend is the
 ///              group's (inside the window only) and removes the own copy
 ///              only once queued, clearing removes the history only once the
 ///              notice is queued, and ending / leaving / removing the chat
@@ -15,7 +15,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-20
-/// @lastUpdated 2026-11-21 (P5.6: a refused file leaves no plaintext copy; P5.6: a failed clear / leave / end leaves the disappearing-message timers running). Earlier 2026-11-21 (onUserWrote: a 1:1 message the user writes vouches for its peer). Earlier 2026-11-20 (v1 groups removed: the chat has no message_deleted listener of its own)
+/// @lastUpdated 2026-11-22 (a settled 1:1 message is not shown twice). Earlier 2026-11-22 (no status-event case: the chat no longer listens to them). Earlier 2026-11-21 (P5.6: a refused file leaves no plaintext copy; P5.6: a failed clear / leave / end leaves the disappearing-message timers running). Earlier 2026-11-21 (onUserWrote: a 1:1 message the user writes vouches for its peer). Earlier 2026-11-20 (v1 groups removed: the chat has no message_deleted listener of its own)
 ///
 /// @functions
 ///  - main(): the cases above
@@ -32,6 +32,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:snowchat/core/group_v2/gv2_messaging.dart' show Gv2NotSendable;
+import 'package:snowchat/core/messaging/direct_outbox.dart';
 import 'package:snowchat/core/network/file_service.dart';
 import 'package:snowchat/core/network/socket_manager.dart';
 import 'package:snowchat/core/storage/database.dart' hide Conversation;
@@ -88,6 +89,24 @@ class _Manager extends Fake implements sio_manager.Manager {
       owner.on(event, handler);
 }
 
+/// A 1:1 outbox that takes a text and does nothing else — the row keeps the
+/// status the notifier wrote until a test changes it through the watch.
+class _Outbox extends Fake implements DirectOutbox {
+  final List<String> texts = [];
+
+  @override
+  Future<void> enqueueText({
+    required String messageId,
+    required String peer,
+    required String text,
+    int? ttlSeconds,
+    String? replyToId,
+    String? replyToPreview,
+    String? replyToSenderId,
+  }) async =>
+      texts.add(messageId);
+}
+
 class _Repo implements MessageRepository {
   final List<Message> stored;
   final List<String> calls = [];
@@ -112,9 +131,6 @@ class _Repo implements MessageRepository {
 
   @override
   void Function(Message message)? onIncomingMessage;
-  @override
-  void Function(String messageId, MessageStatus status, {String? serverMessageId})?
-      onMessageStatusChanged;
 
   @override
   Future<List<Message>> loadFromDrift() async => stored;
@@ -288,15 +304,6 @@ void main() {
         isEmpty);
   });
 
-  test('the socket\'s status events change nothing in a v2 chat', () async {
-    await open([mine('m1')]);
-    repo.onMessageStatusChanged!('m1', MessageStatus.read);
-    repo.onMessageStatusChanged!('m1', MessageStatus.sent, serverMessageId: 's1');
-    await pumpEventQueue();
-    expect(repo.calls, isNot(contains('updateOutgoingStatusInDrift')));
-    expect(repo.calls, isNot(contains('updateOutgoingStatusWithAttachment')));
-    expect(chat.state.messages.single.id, 'm1');
-  });
 
   test('typing tells the server nothing', () async {
     await open([]);
@@ -410,6 +417,104 @@ void main() {
     expect(repo.calls.where((c) => c == 'deleteConversationLocally'), hasLength(4));
     expect(repo.calls, isNot(contains('apiClient')));
     expect(socket.emitted, isEmpty);
+  });
+
+  test('a sent 1:1 message shows once after drift moves it to the server id',
+      () async {
+    const peer = 'snow0123456789abcdef0123456789abcdef';
+    socketManager = SocketManager();
+    socket = _Socket();
+    socketManager.attachForTest(socket);
+    socket.handlers['connect']!(null);
+    repo = _Repo(const [])
+      ..groupId = null
+      ..recipientId = peer;
+    chat = ChatNotifier(
+      peer,
+      repository: repo,
+      markReadHelper: _MarkRead(),
+      socketManager: socketManager,
+      mySnowId: _me,
+    );
+    await pumpEventQueue();
+    LocalMessage row(String id, String status) => LocalMessage(
+          id: id,
+          conversationId: peer,
+          senderSnowchatId: _me,
+          dateSent: 1000,
+          dateReceived: 1000,
+          dateServer: 0,
+          plaintext: 'hello friend 1',
+          type: 'text',
+          read: true,
+          outgoingStatus: status,
+          hasDeliveryReceipt: false,
+          hasReadReceipt: false,
+          notified: true,
+          expiresIn: 0,
+          expireStarted: 0,
+          remoteDeleted: false,
+          mentionsSelf: false,
+        );
+    // The outbox wrote the local row, then settled it under the server id.
+    repo.watched.add([row('msg_local_1', 'sending')]);
+    await pumpEventQueue();
+    expect(chat.state.messages.map((m) => m.id), ['msg_local_1']);
+    repo.watched.add([row('cmserver1', 'delivered')]);
+    await pumpEventQueue();
+    expect(chat.state.messages.map((m) => m.id), ['cmserver1'],
+        reason: 'the local "sending" copy must not stay as a second bubble');
+  });
+
+  test('a 1:1 message the watch never showed under its local id is not '
+      'doubled once settled', () async {
+    final outbox = _Outbox();
+    const peer = 'snow0123456789abcdef0123456789abcdef';
+    socketManager = SocketManager();
+    socket = _Socket();
+    socketManager.attachForTest(socket);
+    socket.handlers['connect']!(null);
+    repo = _Repo(const [])
+      ..groupId = null
+      ..recipientId = peer;
+    chat = ChatNotifier(
+      peer,
+      repository: repo,
+      markReadHelper: _MarkRead(),
+      socketManager: socketManager,
+      mySnowId: _me,
+      outbox: outbox,
+    );
+    await pumpEventQueue();
+    await chat.sendMessage('hi');
+    await pumpEventQueue();
+    expect(outbox.texts, hasLength(1));
+    final local = chat.state.messages.single;
+    expect(local.status, MessageStatus.sending);
+    // The first emission drift makes already holds the settled row.
+    repo.watched.add([
+      LocalMessage(
+        id: 'cmserver2',
+        conversationId: peer,
+        senderSnowchatId: _me,
+        dateSent: local.timestamp.millisecondsSinceEpoch,
+        dateReceived: local.timestamp.millisecondsSinceEpoch,
+        dateServer: 0,
+        plaintext: 'hi',
+        type: 'text',
+        read: true,
+        outgoingStatus: 'sent',
+        hasDeliveryReceipt: false,
+        hasReadReceipt: false,
+        notified: true,
+        expiresIn: 0,
+        expireStarted: 0,
+        remoteDeleted: false,
+        mentionsSelf: false,
+      ),
+    ]);
+    await pumpEventQueue();
+    expect(chat.state.messages.map((m) => m.id), ['cmserver2']);
   });
 
   group('vouching', () {

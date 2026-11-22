@@ -6,15 +6,23 @@
 ///              acknowledged in this session is acknowledged again instead of
 ///              processed again; an envelope that names a v2 group in any id
 ///              field, and a server system line, are refused (acknowledged,
-///              never decrypted, nothing stored); a non-sealed 1:1 message is
+///              never decrypted, nothing stored); a sealed 1:1 message is
 ///              stored in its sender's room whatever conversation the envelope
-///              names, and a retry response fills only a placeholder of the
-///              same sender; a sealed 1:1 message that is a v2 invite goes to
-///              the group actions and is consumed without a chat row.
+///              names; a sealed 1:1 message that is a v2 invite goes to
+///              the group actions and is consumed without a chat row. Since
+///              2026-11-22: a non-sealed wire type is refused (Part 3 E); a
+///              contact notice goes to the contact store and an inner type
+///              this build does not know is consumed — neither makes a room;
+///              a message's name certificate is applied before it is stored. Review fixes: a
+///              contact notice's answer mark is handed on and its row id remembered
+///              (wasContactNotice — a push tap); a read receipt flips only this user's messages in
+///              the room of its sender.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-21 (X1: what a blocked account sent is acknowledged and dropped, never retried). Earlier 2026-11-21 (a fetch asked for during one is not skipped). Earlier 2026-11-21 (a v2 invite is kept, with its message id, before it is acknowledged). Earlier 2026-11-20 (v1 groups removed: no Sender Key / name key cases; the room of a 1:1
+/// @lastUpdated 2026-11-22 (the answer mark, wasContactNotice, the read receipt's room). Earlier
+///              2026-11-22 (sealed only; contact notices, unknown types and name certificates). Earlier
+///              2026-11-21 (X1: what a blocked account sent is acknowledged and dropped, never retried). Earlier 2026-11-21 (a fetch asked for during one is not skipped). Earlier 2026-11-21 (a v2 invite is kept, with its message id, before it is acknowledged). Earlier 2026-11-20 (v1 groups removed: no Sender Key / name key cases; the room of a 1:1
 ///              message and the retry response are checked on a real in-memory database)
 ///
 /// @functions
@@ -108,10 +116,6 @@ class _Sessions extends Fake implements SignalSessionManager {
 class _Handler extends Fake implements EncryptedMessageHandler {
   /// What the next sealed envelope decrypts to.
   Message? sealed;
-
-  /// What the next non-sealed 1:1 envelope decrypts to.
-  Message? incoming;
-  int incomingDecrypts = 0;
   int sealedDecrypts = 0;
 
   /// Every decrypt finds the sender blocked (X1).
@@ -122,13 +126,6 @@ class _Handler extends Fake implements EncryptedMessageHandler {
     sealedDecrypts++;
     if (senderBlocked) throw const BlockedSenderException();
     return sealed!;
-  }
-
-  @override
-  Future<Message> decryptIncomingMessage(Map<String, dynamic> socketEvent) async {
-    incomingDecrypts++;
-    if (senderBlocked) throw const BlockedSenderException();
-    return incoming!;
   }
 
   @override
@@ -273,8 +270,10 @@ void main() {
   });
 
   /// A decrypted 1:1 text from [sender].
-  Message text(String id, String sender, {Map<String, dynamic>? metadata}) =>
+  Message text(String id, String sender,
+          {Map<String, dynamic>? metadata, String? nameCert}) =>
       Message(
+        peerNameCert: nameCert,
         id: id,
         // What the handler fills in is not what the queue stores under.
         conversationId: _cuid,
@@ -290,18 +289,17 @@ void main() {
     for (final field in ['groupChatId', 'groupId', 'conversationId']) {
       test('in `$field` is refused: acknowledged, never decrypted, nothing '
           'stored', () async {
-        handler.incoming = text('m1', _peer);
+        handler.sealed = text('m1', _peer);
         queue.enqueue({
           'id': 'm1',
-          'type': 'e2ee_text',
-          'senderSnowchatId': _peer,
+          'type': 'sealed',
           field: _v2Group,
-          'encryptedContent': base64Encode([1, 2, 3]),
+          'sealedContent': base64Encode([1, 2, 3]),
         });
         await queue.waitForIdle();
         queue.flushAcks();
         expect(socket.acked, ['m1']);
-        expect(handler.incomingDecrypts, 0);
+        expect(handler.sealedDecrypts, 0);
         expect(queue.depth, 0);
       });
     }
@@ -319,9 +317,9 @@ void main() {
     });
   });
 
-  test('what a blocked account sent — a sealed message, a sealed control, a '
-      'non-sealed 1:1 — is acknowledged and dropped: decrypted once, never '
-      'stored, never retried', () async {
+  test('what a blocked account sent — a sealed message, a sealed control — '
+      'is acknowledged and dropped: decrypted once, never stored, never '
+      'retried', () async {
     // (The stores of this test fail when they are written to.)
     handler.senderBlocked = true;
     queue.enqueue({
@@ -334,18 +332,96 @@ void main() {
       'type': 'sealed_control',
       'sealedContent': base64Encode([4, 5, 6]),
     });
-    queue.enqueue({
-      'id': 'b3',
-      'type': 'e2ee_text',
-      'senderSnowchatId': _peer,
-      'encryptedContent': base64Encode([7, 8, 9]),
-    });
     await queue.waitForIdle();
     queue.flushAcks();
-    expect(socket.acked.toSet(), {'b1', 'b2', 'b3'});
+    expect(socket.acked.toSet(), {'b1', 'b2'});
     expect(handler.sealedDecrypts, 2, reason: 'once each, no retry');
-    expect(handler.incomingDecrypts, 1);
     expect(queue.depth, 0);
+  });
+
+  test('a non-sealed 1:1 (any wire type but sealed / sealed_control) is '
+      'refused: acknowledged, never decrypted, nothing stored', () async {
+    // (The stores of this test fail when they are written to.)
+    for (final (id, type) in [('n1', 'e2ee_text'), ('n2', 'session_reset'), ('n3', null)]) {
+      queue.enqueue({
+        'id': id,
+        'type': ?type,
+        'encryptedContent': base64Encode([1, 2, 3]),
+      });
+    }
+    await queue.waitForIdle();
+    queue.flushAcks();
+    expect(socket.acked.toSet(), {'n1', 'n2', 'n3'});
+    expect(handler.sealedDecrypts, 0);
+    expect(sessions.decrypts, 0);
+  });
+
+  group('contact notices and unknown types (no room, no bubble)', () {
+    Message marked(Map<String, dynamic> metadata, {String? nameCert}) => Message(
+      id: 'c1',
+      conversationId: _peer,
+      senderSnowchatId: _peer,
+      plaintext: '',
+      timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+      type: MessageType.system,
+      status: MessageStatus.delivered,
+      metadata: metadata,
+      peerNameCert: nameCert,
+    );
+
+    for (final type in ['sealed', 'sealed_control']) {
+      test('($type) a contact notice goes to the contact store before the '
+          'ack, with its name certificate', () async {
+        handler.sealed = marked(
+            {'_isContactNotice': true, 'notice': 'contact_added'},
+            nameCert: 'Q0VSVA==');
+        final seen = <(String, String, String?, bool)>[];
+        var ackedWhenApplied = <String>{};
+        queue.onContactNotice = (sender, notice, cert, isAnswer) async {
+          ackedWhenApplied = socket.acked.toSet();
+          seen.add((sender, notice, cert, isAnswer));
+        };
+        expect(queue.wasContactNotice('c1'), isFalse);
+        queue.enqueue({'id': 'c1', 'type': type, 'sealedContent': 'AAAA'});
+        await queue.waitForIdle();
+        queue.flushAcks();
+        expect(seen, [(_peer, 'contact_added', 'Q0VSVA==', false)]);
+        expect(ackedWhenApplied, isEmpty);
+        expect(socket.acked.toSet(), {'c1'});
+        // A tap on its "New message" push opens the Friends tab.
+        expect(queue.wasContactNotice('c1'), isTrue);
+      });
+
+      test('($type) an answer is handed on as one', () async {
+        handler.sealed = marked(
+            {'_isContactNotice': true, 'notice': 'contact_added', 'answer': true});
+        final answers = <bool>[];
+        queue.onContactNotice = (_, _, _, isAnswer) async => answers.add(isAnswer);
+        queue.enqueue({'id': 'c3', 'type': type, 'sealedContent': 'AAAA'});
+        await queue.waitForIdle();
+        expect(answers, [true]);
+      });
+
+      test('($type) an inner type this build does not know: acknowledged, '
+          'nothing stored or shown', () async {
+        handler.sealed = marked({'_isUnknownType': true});
+        queue.enqueue({'id': 'u1', 'type': type, 'sealedContent': 'AAAA'});
+        await queue.waitForIdle();
+        queue.flushAcks();
+        expect(socket.acked.toSet(), {'u1'});
+        expect(queue.depth, 0);
+      });
+    }
+
+    test('a contact store that fails still consumes the notice', () async {
+      handler.sealed =
+          marked({'_isContactNotice': true, 'notice': 'contact_removed'});
+      queue.onContactNotice = (_, _, _, _) async => throw StateError('disk');
+      queue.enqueue({'id': 'c2', 'type': 'sealed_control', 'sealedContent': 'AAAA'});
+      await queue.waitForIdle();
+      queue.flushAcks();
+      expect(socket.acked.toSet(), {'c2'});
+    });
   });
 
   test('a server system line is refused wherever it points: acknowledged, '
@@ -367,17 +443,16 @@ void main() {
   group('an id acknowledged in this session', () {
     test('is acknowledged again when it comes again, not processed again', () async {
       // A session reset is consumed without a row — nothing to dedupe on.
-      handler.incoming = text('r1', _peer, metadata: {'isSessionReset': true});
+      handler.sealed = text('r1', _peer, metadata: {'_isSessionReset': true});
       Map<String, dynamic> reset() => {
         'id': 'r1',
-        'type': 'e2ee_text',
-        'senderSnowchatId': _peer,
-        'encryptedContent': base64Encode([1, 2, 3]),
+        'type': 'sealed_control',
+        'sealedContent': base64Encode([1, 2, 3]),
       };
       queue.enqueue(reset());
       await queue.waitForIdle();
       queue.flushAcks();
-      expect(handler.incomingDecrypts, 1);
+      expect(handler.sealedDecrypts, 1);
       expect(socket.acked.toSet(), {'r1'});
       final acksBefore = socket.acked.length;
 
@@ -386,14 +461,14 @@ void main() {
       expect(queue.depth, 0);
       await queue.waitForIdle();
       queue.flushAcks();
-      expect(handler.incomingDecrypts, 1,
+      expect(handler.sealedDecrypts, 1,
           reason: 'a second decrypt breaks the session');
       expect(socket.acked.length, acksBefore + 1);
       expect(socket.acked.last, 'r1');
     });
   });
 
-  group('the room of a non-sealed 1:1 message (real database)', () {
+  group('the room of a sealed 1:1 message (real database)', () {
     late SnowDatabase db;
     late MessageQueue stored;
 
@@ -417,13 +492,12 @@ void main() {
 
     for (final named in [_other, _cuid, null]) {
       test('is its sender\'s, whatever the envelope names ($named)', () async {
-        handler.incoming = text('m1', _peer);
+        handler.sealed = text('m1', _peer);
         stored.enqueue({
           'id': 'm1',
-          'type': 'e2ee_text',
-          'senderSnowchatId': _peer,
+          'type': 'sealed',
           'conversationId': ?named,
-          'encryptedContent': base64Encode([1, 2, 3]),
+          'sealedContent': base64Encode([1, 2, 3]),
         });
         await stored.waitForIdle();
         final row = await db.messageDao.getMessageById('m1');
@@ -436,62 +510,60 @@ void main() {
       });
     }
 
-    test('a retry response fills only a placeholder of the same sender',
-        () async {
-      // A placeholder of _other's message, in _other's room.
-      await db.conversationDao.findOrCreate(
-        id: _other,
-        type: 'direct',
-        participantIds: [_me, _other],
+    test("a read receipt flips only this user's messages in the room of its "
+        'sender', () async {
+      Future<void> mine(String id, String room) =>
+          db.messageDao.insertOutgoingMessage(
+            message: LocalMessagesCompanion(
+              id: Value(id),
+              conversationId: Value(room),
+              senderSnowchatId: const Value(_me),
+              plaintext: const Value('hi'),
+              dateSent: Value(id.hashCode),
+              dateReceived: Value(id.hashCode),
+              type: const Value('text'),
+              read: const Value(true),
+              outgoingStatus: const Value('sent'),
+            ),
+            conversationId: room,
+            snippetText: 'hi',
+            sentTimestamp: 1,
+          );
+      await mine('to-peer', _peer);
+      await mine('to-other', _other);
+      handler.sealed = Message(
+        id: 'r1',
+        conversationId: _peer,
+        senderSnowchatId: _peer,
+        plaintext: '',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+        type: MessageType.system,
+        status: MessageStatus.delivered,
+        metadata: {'_isReadReceipt': true, 'readIds': ['to-peer', 'to-other']},
       );
-      await db.messageDao.upsertMessage(LocalMessagesCompanion(
-        id: const Value('lost-1'),
-        conversationId: const Value(_other),
-        senderSnowchatId: const Value(_other),
-        plaintext: const Value(''),
-        dateSent: const Value(1),
-        dateReceived: const Value(2),
-        type: const Value('system'),
-        outgoingStatus: const Value('decryption_failed'),
-      ));
-
-      // _peer answers as if it were the resend of that message.
-      handler.incoming = text('m2', _peer,
-          metadata: {'isRetry': true, 'originalMessageId': 'lost-1'});
-      stored.enqueue({
-        'id': 'm2',
-        'type': 'e2ee_text',
-        'senderSnowchatId': _peer,
-        'encryptedContent': base64Encode([1, 2, 3]),
-      });
+      stored.enqueue({'id': 'r1', 'type': 'sealed_control', 'sealedContent': 'AAAA'});
       await stored.waitForIdle();
+      expect((await db.messageDao.getMessageById('to-peer'))!.outgoingStatus, 'read');
+      expect((await db.messageDao.getMessageById('to-other'))!.outgoingStatus, 'sent',
+          reason: 'a message to another account is not the sender\'s to mark');
+    });
 
-      final placeholder = await db.messageDao.getMessageById('lost-1');
-      expect(placeholder!.outgoingStatus, 'decryption_failed');
-      expect(placeholder.plaintext, isEmpty);
-      // The answer lands as a message of its own sender, in that room.
-      final row = await db.messageDao.getMessageById('m2');
-      expect(row!.conversationId, _peer);
-
-      // The real sender's resend fills it.
-      handler.incoming = text('m3', _other,
-          metadata: {'isRetry': true, 'originalMessageId': 'lost-1'});
-      stored.enqueue({
-        'id': 'm3',
-        'type': 'e2ee_text',
-        'senderSnowchatId': _other,
-        'encryptedContent': base64Encode([1, 2, 3]),
-      });
+    test("a message's name certificate is applied before the message is "
+        'stored and notified', () async {
+      final applied = <(String, String)>[];
+      var storedWhenApplied = true;
+      stored.onPeerNameCert = (sender, cert) async {
+        storedWhenApplied = await db.messageDao.getMessageById('m9') != null;
+        applied.add((sender, cert));
+        await db.conversationDao.updateTitle(sender, 'Peer');
+      };
+      handler.sealed = text('m9', _peer, nameCert: 'Q0VSVA==');
+      stored.enqueue({'id': 'm9', 'type': 'sealed', 'sealedContent': 'AAAA'});
       await stored.waitForIdle();
-      final filled = await db.messageDao.getMessageById('lost-1');
-      expect(filled!.outgoingStatus, 'delivered');
-      expect(filled.plaintext, 'hello m3');
-      // It has no row of its own and is acknowledged at once — not retried
-      // and dead-lettered for want of one.
-      expect(await db.messageDao.getMessageById('m3'), isNull);
-      stored.flushAcks();
-      expect(socket.acked, containsAll(['m2', 'm3']));
-      expect(stored.depth, 0);
+      expect(applied, [(_peer, 'Q0VSVA==')]);
+      expect(storedWhenApplied, isFalse);
+      expect((await db.conversationDao.getConversation(_peer))!.title, 'Peer');
+      expect(await db.messageDao.getMessageById('m9'), isNotNull);
     });
   });
 

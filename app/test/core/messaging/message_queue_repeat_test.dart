@@ -1,12 +1,12 @@
 /// @file        message_queue_repeat_test.dart
 /// @description The receiver's duplicate guard (schema v17): a 1:1 message the sender's outbox
 ///              sent again after a lost ack arrives under a second server id with the same `cid`
-///              — it is acknowledged and not stored again, on the sealed and the non-sealed path;
+///              — it is acknowledged and not stored again (every 1:1 envelope is sealed);
 ///              other messages of the same sender, and a message with no `cid`, are stored.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (sealed only: no non-sealed case; rows name no sender). Earlier 2026-11-21
 ///
 /// @functions
 ///  - _Handler: decrypts every envelope to the message the test set
@@ -41,10 +41,6 @@ class _Handler extends Fake implements EncryptedMessageHandler {
 
   @override
   Future<Message> decryptSealedMessage(Map<String, dynamic> socketEvent) async =>
-      _as(socketEvent);
-
-  @override
-  Future<Message> decryptIncomingMessage(Map<String, dynamic> socketEvent) async =>
       _as(socketEvent);
 
   /// [next] under the envelope's server id (as the real decrypt does).
@@ -117,14 +113,13 @@ void main() {
 
   Future<List<LocalMessage>> rows() => db.messageDao.getMessagesForConversation(_peer);
 
-  for (final type in ['sealed', 'e2ee_text']) {
+  for (final type in ['sealed']) {
     test('$type: the same message sent again is acked, stored once', () async {
       handler.next = from('hello', cid: 'msg_1');
       queue.enqueue({
         'id': 'srv_a',
         'type': type,
         'sealedContent': 'AAAA',
-        'senderId': _peer,
         'serverTimestamp': '2026-11-21T12:00:00.000Z',
       });
       await queue.waitForIdle();
@@ -133,7 +128,6 @@ void main() {
         'id': 'srv_b',
         'type': type,
         'sealedContent': 'AAAA',
-        'senderId': _peer,
         'serverTimestamp': '2026-11-21T12:00:05.000Z',
       });
       await queue.waitForIdle();
@@ -149,7 +143,6 @@ void main() {
         'id': 'srv_c',
         'type': type,
         'sealedContent': 'AAAA',
-        'senderId': _peer,
         'serverTimestamp': '2026-11-21T12:00:09.000Z',
       });
       await queue.waitForIdle();

@@ -8,7 +8,7 @@
 
 E2EE messaging · Encrypted groups · Voice calls · On-device AI — one mobile app.
 
-[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1002-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1002/snowchat-arm64-v8a.apk)
+[![Download APK](https://img.shields.io/badge/Download-Android%20APK%20v1.0.0%2B1006-00D2FF?style=for-the-badge&logo=android)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1006/snowchat-arm64-v8a.apk)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 [![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B.svg?logo=flutter)](https://flutter.dev)
@@ -27,7 +27,7 @@ SnowChat is an end-to-end encrypted messenger for one-to-one chats, groups and v
 
 ### Android
 
-**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+1002)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1002/snowchat-arm64-v8a.apk)**
+**[⬇️ snowchat-arm64-v8a.apk (v1.0.0+1006)](https://github.com/kennss/SnowChat-Client/releases/download/v1.0.0%2B1006/snowchat-arm64-v8a.apk)**
 
 Side-load on Android 8.0 or later. Enable "Install from unknown sources" before opening the APK. Or grab the latest from the [Releases](https://github.com/kennss/SnowChat-Client/releases) page.
 
@@ -71,6 +71,11 @@ To verify **reply quotes**: long-press any message → Reply → send. The new m
 - Disappearing messages, read receipts, typing indicators, reply quotes.
 - Powered by [`kennss/dart-signal-protocol`](https://github.com/kennss/dart-signal-protocol) — a standalone Pure Dart Signal Protocol library purpose-built in-house for SnowChat, now released as a reusable library for any Flutter project.
 
+### 🕸️ No Social Graph on the Server
+- Friend lists live only on the phone (and in a backup sealed with the recovery phrase); friend requests and acceptances are end-to-end encrypted messages.
+- No friend table, no readable block list (blocks stay on the phone; the server keeps only keyed tags), no favorites, no online status or last-seen time.
+- Display names travel as server-signed name certificates inside messages; one-to-one queue rows name no sender and are deleted once the recipient's device has them.
+
 ### 👥 Encrypted Groups — group protocol v2
 - Membership changes only through a log signed by members and verified on every device; the server cannot add anyone to a group.
 - The server stores members as zkgroup ciphertexts, and group sends name neither the sender nor the group.
@@ -82,7 +87,7 @@ To verify **reply quotes**: long-press any message → Reply → send. The new m
 
 ### 📞 Voice Calls (VoIP)
 - WebRTC P2P, Sealed Sender signaling over Socket.IO; each call's DTLS fingerprint is signed and checked against the peer's account-bound identity key.
-- iOS CallKit + Android ConnectionService.
+- iOS CallKit + Android ConnectionService. No call history anywhere — the app, the server, or the iPhone's Phone app Recents.
 - Cloudflare Realtime TURN, FCM Voice Push.
 
 ### 🤖 On-Device AI

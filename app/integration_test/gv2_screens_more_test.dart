@@ -11,7 +11,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-20
-/// @lastUpdated 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-21 (acceptFriendRequest takes the request). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
+/// @lastUpdated 2026-11-22 (friend graph off the server: friends are each device's list — a request and its acceptance through ContactNotifier, the labels of ContactEntry). Earlier 2026-11-21 (accounts are picked with ScreenDriver.pickAccount — through the warning when not vouched for). Earlier 2026-11-21 (acceptFriendRequest takes the request). Earlier 2026-11-20 (asserts the build pins the group server keys — ENABLE_GROUPS_V2 is gone)
 ///
 /// @functions
 ///  - main(): one test; what it does is chosen by GV2_UI_ROLE (host | guest)
@@ -48,9 +48,10 @@ import 'package:integration_test/integration_test.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:snowchat/core/group_v2/gv2_trusted_keys.dart'
     show gv2GroupsAvailable;
+import 'package:snowchat/app/providers.dart' show contactStoreProvider;
+import 'package:snowchat/core/contacts/contact_store.dart';
 import 'package:snowchat/core/group_v2/gv2_codec.dart';
 import 'package:snowchat/core/storage/tables/gv2_tables.dart';
-import 'package:snowchat/features/channels/providers/channel_provider.dart';
 import 'package:snowchat/features/chat/providers/chat_provider.dart';
 import 'package:snowchat/features/contacts/contact_provider.dart';
 import 'package:snowchat/features/group/providers/gv2_group_provider.dart';
@@ -137,14 +138,11 @@ void main() {
     final write = d.write;
     final sent = d.sent;
     final groupTitled = d.groupTitled;
-    final friends = container.read(friendActionsProvider);
+    final contacts = container.read(contactStoreProvider);
 
-    /// Whether the peer is among this account's friends (the server's list).
-    Future<bool> friendsWithPeer() async {
-      container.invalidate(personalChannelProvider);
-      final list = await container.read(friendListProvider.future);
-      return list.any((f) => f.snowchatId == _peer);
-    }
+    /// Whether the peer is a friend in this device's list.
+    Future<bool> friendsWithPeer() async =>
+        (await contacts.entry(_peer))?.label == ContactLabel.friend;
 
     /// The bytes of the attachment of the message [text] in [groupId], once
     /// it is downloaded and decrypted here.
@@ -171,8 +169,8 @@ void main() {
     if (_role == 'host') {
       // ---- Friends first (an invite from a friend is taken by itself) ----
       if (!await friendsWithPeer()) {
-        final status = await friends.addFriend(_peer);
-        _say('friend request: $status');
+        await container.read(contactProvider.notifier).request(_peer);
+        _say('friend request sent');
         await until(
           'the peer accepted the friend request',
           () async => await friendsWithPeer() ? true : null,
@@ -180,11 +178,6 @@ void main() {
         );
       } else {
         _say('already friends');
-      }
-      if (!container.read(contactProvider).any((c) => c.snowChatId == _peer)) {
-        container.read(contactProvider.notifier).addContact(
-          Contact(snowChatId: _peer, addedAt: DateTime.now()),
-        );
       }
 
       // ---- A group with the peer invited ----
@@ -330,15 +323,11 @@ void main() {
     // ---- guest ----
     // The host's friend request.
     if (!await friendsWithPeer()) {
-      final request = await until('the host\'s friend request', () async {
-        container.invalidate(friendRequestsProvider);
-        final pending = await container.read(friendRequestsProvider.future);
-        for (final p in pending) {
-          if (p.creatorSnowchatId == _peer) return p;
-        }
-        return null;
-      }, within: const Duration(minutes: 4));
-      expect(await friends.acceptFriendRequest(request), isTrue);
+      await until('the host\'s friend request', () async =>
+          (await contacts.entry(_peer))?.label == ContactLabel.requestReceived
+              ? true
+              : null, within: const Duration(minutes: 4));
+      await container.read(contactProvider.notifier).accept(_peer);
       _say('friend request accepted');
     } else {
       _say('already friends');

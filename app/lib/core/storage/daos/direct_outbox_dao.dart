@@ -4,7 +4,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-21
+/// @lastUpdated 2026-11-22 (forPeer() / removeForPeer(): the jobs of one peer — a blocked account's
+///              go; a contact_removed takes the place of a contact_added not sent yet)
 ///
 /// @functions
 ///  - DirectOutboxDao.put(): add a job (or replace the job of the same message)
@@ -14,6 +15,7 @@
 ///  - DirectOutboxDao.postpone(): a send that did not go through — one more attempt, retry later
 ///  - DirectOutboxDao.retryAllNow(): every job may go at once (the socket came back)
 ///  - DirectOutboxDao.remove(): the job is done (sent, failed or its message is gone)
+///  - DirectOutboxDao.forPeer() / removeForPeer(): the jobs of one peer, oldest first / all gone
 library;
 
 import 'package:drift/drift.dart';
@@ -71,4 +73,17 @@ class DirectOutboxDao extends DatabaseAccessor<SnowDatabase>
   Future<int> remove(String messageId) =>
       (delete(directOutboxJobs)..where((j) => j.messageId.equals(messageId)))
           .go();
+
+  /// The jobs of [peer], oldest first.
+  Future<List<DirectOutboxRow>> forPeer(String peer) => (select(directOutboxJobs)
+        ..where((j) => j.peer.equals(peer))
+        ..orderBy([
+          (j) => OrderingTerm.asc(j.createdAtMs),
+          (j) => OrderingTerm.asc(j.messageId),
+        ]))
+      .get();
+
+  /// Every job of [peer] goes.
+  Future<int> removeForPeer(String peer) =>
+      (delete(directOutboxJobs)..where((j) => j.peer.equals(peer))).go();
 }

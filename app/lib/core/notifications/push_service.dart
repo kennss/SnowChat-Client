@@ -3,7 +3,11 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-11-20 (v1 groups removed: no socket group-invite listener — an invite into a group protocol v2 group arrives as a sealed 1:1 message and is listed in the Chats tab). Earlier 2026-07-15 (registerFcmToken now sends appVersion so the server's UserDevice.appVersion stays fresh on every launch — fixes stale-build mis-fire of the sealed_control / VoIP version gates). Earlier 2026-06-08 (Bug B-1: clear notification shade on foreground +
+/// @lastUpdated 2026-11-22 (the notification prompt is askStartupPrompts — the one place it is asked, followed by the microphone). Earlier 2026-11-22 (unregisterPushToken() removed: nothing called it, and it sent a null token
+///              the server refuses — the server clears the tokens of a device whose session ended). Earlier 2026-11-22 (friend graph off the server: no `friend_request` push type any more — a
+///              friend request is a sealed message, pushed as "New message", and its notification
+///              comes from the decrypt (NotificationService.showFriendNotification); the device id
+///              travels in the body of PUT /devices/push-token). Earlier 2026-11-20 (v1 groups removed: no socket group-invite listener — an invite into a group protocol v2 group arrives as a sealed 1:1 message and is listed in the Chats tab). Earlier 2026-07-15 (registerFcmToken now sends appVersion so the server's UserDevice.appVersion stays fresh on every launch — fixes stale-build mis-fire of the sealed_control / VoIP version gates). Earlier 2026-06-08 (Bug B-1: clear notification shade on foreground +
 ///              on conversation open. Samsung One UI badge follows active-
 ///              notification count, not app_badge_plus, so unread badge stays
 ///              stuck at N until the shade is cleared. PushService now observes
@@ -24,7 +28,6 @@
 ///  - PushService.setActiveConversation(): track viewed conversation + cancel its lingering notification on open
 ///  - PushService.didChangeAppLifecycleState(): foreground → cancelAll message notifications (Samsung badge fix)
 ///  - PushService.registerFcmToken(): register push token with server
-///  - PushService.unregisterPushToken(): unregister push token from server (on logout)
 ///  - PushService._waitForApnsToken(): iOS APNs token retry helper (v215, cover didRegister race)
 ///  - PushService.dispose(): resource cleanup
 
@@ -32,6 +35,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:snowchat/core/permissions/microphone_permission.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart'
     show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
@@ -88,13 +92,10 @@ class PushService with WidgetsBindingObserver {
 
     final fcm = FirebaseMessaging.instance;
 
-    // Request permission. iOS: alert/badge/sound dialog + APNs register trigger.
-    // Android 13+: notification dialog.
-    await fcm.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    // The start prompts, one at a time: notifications (iOS: the dialog and
+    // the APNs registration; Android 13+: the dialog), then the microphone on
+    // the first run (core/permissions/microphone_permission.dart).
+    await askStartupPrompts();
 
     // v215 (2026-05-03): platform-aware token. iOS server uses direct APNs
     // (apnsService.send) so register raw APNs hex token. Android keeps FCM.
@@ -176,8 +177,9 @@ class PushService with WidgetsBindingObserver {
       // stale — which mis-fired the sealed_control / VoIP client-version gates.
       final appVersion = await getAppVersionForServer();
       await _apiClient.dio.put(
-        ApiEndpoints.devicePushToken(deviceId),
+        ApiEndpoints.devicePushToken,
         data: {
+          'deviceId': deviceId,
           'pushToken': token,
           'platform': Platform.isIOS ? 'ios' : 'android',
           if (appVersion != null) 'appVersion': appVersion,
@@ -187,24 +189,6 @@ class PushService with WidgetsBindingObserver {
           '[PushService] FCM token registered: ${token.substring(0, 20)}...');
     } catch (e) {
       debugPrint('[PushService] Failed to register FCM token: $e');
-    }
-  }
-
-  /// Unregister push token from server (call on logout).
-  Future<void> unregisterPushToken() async {
-    try {
-      final deviceId = await _secureStorage.read('device_id');
-      if (deviceId == null) return;
-      await _apiClient.dio.put(
-        ApiEndpoints.devicePushToken(deviceId),
-        data: {
-          'pushToken': null,
-          'platform': Platform.isIOS ? 'ios' : 'android',
-        },
-      );
-      debugPrint('[PushService] Push token unregistered');
-    } catch (_) {
-      // Network failure on logout is OK — token will expire
     }
   }
 
@@ -233,24 +217,6 @@ class PushService with WidgetsBindingObserver {
     // here (avoids duplicate CallKit).
     if (type == 'incoming_call') {
       debugPrint('[PushService] Foreground incoming_call — socket path will handle');
-      return;
-    }
-
-    // 2026-04-28: friend request push — foreground 시 socket 으로도 도착하므로
-    // 보통 in-app banner 가 처리. 그러나 socket 일시 단절 race 에서 FCM 만
-    // 도착할 수도 있어 OS 알림으로 보장. (banner 가 같은 frame 에 동시 표시될
-    // 수도 있으나 Friends 탭에서 둘 다 silent — 사용자가 이미 보고 있는 것)
-    if (type == 'friend_request') {
-      final fromName = message.data['fromDisplayName'] as String? ?? '';
-      final fromSnowId = message.data['fromSnowchatId'] as String? ?? '';
-      final senderLabel = fromName.isNotEmpty
-          ? fromName
-          : (fromSnowId.length >= 12 ? fromSnowId.substring(0, 12) : 'Someone');
-      _notificationService.showMessageNotification(
-        senderName: senderLabel,
-        preview: 'Sent you a friend request',
-        conversationId: '__friend_request__$fromSnowId',
-      );
       return;
     }
 

@@ -1,189 +1,215 @@
 /// @file        contact_provider.dart
-/// @description Contact state-management Provider — fetches the reachable contact set from the server (GET /users, scoped to friends ∪ COMMUNITY co-members ∪ past 1:1 partners), block/unblock functions.
+/// @description The friend list for the screens (design 2026-11-22-friend-graph-off-server §5).
+///              The list lives on this device (ContactStore, core/contacts) — nothing is read from
+///              the server: no GET /users, no PERSONAL channel. This file maps the rows to what the
+///              screens show and is the one place their actions go through: request / accept /
+///              decline / remove / resend, block / unblock (the row goes, the identity record is
+///              purged, the block list and its backup follow), and the names of accounts.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (X1: block / unblock go through BlockList — on this device first, then the server (awaited, sent again when it cannot be reached); blockedContactsProvider lists this device's blocked accounts, named from the server's list when it can be had). Earlier 2026-11-10 (B-2: identity purge uses VerifiedIdentityStore.remove — record dropped, bound latch kept; replaces the old IdentityPinStore.unpin that targeted the wrong key slot). Earlier 2026-08-03 (privacy: removed the user_registered blind-add listener and the profile_updated add-unknown branch — both turned the contact list into the full server directory. Contacts now come only from the scoped GET /users; profile_updated only renames an existing contact). Earlier 2026-04-26 (header + inline English translation; P2: IdentityPinStore unpin + IdentityVerificationDao deleteByPeer on removeContact/blockContact)
+/// @lastUpdated 2026-11-22 (blockContact: its queued notices and messages leave the outbox, the
+///              block list takes the account — what it sends is refused from then on — and only then
+///              does its row go, so an in-flight notice cannot bring the row back; canBlock() / blockLimitText — the 5,000-account cap). Earlier 2026-11-22 (Contact.isUnavailable — sends the server refused again and again as
+///              not existing; nameTakenBy also looks at the 1:1 chats' names). Earlier 2026-11-22
+///              (friend graph off the server: the contact list is this device's
+///              ContactStore — contactProvider maps its visible rows (friends, sent and received
+///              requests) and carries the actions; friendsProvider / sentRequestsProvider /
+///              receivedRequestsProvider; blockedContactsProvider names blocked accounts from this
+///              device's rows (no GET /users/blocked); no profile_updated listener).
+///              Earlier 2026-11-21 (X1: block / unblock go through BlockList). Earlier 2026-11-10
+///              (B-2: identity purge uses VerifiedIdentityStore.remove). Earlier 2026-08-03 (privacy:
+///              no user_registered blind-add). Earlier 2026-04-26 (header + inline English translation)
 ///
 /// @functions
-///  - Contact: contact data-model class
-///  - contactProvider: StateNotifierProvider that exposes the contact list
-///  - ContactNotifier: load user list from server + local management
-///  - blockedContactsProvider: this device's blocked accounts, named from the server's list
+///  - Contact: what the screens show for a row (or for a blocked account)
+///  - contactEntriesProvider: every row of the list, hidden ones included (ContactEntry)
+///  - contactProvider: StateNotifierProvider — the visible rows as Contact, plus the actions
+///  - ContactNotifier.request() / requestFound() / accept() / decline() / remove() / resend()
+///  - ContactNotifier.blockContact() / unblockContact(): block / unblock an account
+///  - ContactNotifier.canBlock(): whether one more account can be blocked (the cap)
+///  - blockLimitText: what the screens say when the cap is reached
+///  - ContactNotifier.nameTakenBy(): another account in the list or the 1:1 chats with the same
+///    name
+///  - friendsProvider / sentRequestsProvider / receivedRequestsProvider: the rows by label
+///  - blockedContactsProvider: this device's blocked accounts with their kept names
+library;
 
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../app/providers.dart';
-import '../../core/network/api_endpoints.dart';
 
+import '../../app/providers.dart';
+import '../../core/blocking/block_list.dart' show BlockLimitReached;
+import '../../core/contacts/contact_lookup.dart' show FoundAccount;
+import '../../core/contacts/contact_store.dart';
+import '../../core/crypto/identity_binding.dart';
+
+/// What the screens say when this user blocked [BlockList.maxBlocked]
+/// accounts already (BlockLimitReached).
+const String blockLimitText =
+    'You have blocked 5,000 accounts, the most there can be. Unblock one first.';
+
+/// What the screens show for an account of the list (or a blocked one).
 class Contact {
   final String snowChatId;
+
+  /// The name from the account's name certificate (or the lookup), or null.
   final String? displayName;
+
+  /// friend / request sent / request received; null for a blocked account.
+  final ContactLabel? label;
+
   final bool isBlocked;
-  final bool isTrusted;
+
+  /// The server refused sends to the account as not existing, again and
+  /// again (ContactEntry.isUnavailable): "Account unavailable".
+  final bool isUnavailable;
+
+  /// When the row was made on this device.
   final DateTime addedAt;
 
   const Contact({
     required this.snowChatId,
     this.displayName,
+    this.label,
     this.isBlocked = false,
-    this.isTrusted = false,
+    this.isUnavailable = false,
     required this.addedAt,
   });
 
-  Contact copyWith({
-    String? displayName,
-    bool? isBlocked,
-    bool? isTrusted,
-  }) {
-    return Contact(
-      snowChatId: snowChatId,
-      displayName: displayName ?? this.displayName,
-      isBlocked: isBlocked ?? this.isBlocked,
-      isTrusted: isTrusted ?? this.isTrusted,
-      addedAt: addedAt,
-    );
-  }
+  factory Contact.fromEntry(ContactEntry e) => Contact(
+        snowChatId: e.snowId,
+        displayName: e.nickname,
+        label: e.label,
+        isUnavailable: e.isUnavailable,
+        addedAt: DateTime.fromMillisecondsSinceEpoch(e.createdAtMs),
+      );
+
+  /// Both added each other.
+  bool get isFriend => label == ContactLabel.friend;
+
+  /// This user added the account (a friend or a sent request).
+  bool get inMyList =>
+      label == ContactLabel.friend || label == ContactLabel.requestSent;
 }
+
+/// Every row of the list, hidden ones included, as it changes.
+final contactEntriesProvider = StreamProvider<List<ContactEntry>>(
+  (ref) => ref.watch(contactStoreProvider).watch(),
+);
 
 final contactProvider =
     StateNotifierProvider<ContactNotifier, List<Contact>>((ref) {
   return ContactNotifier(ref);
 });
 
+/// The visible rows of the list (friends, sent requests, received requests
+/// that were not declined) and the actions on them.
 class ContactNotifier extends StateNotifier<List<Contact>> {
   final Ref _ref;
-  bool _loaded = false;
-  StreamSubscription<Map<String, dynamic>>? _profileUpdatedSubscription;
+  StreamSubscription<List<ContactEntry>>? _rows;
 
-  ContactNotifier(this._ref) : super([]) {
-    Future.microtask(() => _loadFromServer());
-    _listenForProfileUpdates();
-  }
-
-  // NOTE: there is deliberately no user_registered listener. Blind-adding every
-  // registering user turned the contact list into the full server directory
-  // (privacy leak) and the server no longer broadcasts user_registered globally.
-  // A new user shows up here only when they become reachable (friend accepted /
-  // shared channel), via the next _loadFromServer() refresh.
-
-  /// Listen for profile_updated socket events — real-time displayName refresh.
-  void _listenForProfileUpdates() {
-    final sm = _ref.read(socketManagerProvider);
-    _profileUpdatedSubscription = sm.onProfileUpdated.listen((data) {
-      final snowId = data['snowchatId'] as String?;
-      final name = data['displayName'] as String?;
-      if (snowId == null) return;
-
-      final mySnowId = _ref.read(currentSnowIdProvider);
-      if (snowId == mySnowId) return; // ignore self
-
-      // Only RENAME an existing contact. Never add an unknown user here — the
-      // server now scopes profile_updated to the updater's reachable set, but we
-      // also refuse to let a rename event materialize a brand-new contact (that
-      // was a second directory-leak path). Unknown reachable users arrive only
-      // through the scoped GET /users in _loadFromServer.
-      if (state.any((c) => c.snowChatId == snowId)) {
-        updateContact(snowId, displayName: name);
-        debugPrint('[Contacts] Profile updated: $snowId → $name');
-      }
+  ContactNotifier(this._ref) : super(const []) {
+    _rows = _ref.read(contactStoreProvider).watch().listen((rows) {
+      state = [
+        for (final r in rows)
+          if (r.isVisible) Contact.fromEntry(r),
+      ];
     });
   }
 
   @override
   void dispose() {
-    _profileUpdatedSubscription?.cancel();
+    _rows?.cancel();
     super.dispose();
   }
 
-  /// Load the reachable contact set from the server (GET /users) — friends ∪
-  /// COMMUNITY channel co-members ∪ past 1:1 partners, minus blocked/self. This
-  /// is NOT the full user directory; the server scopes it per-user.
-  Future<void> _loadFromServer() async {
-    try {
-      final token = _ref.read(authTokenProvider);
-      if (token == null) return;
+  ContactStore get _store => _ref.read(contactStoreProvider);
 
-      final apiClient = _ref.read(apiClientProvider);
-      final res = await apiClient.get('/users').timeout(const Duration(seconds: 5));
+  /// Send a friend request to [snowId] (typed, scanned or from a link). The
+  /// account is added to this user's list at once ("request sent" — or
+  /// "friend" when it had added this user) and vouched for; a sealed
+  /// contact_added goes out through the outbox.
+  Future<void> request(String snowId, {String? displayName}) async {
+    await _store.request(snowId, nickname: displayName);
+    await _ref.read(nameCertServiceProvider).nameOf(snowId);
+  }
 
-      if (res.data != null && res.data['users'] is List) {
-        final users = res.data['users'] as List;
-        final seen = <String>{};
-        // Read currentSnowIdProvider at filter time; fall back to
-        // identityManagerProvider.getSnowChatId() so self-filtering works
-        // even when the StateProvider has not yet been populated after re-login.
-        var mySnowId = _ref.read(currentSnowIdProvider);
-        if (mySnowId == null || mySnowId.isEmpty) {
-          try {
-            final identity = _ref.read(identityManagerProvider);
-            mySnowId = await identity.getSnowChatId();
-          } catch (_) {
-            // identityManagerProvider may not be ready yet
-          }
-        }
-        final contacts = users.map<Contact>((u) => Contact(
-          snowChatId: u['snowchatId'] ?? u['snowChatId'] ?? '',
-          displayName: u['displayName'],
-          isBlocked: false,
-          isTrusted: true,
-          addedAt: DateTime.now(),
-        )).where((c) =>
-          c.snowChatId.isNotEmpty &&
-          c.snowChatId != mySnowId &&  // exclude self
-          seen.add(c.snowChatId)        // deduplicate
-        ).toList();
+  /// Send a friend request to an account a lookup found (its account key
+  /// was checked to derive its snowId; it is kept with the row).
+  Future<void> requestFound(FoundAccount account) async {
+    await _store.request(
+      account.snowId,
+      accountPub: account.accountPub,
+      nickname: account.displayName,
+    );
+    await _ref.read(nameCertServiceProvider).nameOf(account.snowId);
+  }
 
-        state = contacts;
-        _loaded = true;
-        debugPrint('[Contacts] Loaded ${contacts.length} users from server');
+  /// Accept [snowId]'s request (= add it too).
+  Future<void> accept(String snowId) => _store.accept(snowId);
+
+  /// Decline [snowId]'s request: hidden here, nothing sent.
+  Future<void> decline(String snowId) => _store.decline(snowId);
+
+  /// Cancel a request to [snowId], or remove the friend.
+  Future<void> remove(String snowId) => _store.remove(snowId);
+
+  /// Send the request (or the acceptance) to [snowId] again.
+  Future<void> resend(String snowId) => _store.resend(snowId);
+
+  /// Another account than [snowId] that the list or a chat knows under
+  /// [name], or null — the add screen warns about it (a server can answer
+  /// a nickname with another account, §5.1). Looks at the list's names, the
+  /// names from certificates and the 1:1 chats' names (a 1:1 room's id is
+  /// the peer's snowId).
+  Future<String?> nameTakenBy(String name, String snowId) async {
+    final others = await _ref.read(contactDaoProvider).accountsNamed(name);
+    final known = others.where((id) => id != snowId).firstOrNull;
+    if (known != null) return known;
+    final lower = name.trim().toLowerCase();
+    if (lower.isEmpty) return null;
+    for (final c in await _ref.read(conversationDaoProvider).getAllConversations()) {
+      if (c.id != snowId &&
+          IdentityBindingV1.isValidSnowId(c.id) &&
+          c.title?.trim().toLowerCase() == lower) {
+        return c.id;
       }
-    } catch (e) {
-      debugPrint('[Contacts] Failed to load from server: $e');
     }
+    return null;
   }
 
-  /// Refresh contacts from server
-  Future<void> refresh() async {
-    await _loadFromServer();
+  /// Block [snowId]. Whatever this device still had queued for it leaves
+  /// the outbox first (nothing more is sent to it); then the block list
+  /// takes it (this device at once — what it sends is refused from then on
+  /// — then the server's tag; the backup follows); only then does its row go
+  /// from the list and its identity record get purged, so a notice of it
+  /// already on its way cannot bring the row back. Throws BlockLimitReached
+  /// at the cap ([blockLimitText]) — nothing changed then.
+  Future<void> blockContact(String snowId) async {
+    final blocks = _ref.read(blockListProvider);
+    if (!await blocks.canBlock(snowId)) throw const BlockLimitReached();
+    final name = await _ref.read(nameCertServiceProvider).resolveName(snowId);
+    await _ref.read(directOutboxProvider).dropPeer(snowId);
+    await blocks.block(snowId, nickname: name);
+    await _store.forget(snowId);
+    _purgeIdentityState(snowId);
   }
 
-  bool get isLoaded => _loaded;
+  /// Whether one more account can be blocked (or [snowId] is blocked
+  /// already).
+  Future<bool> canBlock(String snowId) =>
+      _ref.read(blockListProvider).canBlock(snowId);
 
-  void addContact(Contact contact) {
-    if (state.any((c) => c.snowChatId == contact.snowChatId)) return;
-    state = [...state, contact];
-  }
+  /// Unblock [snowId] (what it sent meanwhile does not come back; its row
+  /// does not come back either).
+  Future<void> unblockContact(String snowId) =>
+      _ref.read(blockListProvider).unblock(snowId);
 
-  void removeContact(String snowChatId) {
-    state = state.where((c) => c.snowChatId != snowChatId).toList();
-    _purgeIdentityState(snowChatId);
-  }
-
-  void updateContact(String snowChatId, {String? displayName, bool? isBlocked}) {
-    state = state.map((c) {
-      if (c.snowChatId == snowChatId) {
-        return c.copyWith(displayName: displayName, isBlocked: isBlocked);
-      }
-      return c;
-    }).toList();
-  }
-
-  /// Block [snowChatId]: on this device at once (what it sends is dropped
-  /// from now on), then on the server — sent again on the next connect when
-  /// it cannot be reached now (BlockList).
-  Future<void> blockContact(String snowChatId) async {
-    updateContact(snowChatId, isBlocked: true);
-    _purgeIdentityState(snowChatId);
-    await _ref.read(blockListProvider).block(snowChatId);
-  }
-
-  /// P2: clean up TOFU pin + Safety Number verification row.
-  /// Ensures the next re-access (e.g. new contact add) after friend
-  /// remove/block runs as a clean first-encounter TOFU. Also prevents
-  /// SecureStorage bloat.
+  /// P2: clean up the identity record + Safety Number verification row, so
+  /// a later contact with the account starts as a clean first encounter.
   void _purgeIdentityState(String snowChatId) {
     if (snowChatId.isEmpty) return;
     Future.microtask(() async {
@@ -192,42 +218,40 @@ class ContactNotifier extends StateNotifier<List<Contact>> {
         await _ref.read(verifiedIdentityStoreProvider).remove(snowChatId);
         await _ref.read(identityVerificationDaoProvider).deleteByPeer(snowChatId);
       } catch (e) {
-        debugPrint('[ContactNotifier] _purgeIdentityState failed: $e');
+        debugPrint('[ContactNotifier] _purgeIdentityState failed: ${e.runtimeType}');
       }
     });
   }
-
-  /// Unblock [snowChatId] (what it sent while blocked does not come back).
-  Future<void> unblockContact(String snowChatId) async {
-    updateContact(snowChatId, isBlocked: false);
-    await _ref.read(blockListProvider).unblock(snowChatId);
-  }
 }
 
-/// The accounts this user blocked — this device's list (BlockList), so an
-/// unblock shows at once even while the server has not taken it — named
-/// from the server's list (`GET /users/blocked`, { snowchatId, displayName })
-/// when it can be had. Recomputed when the list changes.
+/// Friends (both added each other).
+final friendsProvider = Provider<List<Contact>>((ref) =>
+    ref.watch(contactProvider).where((c) => c.isFriend).toList());
+
+/// Requests this user sent that were not answered (or were declined —
+/// indistinguishable by design).
+final sentRequestsProvider = Provider<List<Contact>>((ref) => ref
+    .watch(contactProvider)
+    .where((c) => c.label == ContactLabel.requestSent)
+    .toList());
+
+/// Requests this user received and did not decline.
+final receivedRequestsProvider = Provider<List<Contact>>((ref) => ref
+    .watch(contactProvider)
+    .where((c) => c.label == ContactLabel.requestReceived)
+    .toList());
+
+/// The accounts this user blocked — this device's list (BlockList) with the
+/// names kept with each block. Recomputed when the list changes.
 final blockedContactsProvider =
     FutureProvider.autoDispose<List<Contact>>((ref) async {
-  final blocked = await ref.watch(blockedAccountsProvider.future);
-  final names = <String, String?>{};
-  try {
-    final res = await ref.read(apiClientProvider).get(ApiEndpoints.blockedUsers);
-    final list = (res.data?['blockedUsers'] as List?) ?? const [];
-    for (final u in list) {
-      if (u is Map && u['snowchatId'] is String) {
-        names[u['snowchatId'] as String] = u['displayName'] as String?;
-      }
-    }
-  } catch (_) {
-    // Unnamed: the list itself is this device's.
-  }
+  ref.watch(blockedAccountsProvider);
+  final named = await ref.read(blockListProvider).blockedWithNames();
   return [
-    for (final id in blocked)
+    for (final e in named.entries)
       Contact(
-        snowChatId: id,
-        displayName: names[id],
+        snowChatId: e.key,
+        displayName: e.value,
         isBlocked: true,
         addedAt: DateTime.now(),
       ),

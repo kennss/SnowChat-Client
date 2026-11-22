@@ -9,7 +9,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-21 (nickname requests: vouched once accepted, matched only on the accepted
+/// @lastUpdated 2026-11-22 (no nickname requests — a request names its account when it is made;
+///              VouchSource.restored). Earlier 2026-11-21 (nickname requests: vouched once accepted, matched only on the accepted
 ///              friend list, forgotten after the TTL). Earlier 2026-11-21 (vouch / isVouched). Earlier same day (legacy TOFU removed: no legacy pin migration, IK seeding or readiness gate to test; rememberAccountKey and the record codec instead). Earlier 2026-11-20 (no unbound-admission override). Earlier 2026-11-10
 ///
 /// @functions
@@ -64,8 +65,8 @@ void main() {
       final pub = Uint8List.fromList(sk.verifyKey.toList());
       final snow = KeyDerivation.deriveSnowChatId(pub);
       final store = VerifiedIdentityStore(InMemorySecureStorage());
-      expect(await store.pinFromInviteLink(_snowA, pub), isFalse);
-      expect(await store.pinFromInviteLink(snow, pub), isTrue);
+      expect(await store.pinAccountKey(_snowA, pub), isFalse);
+      expect(await store.pinAccountKey(snow, pub), isTrue);
       expect((await store.get(snow))!.accountPublicKey, pub);
       expect(await store.latchedEpoch(snow), 0);
     });
@@ -135,6 +136,16 @@ void main() {
       expect(await VerifiedIdentityStore(storage).isVouched(_snowA), isTrue);
     });
 
+    test('an account restored from the contact backup is vouched for',
+        () async {
+      final storage = InMemorySecureStorage();
+      final store = VerifiedIdentityStore(storage);
+      await store.vouch(_snowA, VouchSource.restored);
+      expect(await store.isVouched(_snowA), isTrue);
+      expect(storage.data['${VerifiedIdentityStore.vouchedPrefix}$_snowA'],
+          'restored');
+    });
+
     test('what is not a snowId is never vouched for', () async {
       final storage = InMemorySecureStorage();
       final store = VerifiedIdentityStore(storage);
@@ -143,56 +154,6 @@ void main() {
       expect(storage.data.keys.where(
           (k) => k.startsWith(VerifiedIdentityStore.vouchedPrefix)), isEmpty);
       expect(await store.isVouched('snowXYZ'), isFalse);
-    });
-  });
-
-  group('nickname requests', () {
-    const snowB = 'snow1123456789abcdef0123456789abcdef';
-    final t0 = DateTime.utc(2026, 11, 21, 12);
-
-    test('vouched once the accepted friend list shows the nickname', () async {
-      final storage = InMemorySecureStorage();
-      final store = VerifiedIdentityStore(storage);
-      await store.rememberNickRequest('X1Alice', now: t0);
-      // Not accepted yet: nothing.
-      expect(await store.settleNickRequests([], now: t0), 0);
-      expect(await store.isVouched(_snowA), isFalse);
-      // Accepted: the friend list shows it (case and spaces do not matter).
-      final n = await store.settleNickRequests(
-        [(snowId: _snowA, nick: ' x1alice '), (snowId: snowB, nick: 'other')],
-        now: t0.add(const Duration(hours: 1)),
-      );
-      expect(n, 1);
-      expect(await store.isVouched(_snowA), isTrue);
-      expect(await store.isVouched(snowB), isFalse);
-      // The request is used up.
-      expect((await storage.readAll()).keys.where(
-          (k) => k.startsWith(VerifiedIdentityStore.nickRequestPrefix)), isEmpty);
-    });
-
-    test('forgotten unmatched after the TTL', () async {
-      final storage = InMemorySecureStorage();
-      final store = VerifiedIdentityStore(storage);
-      await store.rememberNickRequest('x1alice', now: t0);
-      final late = t0.add(VerifiedIdentityStore.nickRequestTtl +
-          const Duration(minutes: 1));
-      expect(
-          await store.settleNickRequests([(snowId: _snowA, nick: 'x1alice')],
-              now: late),
-          0);
-      expect(await store.isVouched(_snowA), isFalse);
-      expect((await storage.readAll()).keys.where(
-          (k) => k.startsWith(VerifiedIdentityStore.nickRequestPrefix)), isEmpty);
-    });
-
-    test('a friend with no nickname or an empty request is ignored', () async {
-      final store = VerifiedIdentityStore(InMemorySecureStorage());
-      await store.rememberNickRequest('   ', now: t0);
-      await store.rememberNickRequest('x1alice', now: t0);
-      expect(
-          await store.settleNickRequests([(snowId: _snowA, nick: null)], now: t0),
-          0);
-      expect(await store.isVouched(_snowA), isFalse);
     });
   });
 }

@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-22 (download is POST /files/fetch { fileId } — the GET with the fileId
+///              in the path is gone from the server). Earlier 2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - FileService: encrypted file upload/download service class
@@ -80,14 +81,16 @@ class FileService {
   ///
   /// [fileId] — the server-assigned file ID.
   ///
-  /// Server endpoint: GET /api/v2/files/:fileId
+  /// Server endpoint: POST /api/v2/files/fetch { fileId } — the fileId
+  /// travels in the body, so no access log pairs it with this address.
   /// Server returns: raw binary (application/octet-stream).
   ///
   /// Returns the encrypted file bytes.
   Future<Uint8List> downloadEncryptedFile(String fileId) async {
     try {
-      final response = await _apiClient.dio.get<List<int>>(
-        ApiEndpoints.downloadFile(fileId),
+      final response = await _apiClient.dio.post<List<int>>(
+        ApiEndpoints.fetchFile,
+        data: {'fileId': fileId},
         options: Options(responseType: ResponseType.bytes),
       );
 

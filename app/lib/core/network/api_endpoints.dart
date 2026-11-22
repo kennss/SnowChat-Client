@@ -3,20 +3,32 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-21 (blockUser POST /users/block, unblockUser DELETE /users/block/:snowchatId — BlockList). Earlier 2026-11-21 (blockedUsers GET /users/blocked). Earlier 2026-11-20 (DEV_SERVER_URL: a dev build on a physical device names the dev server — e.g. `http://<mac LAN ip>:3100` — instead of localhost; ignored by a production build. v1 groups removed: no /groups endpoints. Earlier same day: group protocol v2: gv2Backup GET/PUT /gv2-account/backup, gv2Retention GET/PUT /gv2-account/retention, deleteAccountWithProof POST /users/me/delete). Earlier 2026-11-10 (B-2: identityForUser() non-consuming GET /keys/identity/:snowId + identityBinding PUT /keys/identity-binding). Earlier 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
+/// @lastUpdated 2026-11-22 (no deleteMessage — the server's unsend route is gone; a 1:1 unsend is
+///              the sealed control; no push-token clear — a device whose session ended loses its
+///              tokens on the server). Earlier 2026-11-22 (fetchFile POST /files/fetch { fileId } replaces downloadFile GET
+///              /files/:fileId).
+///              Earlier 2026-11-22 (friend graph off the server — contract §12.1: no id in a URL path for
+///              accounts, devices or conversations: preKeysFetch / identityFetch POST
+///              /keys/{prekeys,identity}/fetch, devicePushToken / deviceVoipToken PUT
+///              /devices/{push,voip}-token, deviceRemove POST /devices/remove, conversationDelete /
+///              conversationClear POST /conversations/{delete,clear}, resolveUser POST /users/resolve,
+///              unblockUser POST /users/unblock, blocksReplace POST /users/blocks/replace, nameCert POST
+///              /users/name-cert, contactsBackup GET/PUT /contacts-backup; gone: GET /users/:id, GET
+///              /users/blocked, the PERSONAL channel routes, find-or-create, the per-id key, device and
+///              conversation paths). Earlier 2026-11-21 (blockUser POST /users/block, unblockUser DELETE /users/block/:snowchatId — BlockList). Earlier 2026-11-21 (blockedUsers GET /users/blocked). Earlier 2026-11-20 (DEV_SERVER_URL: a dev build on a physical device names the dev server — e.g. `http://<mac LAN ip>:3100` — instead of localhost; ignored by a production build. v1 groups removed: no /groups endpoints. Earlier same day: group protocol v2: gv2Backup GET/PUT /gv2-account/backup, gv2Retention GET/PUT /gv2-account/retention, deleteAccountWithProof POST /users/me/delete). Earlier 2026-11-10 (B-2: identityForUser() non-consuming GET /keys/identity/:snowId + identityBinding PUT /keys/identity-binding). Earlier 2026-04-26 (header + inline English translation; dart-define environment switching support: SERVER_ENV=dev|prod)
 ///
 /// @functions
 ///  - ApiEndpoints: API endpoint constants class
 ///  - ApiEndpoints.getBaseUrl(): return platform-specific base URL
 ///  - ApiEndpoints.getSocketUrl(): return platform-specific socket URL
-///  - ApiEndpoints.preKeysForUser(): prekey endpoint for a specific user
-///  - ApiEndpoints.identityForUser(): non-consuming identity directory of a user (B-2)
-///  - ApiEndpoints.messagesForConversation(): messages endpoint for a specific conversation
-///  - ApiEndpoints.conversation(): specific conversation endpoint
-///  - ApiEndpoints.contact(): specific contact endpoint
-///  - ApiEndpoints.downloadFile(): file download endpoint
-///  - ApiEndpoints.device(): specific device endpoint
-///  - ApiEndpoints.userLookup(): user search by SnowChat ID
+///  - ApiEndpoints.preKeysFetch / identityFetch: a peer's prekey bundle / identity (POST, id in the body)
+///  - ApiEndpoints.resolveUser / lookupByNick: find an account by snowId / by nickname (POST)
+///  - ApiEndpoints.nameCert: this account's name certificate (POST)
+///  - ApiEndpoints.blockUser / unblockUser / blocksReplace: block tags on the server (POST)
+///  - ApiEndpoints.contactsBackup: the sealed contact backup (GET / PUT)
+///  - ApiEndpoints.conversationDelete / conversationClear: a 1:1 on the server (POST)
+///  - ApiEndpoints.devicePushToken / deviceVoipToken / deviceRemove: this account's devices
+///  - ApiEndpoints.uploadFile / fetchFile: file upload / fetch (POST, fileId in the body)
 ///  - ApiEndpoints.walletRegister: wallet registration endpoint
 ///  - ApiEndpoints.walletTokens(): per-wallet token list endpoint
 ///  - ApiEndpoints.walletPrices: token price endpoint
@@ -110,13 +122,15 @@ abstract class ApiEndpoints {
 
   // Keys (E2EE PreKey management)
   static const String preKeys = '/keys/prekeys';
-  static String preKeysForUser(String snowId) => '/keys/prekeys/$snowId';
+  /// POST { snowchatId } — a peer's prekey bundle (consumes a one-time prekey).
+  static const String preKeysFetch = '/keys/prekeys/fetch';
   static const String preKeyCount = '/keys/prekey-count';
   static const String signedPreKey = '/keys/signed-prekey';
 
   // B-2 Identity Binding v1
-  /// Non-consuming identity lookup (does NOT pop a one-time prekey).
-  static String identityForUser(String snowId) => '/keys/identity/$snowId';
+  /// POST { snowchatId } — non-consuming identity lookup (does NOT pop a
+  /// one-time prekey).
+  static const String identityFetch = '/keys/identity/fetch';
 
   /// Register / refresh our binding without uploading prekeys (PUT).
   static const String identityBinding = '/keys/identity-binding';
@@ -127,29 +141,29 @@ abstract class ApiEndpoints {
   static const String fetchMessages = '/messages';
   /// POST — Batch ACK after client processes messages: { messageIds: [...] }
   static const String ackMessages = '/messages/ack';
-  /// DELETE — Delete a logical message by messageGuid (sender, within 5 min)
-  static String deleteMessage(String messageGuid) => '/messages/$messageGuid';
-  /// @deprecated Phase 6 — use fetchMessages (queue) instead
-  static String messagesForConversation(String convId) =>
-      '/conversations/$convId/messages';
 
-  // Conversations
-  static const String conversations = '/conversations';
-  static const String conversationFindOrCreate = '/conversations/find-or-create';
-  static String conversation(String id) => '/conversations/$id';
-
-  // Contacts
-  static const String contacts = '/contacts';
-  static String contact(String snowId) => '/contacts/$snowId';
+  // Conversations (a 1:1 is keyed by the peer's snowId, in the body)
+  /// POST { peerSnowchatId } — delete the 1:1 on the server.
+  static const String conversationDelete = '/conversations/delete';
+  /// POST { peerSnowchatId } — clear the 1:1's queued rows on the server.
+  static const String conversationClear = '/conversations/clear';
 
   // Users
-  static String userLookup(String snowchatId) => '/users/$snowchatId';
-  static const String lookupByNick =
-      '/users/lookup-by-nick'; // POST — nick first-contact; returns one-time opaque inviteToken (no id/avatar)
+  /// POST { snowchatId } → { snowchatId, displayName, publicKey, avatarHash };
+  /// 404 USER_NOT_FOUND.
+  static const String resolveUser = '/users/resolve';
+  /// POST { nick } → { exists:false } or { exists:true, snowchatId,
+  /// publicKey, recentlyReassigned }.
+  static const String lookupByNick = '/users/lookup-by-nick';
+  /// POST {} → { cert } (base64): this account's name certificate.
+  static const String nameCert = '/users/name-cert';
   static const String userProfile = '/users/profile'; // PUT — update displayName / avatar
-  static const String blockedUsers = '/users/blocked'; // GET — the accounts this user blocked
-  static const String blockUser = '/users/block'; // POST { snowchatId } — block an account (idempotent)
-  static String unblockUser(String snowchatId) => '/users/block/$snowchatId'; // DELETE — unblock (idempotent)
+  /// POST { snowchatId } — block an account (idempotent; the server keeps a tag).
+  static const String blockUser = '/users/block';
+  /// POST { snowchatId } — unblock (idempotent).
+  static const String unblockUser = '/users/unblock';
+  /// POST { snowchatIds } → { count }: the server's tags become exactly this list.
+  static const String blocksReplace = '/users/blocks/replace';
   /// POST — delete this account; the body carries the deletion proof the
   /// account key signed: { deletionProof: { deletedAtMs, sig } }.
   static const String deleteAccountWithProof = '/users/me/delete';
@@ -163,14 +177,12 @@ abstract class ApiEndpoints {
   /// server keeps group messages for this account while it is offline.
   static const String gv2Retention = '/gv2-account/retention';
 
-  // Channels: communities (member lists) + Phase 9.1 PERSONAL Channel (friends)
+  /// GET → { blob, etag } (both null when none); PUT { blob, ifMatch } →
+  /// { etag }, 409 BACKUP_CONFLICT { etag } when the stored blob is another.
+  static const String contactsBackup = '/contacts-backup';
+
+  // Channels: communities (member lists)
   static const String channels = '/channels';
-  static const String personalChannel = '/channels/personal';
-  static const String personalChannelAdd = '/channels/personal/add';
-  static const String personalChannelAddByToken =
-      '/channels/personal/add-by-token'; // POST — redeem a nick-invite opaque token
-  static String personalChannelAccept(String channelId) =>
-      '/channels/personal/accept/$channelId';
   static const String channelDiscover = '/channels/discover';
   static const String channelSearch = '/channels/search';
   static String channelDetail(String channelId) => '/channels/$channelId';
@@ -200,16 +212,20 @@ abstract class ApiEndpoints {
   static String inviteJoin(String code) => '/channels/invite/$code/join';
 
   // Files / Attachments
+  /// POST raw body + x-content-hash header → { fileId, size }.
   static const String uploadFile = '/files/upload';
-  static String downloadFile(String fileId) => '/files/$fileId';
+  /// POST { fileId } → the blob. The fileId is in the body: a path would put
+  /// it in access logs next to every downloader's address.
+  static const String fetchFile = '/files/fetch';
 
   // Devices
   static const String devices = '/devices';
-  static String device(String deviceId) => '/devices/$deviceId';
-  static String devicePushToken(String deviceId) =>
-      '/devices/$deviceId/push-token';
-  static String deviceVoipToken(String deviceId) =>
-      '/devices/$deviceId/voip-token';
+  /// PUT { deviceId, pushToken, platform, appVersion } — this device's push token.
+  static const String devicePushToken = '/devices/push-token';
+  /// PUT { deviceId, voipPushToken } — this device's VoIP push token.
+  static const String deviceVoipToken = '/devices/voip-token';
+  /// POST { deviceId } — remove one of this account's devices.
+  static const String deviceRemove = '/devices/remove';
 
   // Wallet
   static const String walletRegister = '/wallet';

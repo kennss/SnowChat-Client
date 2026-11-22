@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (/settings/passcode — ChangePasscodeScreen). Earlier 2026-11-22 (every route change drops the keyboard focus — DismissKeyboardOnRouteChange
+/// @lastUpdated 2026-11-22 (the restore notice of a backup that did not open offers "Try again"
+///              — ContactBackup.retryRestore — and, put off, comes back at the next start). Earlier 2026-11-22 (the selected tab follows the location — a go('/friends') from a friend
+///              notification, or any other go to a tab, lights the right tab (it was a field set only
+///              by taps); the Friends tab badge shows the number of received requests; the main shell
+///              shows the contact restore notice once — showContactRestoreNotice). Earlier 2026-11-22
+///              (friend graph off the server: the Friends tab badge is the count of
+///              received requests on this device (it stays while they wait — no reset on tab
+///              entry); /add-contact and the unused ContactListScreen import are gone). Earlier 2026-11-22 (the /call route takes its screen from callScreenFor(), shared with the app lock — SC-19; /settings/passcode — ChangePasscodeScreen). Earlier 2026-11-22 (every route change drops the keyboard focus — DismissKeyboardOnRouteChange
 ///              on the root GoRouter and the ShellRoute). Earlier 2026-11-21 (_CallRouteHost closes the in-app incoming screen when a late CallKit
 ///              window takes the call over). Earlier 2026-11-21 (/add-group-members takes the places taken with the existing accounts). Earlier 2026-11-21 (/create-group?community=&name=: a new group from a community roster). Earlier 2026-11-20 (v1 groups removed: /contacts?expand=<channelId> opens the Communities tab with that community expanded; the community routes name their parameter channelId; /group-info is always Gv2GroupInfoScreen — an id that is not a group on this device reads as such there). Earlier 2026-11-20 (/pin-reset: PinResetScreen for a forgotten PIN). Earlier 2026-11-20 (/group-info shows Gv2GroupInfoScreen for a group protocol v2 group id). Earlier 2026-11-12 (removed the /marketplace and /marketplace/create routes with the NFT marketplace feature). Earlier 2026-11-10 (B-2: first-contact deeplinks forward the inviter account key ?k= to AddFriendScreen via addFriendDeeplinkPath()). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: /settings/network and /settings/hidden-wallets are now behind AppConfig.enableWallet like the other wallet routes). Earlier 2026-08-05 (bottom-nav "Channels"→"Communities"; Channel→Community route display fallbacks). Earlier 2026-05-06 (option 2 Signal pattern: wrapped /call in a
 ///              PopScope that blocks back navigation during an active call
@@ -17,7 +24,9 @@
 ///
 /// @functions
 ///  - routerProvider: Riverpod provider for the GoRouter instance
-///  - _MainShell: ShellRoute widget containing the bottom tab navigation bar
+///  - _MainShell: ShellRoute widget containing the bottom tab navigation bar (the selected tab
+///    follows the location; the Friends badge counts received requests; shows the contact
+///    restore notice once)
 
 import 'keyboard_behavior.dart';
 import '../features/settings/screens/change_passcode_screen.dart';
@@ -42,7 +51,6 @@ import '../features/chat/screens/new_chat_screen.dart';
 import '../features/chat/screens/create_group_screen.dart';
 import '../features/group/screens/gv2_group_info_screen.dart';
 import '../features/group/screens/add_group_members_screen.dart';
-import '../features/contacts/screens/contact_list_screen.dart';
 import '../features/channels/screens/channel_list_screen.dart';
 import '../features/channels/screens/friend_list_screen.dart';
 import '../features/channels/screens/add_channel_screen.dart';
@@ -53,9 +61,10 @@ import '../features/channels/screens/invite_link_screen.dart';
 import '../features/channels/screens/invite_preview_screen.dart';
 import '../features/channels/screens/join_with_code_screen.dart';
 import '../features/channels/screens/channel_admin_screen.dart';
-import '../features/contacts/screens/add_contact_screen.dart';
 import '../features/contacts/screens/blocked_contacts_screen.dart';
 import '../features/contacts/screens/my_qr_screen.dart';
+import '../features/contacts/widgets/contact_restore_notice.dart';
+import '../core/contacts/contact_backup.dart' show ContactRestoreReport;
 import 'deeplink_handler.dart' show addFriendDeeplinkPath;
 import '../features/settings/screens/settings_screen.dart';
 import '../features/settings/screens/device_management_screen.dart';
@@ -74,9 +83,7 @@ import '../features/nft/screens/nft_detail_screen.dart';
 import '../features/nft/screens/nft_send_screen.dart';
 import '../features/ai/screens/ai_chat_screen.dart';
 import '../features/ai/screens/ai_onboarding_screen.dart';
-import '../features/call/screens/outgoing_call_screen.dart';
-import '../features/call/screens/incoming_call_screen.dart';
-import '../features/call/screens/active_call_screen.dart';
+import '../features/call/screens/call_screen_for.dart';
 import '../features/security/screens/verify_identity_screen.dart';
 import '../shared/models/wallet_models.dart';
 import '../shared/models/nft_models.dart';
@@ -247,7 +254,8 @@ final routerProvider = Provider<GoRouter>((ref) {
         // Tab changes too (a NavigatorObserver serves one navigator).
         observers: [DismissKeyboardOnRouteChange()],
         navigatorKey: _shellNavigatorKey,
-        builder: (_, state, child) => _MainShell(child: child),
+        builder: (_, state, child) =>
+            _MainShell(location: state.uri.path, child: child),
         routes: [
           GoRoute(
             path: '/chat',
@@ -397,11 +405,6 @@ final routerProvider = Provider<GoRouter>((ref) {
         },
       ),
       GoRoute(
-        path: '/add-contact',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const AddContactScreen(),
-      ),
-      GoRoute(
         path: '/my-qr',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const MyQrScreen(),
@@ -536,15 +539,17 @@ final routerProvider = Provider<GoRouter>((ref) {
 
 class _MainShell extends ConsumerStatefulWidget {
   final Widget child;
-  const _MainShell({required this.child});
+
+  /// The path the shell shows (the selected tab follows it).
+  final String location;
+
+  const _MainShell({required this.location, required this.child});
 
   @override
   ConsumerState<_MainShell> createState() => _MainShellState();
 }
 
 class _MainShellState extends ConsumerState<_MainShell> {
-  int _currentIndex = 0;
-
   static final _tabs = [
     '/chat',
     '/friends',
@@ -553,9 +558,66 @@ class _MainShellState extends ConsumerState<_MainShell> {
     '/settings',
   ];
 
+  /// The tab of [location] (its first path segment); the Chats tab for a
+  /// path no tab owns.
+  static int _tabOf(String location) {
+    for (var i = 0; i < _tabs.length; i++) {
+      if (location == _tabs[i] || location.startsWith('${_tabs[i]}/')) return i;
+    }
+    return 0;
+  }
+
+  ProviderSubscription<AsyncValue<ContactRestoreReport?>>? _restoreNotice;
+  bool _restoreNoticeShown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // The contact restore of a new install is told once (design §5.10) —
+    // also when it finished before this shell was built.
+    _restoreNotice = ref.listenManual<AsyncValue<ContactRestoreReport?>>(
+      contactRestoreNoticeProvider,
+      (_, next) {
+        final report = next.valueOrNull;
+        if (report != null) _showRestoreNotice(report);
+      },
+      fireImmediately: true,
+    );
+  }
+
+  @override
+  void dispose() {
+    _restoreNotice?.close();
+    super.dispose();
+  }
+
+  void _showRestoreNotice(ContactRestoreReport report) {
+    if (_restoreNoticeShown) return;
+    _restoreNoticeShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final retry = await showContactRestoreNotice(context, report);
+      final backup = ref.read(contactBackupProvider);
+      if (retry) {
+        // A backup that did not open: fetched again now; a new failure is
+        // told again.
+        await backup.retryRestore();
+      } else if (report.unreadable) {
+        // "Later": not shown again in this run, but at the next start —
+        // until the backup opens.
+        return;
+      } else {
+        await backup.dismissRestoreNotice();
+      }
+      _restoreNoticeShown = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    final friendBadge = ref.watch(pendingFriendBadgeProvider);
+    final currentIndex = _tabOf(widget.location);
+    // Received friend requests waiting for an answer (this device's list).
+    final friendBadge = ref.watch(pendingFriendBadgeProvider).valueOrNull ?? 0;
 
     return Scaffold(
       body: widget.child,
@@ -567,16 +629,9 @@ class _MainShellState extends ConsumerState<_MainShell> {
         ),
         child: BottomNavigationBar(
           type: BottomNavigationBarType.fixed,
-          currentIndex: _currentIndex,
+          currentIndex: currentIndex,
           onTap: (index) {
-            if (index != _currentIndex) {
-              // Clear friend badge when entering Friends tab
-              if (index == 1) {
-                ref.read(pendingFriendBadgeProvider.notifier).state = 0;
-              }
-              setState(() => _currentIndex = index);
-              context.go(_tabs[index]);
-            }
+            if (index != currentIndex) context.go(_tabs[index]);
           },
           items: [
             const BottomNavigationBarItem(
@@ -585,13 +640,16 @@ class _MainShellState extends ConsumerState<_MainShell> {
               label: 'Chats',
             ),
             BottomNavigationBarItem(
-              icon: friendBadge > 0
-                  ? const Badge(
-                      smallSize: 8,
-                      child: Icon(Icons.people_rounded),
-                    )
-                  : const Icon(Icons.people_rounded),
-              activeIcon: const Icon(Icons.people_rounded),
+              icon: Badge(
+                isLabelVisible: friendBadge > 0,
+                label: Text(friendBadge > 99 ? '99+' : '$friendBadge'),
+                child: const Icon(Icons.people_rounded),
+              ),
+              activeIcon: Badge(
+                isLabelVisible: friendBadge > 0,
+                label: Text(friendBadge > 99 ? '99+' : '$friendBadge'),
+                child: const Icon(Icons.people_rounded),
+              ),
               label: 'Friends',
             ),
             const BottomNavigationBarItem(
@@ -660,36 +718,27 @@ class _CallRouteHost extends ConsumerWidget {
   }
 
   Widget _buildCallScreen(BuildContext context, CallStatus status) {
-    switch (status) {
-      case CallStatus.outgoing:
-        return const OutgoingCallScreen();
-      case CallStatus.incoming:
-        // v211 (2026-05-03): platform分岐 없음. /call route 진입 자체가
-        // app.dart 의 lifecycle/platform aware 가드로 제어됨 — iOS FG 만
-        // 여기 도달 가능 (BG/Lock 은 PushKit native CallKit 가 owns,
-        // Android 는 ConnectionService 가 owns).
-        return const IncomingCallScreen();
-      case CallStatus.connecting:
-      case CallStatus.active:
-      case CallStatus.ended:
-        return const ActiveCallScreen();
-      case CallStatus.idle:
-        // 2026-05-04 fix v2: BG/lock 에서 전화받고 진입 시 black 회귀.
-        // 이전 fix (app.dart 의 global ref.listen) 는 prev != idle &&
-        // next == idle 의 *전이* 만 cover — BG 에서 isolate frozen 중에
-        // 상태가 이미 idle 로 끝난 케이스나 cold-launch from PushKit 에서
-        // recovery 가 fail 한 경우에는 transition 이 발생 안 해서 listener
-        // 가 fire 안 됨. router build 가 직접 호출하는 idle 케이스에서
-        // 매번 pop 스케줄 해서 어떤 path 든 cover.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (context.mounted && context.canPop()) {
-            context.pop();
-          }
-        });
-        // pop 이 다음 frame 에서 fire — 그 동안은 underlying route 가 보여야
-        // 한다. Scaffold 의 default opaque background 대신 SizedBox.shrink()
-        // 만 return 해서 black 깜빡임 최소화.
-        return const SizedBox.shrink();
-    }
+    // `incoming` reaches this route only when CallState.inAppIncoming is set
+    // (app.dart pushes /call for nothing else); otherwise CallKit /
+    // ConnectionService owns the incoming UI.
+    final screen = callScreenFor(status);
+    if (screen != null) return screen;
+    // idle:
+    // 2026-05-04 fix v2: answering from BG/lock and coming in regressed to
+    // black. The earlier fix (the global ref.listen in app.dart) covers only
+    // the prev != idle && next == idle *transition* — when the state had
+    // already ended as idle while the isolate was frozen in BG, or recovery
+    // failed on a cold launch from PushKit, there is no transition and the
+    // listener never fires. Scheduling a pop every time the router build
+    // itself hits idle covers every path.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (context.mounted && context.canPop()) {
+        context.pop();
+      }
+    });
+    // The pop fires on the next frame — until then the route underneath
+    // must show. Returning a bare SizedBox.shrink() instead of a Scaffold's
+    // default opaque background keeps the black flash minimal.
+    return const SizedBox.shrink();
   }
 }

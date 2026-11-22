@@ -3,7 +3,14 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (sendMessageRetryRequest only for a non-sealed message — the sender is
+/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef; no message_deleted
+///              listener — the server sends no such event any more). Earlier 2026-11-22 (a sealed message, a sealed call signal and a typing event go only to a
+///              canonical SnowChat ID — `snow` + 32 lowercase hex; anything else is not sent (the
+///              server refuses internal ids). Friend graph off the server — contract §12.2: no presence (online_users /
+///              user_online / user_offline, onPresence), no friend_request_received, no
+///              profile_updated; Part 3 E: no non-sealed 1:1 — the new_message and
+///              message_retry_request listeners, sendPrivateMessage and sendMessageRetryRequest are
+///              gone; every 1:1 envelope arrives as sealed_message). Earlier 2026-11-22 (sendMessageRetryRequest only for a non-sealed message — the sender is
 ///              required, never a sealed one; the unused legacy non-sealed sendMessage is gone, SC-05). Earlier 2026-11-21 (isReadyToSend: the live socket state for the 1:1 outbox). Earlier
 ///              2026-11-21 (no chat_deleted listener: a peer's deletion of a 1:1 arrives only as its sealed delete_chat control). Earlier 2026-11-20 (v1 groups removed: no v1 group events, streams or sends — group_*, sender_key_request*, group_message_retry_request, request_gmk / gmk_response, send_group_message; typing is 1:1 only. The handlers that remain and take a conversation id — chat_deleted, typing — still drop one that names a v2 group. attachForTest(): the event listeners on a socket a test hands in. Group protocol v2: every v1 group event that names a v2 group id is dropped before any listener sees it — namesV2Group()). Earlier 2026-11-13 (group protocol v2: onGv2Row — rows of the group queue delivered as `gv2_message` — and sendGv2Ack(), the acknowledgement with the server's answer). Earlier 2026-11-12 (removed sendSealedGroupMessage: it had no caller and the server handler is gone). Earlier 2026-11-12 (requestGmk backs off per group — 30 s — so an undecryptable
 ///              group name cannot drive a request storm). Earlier 2026-08-03 (removed the dead onUserRegistered stream + user_registered listener — the server no longer broadcasts user_registered globally, per the contact-directory privacy fix). Earlier 2026-07-15 (sealed_control: sendSealedMessage control flag +
@@ -29,29 +36,16 @@
 ///              emits app_state=background on inactive too. Earlier
 ///              2026-04-26: header English translation; Layer 7 send-time
 ///              actual socket state check + stale _isConnected self-heal.)
-///  - added online_users socket event listener
-///  - SocketManager.sendPrivateMessage(): T0-pattern 1:1 message send (ack callback support)
-///  - SocketManager.sendGroupMessage(): group message event send
-///  - SocketManager.onGroupMessage: group message receive stream
-///  - SocketManager.onMessageDeleted: message-deleted notification receive stream
-///  - SocketManager.onGroupMemberAdded: group member added event stream
-///  - SocketManager.onGroupMemberRemoved: group member removed event stream
-///  - SocketManager.onGroupUpdated: group info changed event stream
-///  - SocketManager.onGroupOwnerChanged: group owner changed event stream
-///  - SocketManager.onGroupInvite: group invite receive stream
-///  - SocketManager.emit(): general-purpose socket event send
 ///  - Fix: added enableForceNewConnection() — resolves socket_io_client URL caching issue
 ///
 /// @functions
 ///  - SocketManager: WebSocket connection management class
 ///  - SocketManager.connect(): connect to WebSocket server
 ///  - SocketManager.disconnect(): disconnect from server
-///  - SocketManager.sendPrivateMessage(): T0-pattern 1:1 message send
 ///  - SocketManager.sendTyping(): send typing indicator
 ///  - SocketManager.stopTyping(): send typing stop
 ///  - SocketManager.emit(): general-purpose socket event send
 ///  - SocketManager.sendSealedMessage(): Sealed Sender 1:1 message send (sealed_message event; control=true for silent E2EE control envelopes)
-///  - SocketManager.sendMessageRetryRequest(): retry request for a non-sealed 1:1 message that failed to decrypt (never a sealed one)
 ///  - SocketManager.dispose(): resource cleanup
 ///  - SocketManager.attachForTest(socket): set up the event listeners on a
 ///    socket a test provides (no connection is made)
@@ -63,8 +57,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
+import '../crypto/identity_binding.dart' show IdentityBindingV1;
 import '../group_v2/gv2_codec.dart' show gv2IsGroupId;
 import 'api_endpoints.dart';
+import '../diagnostics/log_ref.dart';
 
 /// Socket.IO connection manager for real-time messaging.
 /// Handles connection lifecycle, reconnection, and event routing.
@@ -101,15 +97,11 @@ class SocketManager with WidgetsBindingObserver {
   final _messageStatusController =
       StreamController<Map<String, dynamic>>.broadcast();
   final _typingController = StreamController<Map<String, dynamic>>.broadcast();
-  final _presenceController =
-      StreamController<Map<String, dynamic>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
   final _prekeysLowController = StreamController<void>.broadcast();
   // Vuln 2 Stage B: server-side fetch noticed our device is missing
   // identityKeyEd25519 → asks us to re-run uploadPreKeys with the verify key.
   final _forcePrekeyUploadController = StreamController<Map<String, dynamic>>.broadcast();
-  final _messageDeletedController =
-      StreamController<Map<String, dynamic>>.broadcast();
 
   // Phase 8.2 VoIP — Sealed Sender opaque signaling relay (§24.2)
   // Server has no idea about the envelope contents. Client unseals and dispatches by inner event type.
@@ -120,12 +112,6 @@ class SocketManager with WidgetsBindingObserver {
   final _aiTaskResponseController =
       StreamController<Map<String, dynamic>>.broadcast();
   final _aiTaskStatusController =
-      StreamController<Map<String, dynamic>>.broadcast();
-
-  // Phase 10 P0-E: Retry requests from recipients who failed to decrypt.
-  // When THIS device is the original sender, these events arrive so we can
-  // re-encrypt from MessageSendLog and re-send.
-  final _messageRetryRequestController =
       StreamController<Map<String, dynamic>>.broadcast();
 
   /// Phase 6: Single source of truth for all incoming message envelopes.
@@ -164,27 +150,15 @@ class SocketManager with WidgetsBindingObserver {
   Stream<Map<String, dynamic>> get onSealedCallSignaling =>
       _sealedCallSignalingController.stream;
 
-  /// Phase 10 P0-E: Incoming 1:1 retry request (we are the original sender).
-  Stream<Map<String, dynamic>> get onMessageRetryRequest =>
-      _messageRetryRequestController.stream;
-
-  Stream<Map<String, dynamic>> get onMessageDeleted =>
-      _messageDeletedController.stream;
   Stream<Map<String, dynamic>> get onMessageStatus =>
       _messageStatusController.stream;
   Stream<Map<String, dynamic>> get onTyping => _typingController.stream;
-  Stream<Map<String, dynamic>> get onPresence => _presenceController.stream;
 
   // Phase 3: AI Desktop Task
   Stream<Map<String, dynamic>> get onAiTaskResponse =>
       _aiTaskResponseController.stream;
   Stream<Map<String, dynamic>> get onAiTaskStatus =>
       _aiTaskStatusController.stream;
-
-  final _profileUpdatedController =
-      StreamController<Map<String, dynamic>>.broadcast();
-  Stream<Map<String, dynamic>> get onProfileUpdated =>
-      _profileUpdatedController.stream;
 
   final _channelMemberJoinedController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -221,14 +195,6 @@ class SocketManager with WidgetsBindingObserver {
   Stream<Map<String, dynamic>> get onChannelDeleted =>
       _channelDeletedController.stream;
 
-  // Phase 9.1: friend request received (PERSONAL channel invite)
-  final _friendRequestReceivedController =
-      StreamController<Map<String, dynamic>>.broadcast();
-  Stream<Map<String, dynamic>> get onFriendRequestReceived =>
-      _friendRequestReceivedController.stream;
-
-  /// Last received online_users bulk data, buffered for late subscribers.
-  Map<String, dynamic>? _lastOnlineUsersData;
   Stream<bool> get onConnectionChange => _connectionController.stream;
   Stream<void> get onPrekeysLow => _prekeysLowController.stream;
 
@@ -513,22 +479,6 @@ class SocketManager with WidgetsBindingObserver {
 
     // --- Application events ---
 
-    // Incoming non-sealed 1:1 message (T0 pattern). The MessageQueue
-    // handles dispatch.
-    socket.on('new_message', (data) {
-      if (data is Map) {
-        // [DIAG] Bug 1/2 diagnostic: trace whether the socket layer received the envelope
-        final id = data['id'] ?? data['messageId'];
-        final type = data['type'] ?? 'unknown';
-        final from = data['senderSnowchatId'] ?? data['senderId'];
-        debugPrint('[DIAG:Socket] new_message RECEIVED id=$id type=$type '
-            'from=$from');
-        _incomingEnvelopeController.add(Map<String, dynamic>.from(data));
-      } else {
-        debugPrint('[DIAG:Socket] new_message DROPPED: data is not Map (type=${data.runtimeType})');
-      }
-    });
-
     // Phase 10.1: Sealed Sender message — server relays opaque blob
     // with type='sealed' (or 'sealed_control' for silent E2EE control
     // envelopes like read receipts). Feeds into same envelope stream so
@@ -563,15 +513,6 @@ class SocketManager with WidgetsBindingObserver {
       }
     });
 
-    // Phase 10 P0-E: Retry request from a recipient (we are the original sender).
-    // The server relays this after verifying the requester is the true recipient.
-    socket.on('message_retry_request', (data) {
-      debugPrint('[SocketManager] message_retry_request received');
-      if (data is Map) {
-        _messageRetryRequestController.add(Map<String, dynamic>.from(data));
-      }
-    });
-
     // Message status update (delivered, read)
     socket.on('message_status', (data) {
       if (data is Map) {
@@ -597,25 +538,6 @@ class SocketManager with WidgetsBindingObserver {
       }
     });
 
-    // Presence events
-    socket.on('user_online', (data) {
-      if (data is Map) {
-        _presenceController.add({
-          ...Map<String, dynamic>.from(data),
-          'online': true,
-        });
-      }
-    });
-
-    socket.on('user_offline', (data) {
-      if (data is Map) {
-        _presenceController.add({
-          ...Map<String, dynamic>.from(data),
-          'online': false,
-        });
-      }
-    });
-
     // PreKeys low warning
     socket.on('prekeys_low', (_) {
       debugPrint('[SocketManager] prekeys_low warning received');
@@ -635,16 +557,7 @@ class SocketManager with WidgetsBindingObserver {
       }
     });
 
-
-    // Profile updated (displayName change) — real-time contact refresh
-    socket.on('profile_updated', (data) {
-      debugPrint('[SocketManager] profile_updated received');
-      if (data is Map) {
-        _profileUpdatedController.add(Map<String, dynamic>.from(data));
-      }
-    });
-
-    // Channel member joined — refresh channel member list
+    // Community member joined — refresh the community's member list
     socket.on('channel_member_joined', (data) {
       debugPrint('[SocketManager] channel_member_joined received');
       if (data is Map) {
@@ -692,37 +605,11 @@ class SocketManager with WidgetsBindingObserver {
       }
     });
 
-    // Phase 9.1: friend request received (PERSONAL channel invite)
-    socket.on('friend_request_received', (data) {
-      debugPrint('[SocketManager] friend_request_received');
-      if (data is Map) {
-        _friendRequestReceivedController.add(Map<String, dynamic>.from(data));
-      }
-    });
-
     // Security: unauthorized login attempt from another device
     socket.on('unauthorized_login_attempt', (data) {
       debugPrint('[SocketManager] ⚠️ unauthorized_login_attempt received');
       if (data is Map) {
         _unauthorizedLoginController.add(Map<String, dynamic>.from(data));
-      }
-    });
-
-    // Bulk online users list (received on connection)
-    socket.on('online_users', (data) {
-      debugPrint('[SocketManager] online_users received');
-      if (data is Map && data['users'] is List) {
-        final payload = {'bulk': true, 'users': data['users']};
-        _lastOnlineUsersData = payload;
-        _presenceController.add(payload);
-      }
-    });
-
-    // Message deleted notification (delete for everyone)
-    socket.on('message_deleted', (data) {
-      debugPrint('[SocketManager] message_deleted received');
-      if (data is Map) {
-        _messageDeletedController.add(Map<String, dynamic>.from(data));
       }
     });
 
@@ -784,51 +671,6 @@ class SocketManager with WidgetsBindingObserver {
     );
   }
 
-  /// Phase 10 P0-D: Emit a 1:1 retry request to the server.
-  ///
-  /// Called by MessageQueue when a NON-sealed 1:1 message (sent by a build-1000
-  /// peer, whose sender the server already knows) fails to decrypt after
-  /// exhausting retries. Never for a sealed message: the server refuses it
-  /// and the request would only name the sealed sender (SC-05). The server
-  /// validates the requester, checks nonce uniqueness, and relays to the
-  /// original sender.
-  ///
-  /// [messageId]: The server-assigned message ID that failed to decrypt.
-  /// [senderSnowchatId]: The original sender's SnowChat ID.
-  void sendMessageRetryRequest(String messageId, String senderSnowchatId) {
-    if (!_isReadyToSend()) {
-      debugPrint('[SocketManager] Cannot send message_retry_request: not connected');
-      return;
-    }
-    _socket!.emit('message_retry_request', {
-      'messageId': messageId,
-      'senderSnowchatId': senderSnowchatId,
-      'requestNonce': DateTime.now().microsecondsSinceEpoch.toString(),
-    });
-    debugPrint('[SocketManager] Sent message_retry_request for $messageId');
-  }
-
-  /// Send a NON-sealed 1:1 message (private_message) — the server sees the
-  /// sender. Messaging never uses it (sealed only since 2026-11-22, SC-05);
-  /// only the wallet's transfer controls do, and the wallet is compiled out
-  /// of release builds (AppConfig.enableWallet). They must move to the sealed
-  /// path before the wallet is turned on again.
-  /// The [data] map should contain: { recipientId, text, type, replyToId?, expiresIn? }
-  /// Optional [onAck] callback receives the server's ack response
-  /// ({ messageId, serverTimestamp } on success, { error: {...} } on failure).
-  void sendPrivateMessage(Map<String, dynamic> data, {Function(dynamic)? onAck}) {
-    if (!_isReadyToSend()) {
-      debugPrint('[SocketManager] Cannot send private_message: not connected (isConnected=$_isConnected, actual=${_socket?.connected}, socket=${_socket != null})');
-      onAck?.call({'error': {'code': 'NOT_CONNECTED', 'message': 'Socket not connected'}});
-      return;
-    }
-    debugPrint('[SocketManager] Sending private_message to ${data['recipientId']}');
-    _socket!.emitWithAck('private_message', data, ack: (response) {
-      debugPrint('[SocketManager] private_message ack: $response');
-      onAck?.call(response);
-    });
-  }
-
   /// Whether send is possible — prevents mismatch between `_isConnected` flag and actual socket state.
   ///
   /// On background → foreground transition there are cases where Socket.IO's internal reconnect
@@ -867,12 +709,16 @@ class SocketManager with WidgetsBindingObserver {
     bool control = false,
     Function(dynamic)? onAck,
   }) {
+    if (!IdentityBindingV1.isValidSnowId(recipientId)) {
+      onAck?.call({'error': {'code': 'INVALID_REQUEST', 'message': 'Not a SnowChat ID'}});
+      return;
+    }
     if (!_isReadyToSend()) {
       debugPrint('[SocketManager] Cannot send sealed_message: not connected (isConnected=$_isConnected, actual=${_socket?.connected})');
       onAck?.call({'error': {'code': 'NOT_CONNECTED', 'message': 'Socket not connected'}});
       return;
     }
-    debugPrint('[SocketManager] Sending sealed_message to $recipientId (control=$control)');
+    debugPrint('[SocketManager] Sending sealed_message to ${logRef(recipientId)} (control=$control)');
     _socket!.emitWithAck('sealed_message', {
       'recipientId': recipientId,
       'sealedContent': sealedContent,
@@ -891,12 +737,14 @@ class SocketManager with WidgetsBindingObserver {
   /// relays ONLY to that peer, carrying the typer's snow-id (no global
   /// broadcast, no server-side pair id). Groups have no typing indicator.
   void sendTyping({required String recipientSnowchatId}) {
+    if (!IdentityBindingV1.isValidSnowId(recipientSnowchatId)) return;
     if (!_isReadyToSend()) return;
     _socket!.emit('typing_start', {'recipientSnowchatId': recipientSnowchatId});
   }
 
   /// Send a typing-stop indicator to the 1:1 peer [recipientSnowchatId].
   void stopTyping({required String recipientSnowchatId}) {
+    if (!IdentityBindingV1.isValidSnowId(recipientSnowchatId)) return;
     if (!_isReadyToSend()) return;
     _socket!.emit('typing_stop', {'recipientSnowchatId': recipientSnowchatId});
   }
@@ -906,9 +754,6 @@ class SocketManager with WidgetsBindingObserver {
   // who-read-whom-and-when, and the server handler is gone. Read receipts
   // now travel as sealed E2EE control envelopes — see
   // EncryptedMessageHandler.sendSealedReadReceipt().
-
-  /// Get the last buffered online_users data (for late subscribers).
-  Map<String, dynamic>? get lastOnlineUsersData => _lastOnlineUsersData;
 
   /// Emit a generic Socket.IO event with data.
   void emit(String event, Map<String, dynamic> data) {
@@ -963,13 +808,9 @@ class SocketManager with WidgetsBindingObserver {
     _gv2RowController.close();
     _messageStatusController.close();
     _typingController.close();
-    _presenceController.close();
     _connectionController.close();
     _prekeysLowController.close();
     _forcePrekeyUploadController.close();
-    _messageDeletedController.close();
-    _messageRetryRequestController.close();
-    _friendRequestReceivedController.close();
     _channelOwnerChangedController.close();
     _channelDeletedController.close();
     _aiTaskResponseController.close();
@@ -1000,6 +841,12 @@ class SocketManager with WidgetsBindingObserver {
     String? callId,
     void Function(dynamic)? onAck,
   }) {
+    if (!IdentityBindingV1.isValidSnowId(recipientSnowchatId)) {
+      onAck?.call({
+        'error': {'code': 'INVALID_REQUEST', 'message': 'Not a SnowChat ID'},
+      });
+      return;
+    }
     if (!_isReadyToSend()) {
       onAck?.call({
         'error': {

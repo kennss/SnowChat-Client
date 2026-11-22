@@ -1,7 +1,7 @@
 name: snowchat
 description: E2EE Messenger + Solana Wallet
 publish_to: 'none'
-version: 1.0.0+1002
+version: 1.0.0+1006
 
 environment:
   sdk: ^3.11.0

@@ -20,18 +20,19 @@
 ///              - **P1-D (Phase J follow-up)**: hardened dedup — `findByRequestId != null`
 ///                check blocks the second arrival across every status
 ///                (pending/sent/completed/failed/timeout).
-///              Sending calls sessionManager.encrypt +
-///              socketManager.sendPrivateMessage / sendSealedMessage (sealed
-///              sender availability branch) directly — transfer wire payload
-///              has a different structure than a regular chat payload, so it
-///              bypasses EncryptedMessageHandler's sendEncryptedMessage (via
-///              dedicated helper _sendTransferControl).
+///              Sending seals the transfer payload (its own inner JSON, a
+///              different structure than a chat payload) through
+///              EncryptedMessageHandler.sendSealedPayload — the server learns
+///              neither sender nor that it is a transfer (helper
+///              _sendTransferControl).
 ///              Float/double strictly forbidden (wallet/CLAUDE.md §2.1) —
 ///              amounts are BigInt.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-20
-/// @lastUpdated 2026-04-26 (header + inline English translation; Phase J follow-up fix: P0-A SPL recipient ATA derive check + P1-B mount-fail exception + P1-D hardened dedup + recoverPendingDialogs)
+/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (transfer notices are sealed — EncryptedMessageHandler.sendSealedPayload;
+///              the non-sealed private_message path is gone on both sides (Part 3 E); no socket
+///              manager dependency). Earlier 2026-04-26 (header + inline English translation; Phase J follow-up fix: P0-A SPL recipient ATA derive check + P1-B mount-fail exception + P1-D hardened dedup + recoverPendingDialogs)
 ///
 /// @functions
 ///  - TransferLockException: thrown on per-peer lock violation (P1-8)
@@ -80,7 +81,6 @@ import '../../../app/router.dart' show rootNavigatorKey;
 import '../../../core/crypto/encrypted_message_handler.dart';
 import '../../../core/crypto/signal_protocol_service.dart';
 import '../../../core/crypto/signal_session_manager.dart';
-import '../../../core/network/socket_manager.dart';
 import '../../../core/storage/daos/conversation_dao.dart';
 import '../../../core/storage/daos/message_dao.dart';
 import '../../../core/storage/daos/pending_transfer_dao.dart';
@@ -92,6 +92,7 @@ import '../rpc/rpc_client_provider.dart' hide solanaNetworkProvider;
 import '../wallet_provider.dart';
 import '../widgets/transfer_confirm_dialog.dart';
 import 'transfer_event_bus.dart';
+import '../../../core/diagnostics/log_ref.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Exceptions
@@ -212,7 +213,6 @@ class TransferService {
     required sol.RpcClient rpcClient,
     required SignalProtocolService signal,
     required SignalSessionManager sessionManager,
-    required SocketManager socketManager,
     required MessageDao messageDao,
     required ConversationDao conversationDao,
     required Future<bool?> Function(TransferRequestEvent event) showConfirmDialog,
@@ -225,7 +225,6 @@ class TransferService {
         _rpc = rpcClient,
         _signal = signal,
         _sessionManager = sessionManager,
-        _socketManager = socketManager,
         _messageDao = messageDao,
         _conversationDao = conversationDao,
         _showConfirmDialog = showConfirmDialog,
@@ -244,17 +243,11 @@ class TransferService {
   final Ref _ref;
   final TransferEventBus _eventBus;
   final PendingTransferDao _pendingDao;
-  // Reserved for future EncryptedMessageHandler integration (Phase F:
-  // sealed sender certificate access + sendEncryptedMessage handling
-  // transfer payloads). Currently _sendTransferControl calls sessionManager
-  // + socketManager directly so this is unused — DI wiring kept so Phase F
-  // work can use it immediately.
-  // ignore: unused_field
+  /// Seals the transfer notices (_sendTransferControl).
   final EncryptedMessageHandler _e2eeHandler;
   final sol.RpcClient _rpc;
   final SignalProtocolService _signal;
   final SignalSessionManager _sessionManager;
-  final SocketManager _socketManager;
   final MessageDao _messageDao;
   final ConversationDao _conversationDao;
 
@@ -341,7 +334,7 @@ class TransferService {
         payload: request.toJson(),
       );
       debugPrint('[TransferService] sendRequest dispatched: '
-          'requestId=$requestId peer=$recipientSnowchatId '
+          'requestId=$requestId peer=${logRef(recipientSnowchatId)} '
           'token=${token.toJson()} amount=$amount');
     } catch (e) {
       debugPrint('[TransferService] sendRequest E2EE send failed: $e');
@@ -479,7 +472,7 @@ class TransferService {
 
   Future<void> _onEvent(TransferEvent event) async {
     debugPrint('[TransferService] _onEvent received ${event.runtimeType} from '
-        '${event.fromSnowchatId}');
+        '${logRef(event.fromSnowchatId)}');
     try {
       switch (event) {
         case TransferRequestEvent():
@@ -836,7 +829,7 @@ class TransferService {
     );
     if (!sigOk) {
       debugPrint('[TransferService] _onResponse: walletAddressSig INVALID '
-          'from $peer');
+          'from ${logRef(peer)}');
       await _sendFailed(
         recipientSnowchatId: peer,
         requestId: resp.requestId,
@@ -1460,7 +1453,7 @@ class TransferService {
       final ed25519 = await _sessionManager.getPeerEd25519PublicKey(peerSnowId);
       if (ed25519 == null) {
         debugPrint('[TransferService] _verifyWalletAddressSig: no Ed25519 for '
-            '$peerSnowId — cannot verify (treat as fail)');
+            '${logRef(peerSnowId)} — cannot verify (treat as fail)');
         return false;
       }
       final verifyKey = ed.VerifyKey(Uint8List.fromList(ed25519));
@@ -1480,53 +1473,20 @@ class TransferService {
   // Wire send helpers (4 type)
   // ───────────────────────────────────────────────────────────────────────────
 
-  /// Encrypt payload (`{type: transfer_*, ...}`) via E2EE and send through a single socket.
-  ///
-  /// **If sealed sender is available**, use `sealed_message`, else
-  /// `private_message`. Differs from regular chat sendEncryptedMessage:
-  /// bypasses `_buildPayload`'s text/type structure — payload itself is the
-  /// wire JSON. The recipient-side dispatcher branches on `payload['type']`.
+  /// Seal [payload] (`{type: transfer_*, ...}` — the inner JSON itself) to
+  /// [recipientSnowchatId] over the sealed 1:1 path, pushed like a message
+  /// (EncryptedMessageHandler.sendSealedPayload). The recipient's decrypt
+  /// dispatches it by `payload['type']`; the server sees neither the sender
+  /// nor that it is a transfer.
   Future<void> _sendTransferControl({
     required String recipientSnowchatId,
     required Map<String, dynamic> payload,
   }) async {
-    final mySnowId = _ref.read(currentSnowIdProvider);
-    if (mySnowId == null) {
-      throw StateError('TransferService: mySnowId not initialized');
-    }
-
-    // Step 1: ensure session
-    await _sessionManager.ensureSession(recipientSnowchatId);
-
-    // Step 2: encrypt
-    final plaintext =
-        Uint8List.fromList(utf8.encode(jsonEncode(payload)));
-    final deviceId =
-        await _sessionManager.getDeviceIdForRecipient(recipientSnowchatId);
-    final encrypted = await _sessionManager.encrypt(
-      recipientSnowchatId,
-      deviceId,
-      plaintext,
+    await _e2eeHandler.sendSealedPayload(
+      recipientId: recipientSnowchatId,
+      payload: payload,
+      control: false,
     );
-    final ciphertext = encrypted['ciphertext'] as Uint8List;
-
-    // Step 3: wire send.
-    //
-    // Sealed sender variant: spec §5.4 recommends Sealed Sender V2.
-    // However, this Phase E lacks a public accessor on
-    // EncryptedMessageHandler's SenderCertificate cache (a Phase F
-    // deliverable), so the bypass path is undefined. Always uses plain
-    // `private_message` — Double Ratchet alone provides full E2EE.
-    // The sealed wrap activates this branch once Phase F adds
-    // `getOrFetchSenderCertificate()` public on EncryptedMessageHandler.
-    final clientMessageId = 'transfer_${_uuid.v4()}';
-    _socketManager.sendPrivateMessage({
-      'recipientId': recipientSnowchatId,
-      'encryptedContent': base64Encode(ciphertext),
-      'type': 'e2ee_text',
-      'messageType': encrypted['messageType'] as int,
-      'clientMessageId': clientMessageId,
-    });
   }
 
   Future<void> _sendResponse({
@@ -1656,7 +1616,7 @@ class TransferService {
     try {
       final conv = await _conversationDao.findDirectByParticipant(peerSnowId);
       if (conv == null) {
-        debugPrint('[TransferService] commit: no conversation for $peerSnowId');
+        debugPrint('[TransferService] commit: no conversation for ${logRef(peerSnowId)}');
         return;
       }
       await _messageDao.insertLocalSystemMessage(
@@ -1773,7 +1733,6 @@ final transferServiceProvider = Provider<TransferService>((ref) {
     rpcClient: ref.read(rpcClientProvider),
     signal: ref.read(signalProtocolServiceProvider),
     sessionManager: ref.read(signalSessionManagerProvider),
-    socketManager: ref.read(socketManagerProvider),
     messageDao: ref.read(messageDaoProvider),
     conversationDao: ref.read(conversationDaoProvider),
     showConfirmDialog: (event) async {

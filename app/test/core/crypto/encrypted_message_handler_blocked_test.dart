@@ -1,14 +1,17 @@
 /// @file        encrypted_message_handler_blocked_test.dart
-/// @description X1 at the decrypt: what an account this user blocked sent — a sealed envelope
-///              (its sender known only once unsealed) or a non-sealed 1:1 — is decrypted (the
-///              1:1 session stays in step) and then refused with BlockedSenderException, before
-///              anything of it is acted on; the sealed path throws it unwrapped (not a
-///              SealedDecryptException that the queue would retry). An account that is not
-///              blocked is read as before.
+/// @description The sealed decrypt. X1: what an account this user blocked sent (its sender
+///              known only once unsealed) is decrypted (the 1:1 session stays in step) and then
+///              refused with BlockedSenderException, unwrapped (not a SealedDecryptException
+///              that the queue would retry). The inner types (contract §12.4): a type this build
+///              does not know is marked `_isUnknownType` (consumed, never shown — no empty
+///              bubble); contact_added / contact_removed are contact notices with their name
+///              certificate; a message carries its sender's name certificate as peerNameCert.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21
+/// @lastUpdated 2026-11-22 (a contact notice also says whether it is an answer). Earlier 2026-11-22
+///              (no non-sealed 1:1 — Part 3 E; the inner-type rules of §12.4). Earlier
+///              2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21
 ///
 /// @functions
 ///  - main(): the test cases.
@@ -29,11 +32,12 @@ import 'package:snowchat/core/network/socket_manager.dart';
 import '../group_v2/gv2_session_support.dart' show gv2TestCertificate;
 import 'identity_test_support.dart';
 
-/// The Signal layer of "me": the real identity keys; every decrypt gives a
-/// text payload, and is counted.
+/// The Signal layer of "me": the real identity keys; every decrypt gives
+/// [payload] (a text message unless a test sets another), and is counted.
 class _Sessions extends Fake implements SignalSessionManager {
   final TestParty me;
   int decrypts = 0;
+  Map<String, dynamic> payload = {'text': 'hello', 'type': 'text'};
   _Sessions(this.me);
 
   @override
@@ -52,9 +56,7 @@ class _Sessions extends Fake implements SignalSessionManager {
     String? envelopeDeviceId,
   }) async {
     decrypts++;
-    return Uint8List.fromList(
-      utf8.encode(jsonEncode({'text': 'hello', 'type': 'text'})),
-    );
+    return Uint8List.fromList(utf8.encode(jsonEncode(payload)));
   }
 }
 
@@ -121,19 +123,56 @@ void main() {
     expect(sessions.decrypts, 1, reason: 'the session stays in step');
   });
 
-  test('a non-sealed 1:1 from a blocked account: decrypted, then refused',
+  test('an inner type this build does not know: consumed, never a bubble',
+      () async {
+    sessions.payload = {'type': 'poll_v9', 'text': 'x', 'question': '?'};
+    final message = await handler.decryptSealedMessage(sealedFromBob('u1'));
+    expect(message.metadata, {'_isUnknownType': true});
+    expect(message.plaintext, isEmpty);
+    expect(message.peerClientId, isNull);
+  });
+
+  test('a payload without a type is a text message (the rule is for a type '
+      'present and unknown)', () async {
+    sessions.payload = {'text': 'plain'};
+    final message = await handler.decryptSealedMessage(sealedFromBob('u2'));
+    expect(message.metadata, isNull);
+    expect(message.plaintext, 'plain');
+  });
+
+  test('contact_added and contact_removed are contact notices', () async {
+    sessions.payload = {'type': 'contact_added', 'v': 1, 'nameCert': 'Q0VSVA=='};
+    final added = await handler.decryptSealedMessage(sealedFromBob('c1'));
+    expect(added.metadata, {'_isContactNotice': true, 'notice': 'contact_added', 'answer': false});
+    expect(added.peerNameCert, 'Q0VSVA==');
+
+    sessions.payload = {'type': 'contact_removed', 'v': 1};
+    final removed = await handler.decryptSealedMessage(sealedFromBob('c2'));
+    expect(removed.metadata,
+        {'_isContactNotice': true, 'notice': 'contact_removed', 'answer': false});
+    expect(removed.peerNameCert, isNull);
+  });
+
+  test("a message carries its sender's name certificate", () async {
+    sessions.payload = {
+      'type': 'text',
+      'text': 'hi',
+      'cid': 'msg_1',
+      'nameCert': 'Q0VSVA==',
+    };
+    final message = await handler.decryptSealedMessage(sealedFromBob('n1'));
+    expect(message.plaintext, 'hi');
+    expect(message.peerNameCert, 'Q0VSVA==');
+    expect(message.peerClientId, 'msg_1');
+  });
+
+  test('a contact notice from a blocked account is refused like anything else',
       () async {
     blocked.add(bob.snowId);
+    sessions.payload = {'type': 'contact_added', 'v': 1};
     await expectLater(
-      handler.decryptIncomingMessage({
-        'id': 'm3',
-        'senderSnowchatId': bob.snowId,
-        'senderDeviceId': bob.deviceId,
-        'encryptedContent': base64Encode([5, 6, 7]),
-        'messageType': 1,
-      }),
+      handler.decryptSealedMessage(sealedFromBob('c3')),
       throwsA(isA<BlockedSenderException>()),
     );
-    expect(sessions.decrypts, 1);
   });
 }

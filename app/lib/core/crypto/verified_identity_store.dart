@@ -25,7 +25,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-10
-/// @lastUpdated 2026-11-22 (friend graph off the server: the nickname lookup names the account,
+/// @lastUpdated 2026-11-27 (comment: the Ed25519 key signs SPKs and call fingerprints — no wallet).
+///              Earlier 2026-11-22 (friend graph off the server: the nickname lookup names the account,
 ///              so a request is vouched for when it is made — rememberNickRequest /
 ///              settleNickRequests are gone; VouchSource.restored — an account of this user's list
 ///              restored from the sealed contact backup; pinFromInviteLink → pinAccountKey (a link,
@@ -78,7 +79,7 @@ class VerifiedIdentityRecord {
   /// X25519 identity key used in X3DH.
   final Uint8List? identityKey;
 
-  /// Signal-layer Ed25519 signing key (SPK signatures, wallet sigs).
+  /// Signal-layer Ed25519 signing key (SPK signatures, call fingerprints).
   final Uint8List? ed25519;
 
   /// Binding signature (bound records only).

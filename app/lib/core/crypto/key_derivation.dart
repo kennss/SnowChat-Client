@@ -3,7 +3,10 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-04-26 (header English translation)
+/// @lastUpdated 2026-11-27 (SLIP-0010 through ed25519_hd_key 2.3.0 directly — the solana package,
+///              whose Ed25519HDKeyPair called the same ED25519_HD_KEY.derivePath, left with the
+///              wallet; the bytes are pinned by key_derivation_golden_test.dart). Earlier
+///              2026-04-26 (header English translation)
 ///
 /// @functions
 ///  - KeyDerivation: BIP39/SLIP-0010 key derivation utility class
@@ -17,8 +20,8 @@
 import 'dart:typed_data';
 
 import 'package:bip39/bip39.dart' as bip39;
+import 'package:ed25519_hd_key/ed25519_hd_key.dart';
 import 'package:pinenacl/ed25519.dart';
-import 'package:solana/solana.dart' show Ed25519HDKeyPair;
 
 /// BIP39 + SLIP-0010 key derivation for SnowChat.
 ///
@@ -36,21 +39,18 @@ class KeyDerivation {
 
   /// Derive Ed25519 keypair from mnemonic using SLIP-0010.
   /// Path: m/44'/0'/0'/0'
-  /// Uses solana package's Ed25519HDKeyPair (replaces ed25519_hd_key).
+  /// The derived 32-byte key is the Ed25519 seed (ed25519_hd_key 2.3.0 —
+  /// builds through 1006 reached the same function through the solana
+  /// package; the golden test pins the bytes).
   static Future<KeyPairResult> deriveKeyPair(List<String> mnemonic) async {
     final mnemonicStr = mnemonic.join(' ');
     final seed = bip39.mnemonicToSeed(mnemonicStr);
 
-    // SLIP-0010 derivation via solana package
-    final hdKeyPair = await Ed25519HDKeyPair.fromSeedWithHdPath(
-      seed: seed,
-      hdPath: _derivationPath,
-    );
+    // SLIP-0010 Ed25519 derivation (hardened path only).
+    final keyData = await ED25519_HD_KEY.derivePath(_derivationPath, seed);
 
-    // Extract raw key bytes for pinenacl Ed25519 usage (signing, X3DH)
-    final keyPairData = await hdKeyPair.extract();
-    final privateKeySeed = Uint8List.fromList(
-        keyPairData.bytes.sublist(0, 32));
+    // Raw seed bytes for pinenacl Ed25519 usage (signing, X3DH)
+    final privateKeySeed = Uint8List.fromList(keyData.key);
     final signingKey = SigningKey(seed: privateKeySeed);
     final publicKeyBytes = Uint8List.fromList(signingKey.verifyKey.toList());
 

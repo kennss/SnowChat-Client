@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-30
-/// @lastUpdated 2026-11-22 (the Next / Done bar is in the fields' TextFieldTapRegion — the app-wide
+/// @lastUpdated 2026-11-27 (wallet removed: the passcode line no longer speaks of transactions; no
+///              AppConfig). Earlier 2026-11-22 (the Next / Done bar is in the fields' TextFieldTapRegion — the app-wide
 ///              tap-outside dismissal removed it on pointer-down and Next never fired). Earlier 2026-11-22 (passcode kinds — "Passcode options": 6 digits / custom numeric / custom
 ///              alphanumeric, validated by kind, stored by PasscodeStore; the wallet is named only when
 ///              AppConfig.enableWallet). Earlier 2026-11-22 (iOS PIN fields get a Next / Done bar — the iPhone number pad has no
@@ -25,7 +26,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../shared/constants/colors.dart';
 import '../../../shared/constants/sizes.dart';
-import '../../../app/app_config.dart';
 import '../../../app/keyboard_behavior.dart';
 import '../../../core/security/passcode.dart';
 import '../../../app/providers.dart';
@@ -453,7 +453,7 @@ class _SetupProfileScreenState extends ConsumerState<SetupProfileScreen> {
                     ),
                     const SizedBox(height: SnowSizes.sm),
                     Text(
-                      '${AppConfig.enableWallet ? 'Your passcode unlocks the app and authorizes transactions.' : 'Your passcode unlocks the app.'} ${passcodeHint(_kind)}',
+                      'Your passcode unlocks the app. ${passcodeHint(_kind)}',
                       style: const TextStyle(
                         color: SnowColors.textTertiary,
                         fontSize: 13,

@@ -1,7 +1,7 @@
 /**
  * @file        MainActivity.kt
  * @description Android main Activity. Hosts the only FlutterEngine for the
- *              entire app — chat / wallet / call all render in this Activity.
+ *              entire app — chat and call screens all render in this Activity.
  *              The manifest declares showWhenLocked=true so the call path
  *              can render /call over the keyguard without forcing a PIN.
  *
@@ -17,7 +17,7 @@
  *              is closed on the Dart side: when /call ends with the
  *              keyguard still locked, app.dart's idle listener calls
  *              SystemNavigator.pop() to finish this Activity instead of
- *              popping into the underlying chat / wallet route, returning
+ *              popping into the underlying chat route, returning
  *              the user to the lock screen.
  *
  *              SignalBridge / SignalStore were retired during the Pure
@@ -26,7 +26,8 @@
  * @author      Kennt Kim
  * @company     Calida Lab
  * @created     2026-03-29
- * @lastUpdated 2026-11-11 (snowchat/mlkit_translation — TranslationBridge owns
+ * @lastUpdated 2026-11-27 (comments: no wallet screens any more — chat and call only).
+ *              Earlier 2026-11-11 (snowchat/mlkit_translation — TranslationBridge owns
  *              Android on-device translation natively; the google_mlkit_*
  *              Flutter plugins were removed so iOS no longer links ML Kit.
  *              cleanUpFlutterEngine releases the ML Kit translators).
@@ -159,11 +160,11 @@ class MainActivity : FlutterFragmentActivity() {
 
         // [SnowChat 2026-05-06] Keyguard query channel.
         //
-        // MainActivity is shared by the chat / wallet / call surfaces and
+        // MainActivity is shared by the chat and call surfaces and
         // carries showWhenLocked=true in the manifest so a call accepted
         // on a locked phone can render /call without forcing PIN entry.
         // Once the call ends, Dart pops the /call route — without further
-        // action the underlying chat / wallet route would become visible
+        // action the underlying chat route would become visible
         // on top of the still-locked keyguard.
         //
         // Dart's idle listener (app.dart) calls `isLocked` here at the

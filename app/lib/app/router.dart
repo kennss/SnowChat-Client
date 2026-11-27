@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (the restore notice of a backup that did not open offers "Try again"
+/// @lastUpdated 2026-11-27 (wallet removed: no Wallet tab, no /wallet, /nft, /settings/network or
+///              /settings/hidden-wallets routes, no AppConfig). Earlier 2026-11-22 (the restore notice of a backup that did not open offers "Try again"
 ///              — ContactBackup.retryRestore — and, put off, comes back at the next start). Earlier 2026-11-22 (the selected tab follows the location — a go('/friends') from a friend
 ///              notification, or any other go to a tab, lights the right tab (it was a field set only
 ///              by taps); the Friends tab badge shows the number of received requests; the main shell
@@ -34,7 +35,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import 'app_config.dart';
 import '../shared/constants/colors.dart';
 import '../features/onboarding/screens/welcome_screen.dart';
 import '../features/onboarding/screens/create_identity_screen.dart';
@@ -69,24 +69,11 @@ import 'deeplink_handler.dart' show addFriendDeeplinkPath;
 import '../features/settings/screens/settings_screen.dart';
 import '../features/settings/screens/device_management_screen.dart';
 import '../features/settings/screens/profile_edit_screen.dart';
-import '../features/settings/screens/network_settings_screen.dart';
-import '../features/settings/screens/hidden_wallets_screen.dart';
 import '../features/settings/screens/backup_screen.dart';
-import '../features/wallet/screens/wallet_home_screen.dart';
-import '../features/wallet/screens/send_screen.dart';
-import '../features/wallet/screens/receive_screen.dart';
-import '../features/wallet/screens/token_detail_screen.dart';
-import '../features/wallet/screens/tx_detail_screen.dart';
-import '../features/wallet/screens/tx_history_screen.dart';
-import '../features/nft/screens/nft_gallery_screen.dart';
-import '../features/nft/screens/nft_detail_screen.dart';
-import '../features/nft/screens/nft_send_screen.dart';
 import '../features/ai/screens/ai_chat_screen.dart';
 import '../features/ai/screens/ai_onboarding_screen.dart';
 import '../features/call/screens/call_screen_for.dart';
 import '../features/security/screens/verify_identity_screen.dart';
-import '../shared/models/wallet_models.dart';
-import '../shared/models/nft_models.dart';
 import 'providers.dart';
 
 /// Public so app.dart's securityAlert and other global dialog sites can use it.
@@ -287,13 +274,6 @@ final routerProvider = Provider<GoRouter>((ref) {
               ),
             ),
           ),
-          if (AppConfig.enableWallet)
-            GoRoute(
-              path: '/wallet',
-              pageBuilder: (_, __) => const NoTransitionPage(
-                child: WalletHomeScreen(),
-              ),
-            ),
           GoRoute(
             path: '/settings',
             pageBuilder: (_, __) => const NoTransitionPage(
@@ -429,85 +409,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const ChangePasscodeScreen(),
       ),
-      // Solana network toggle + hidden sub-wallets are wallet-only screens. Without
-      // the guard they stayed reachable in an ENABLE_WALLET=false build.
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/settings/network',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const NetworkSettingsScreen(),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/settings/hidden-wallets',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const HiddenWalletsScreen(),
-      ),
       GoRoute(
         path: '/settings/blocked-contacts',
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const BlockedContactsScreen(),
       ),
 
-      // --- Wallet full-screen routes (ENABLE_WALLET flag) ---
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/wallet/send',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) {
-          final extra = state.extra;
-          // Send Again passes a Map to prefill the address; the original path passes TokenInfo for token selection
-          if (extra is Map) {
-            return SendScreen(
-              initialAddress: extra['address'] as String?,
-            );
-          }
-          return SendScreen(
-            preselectedToken: extra as TokenInfo?,
-          );
-        },
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/wallet/receive',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const ReceiveScreen(),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/wallet/token',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) => TokenDetailScreen(
-          token: state.extra as TokenInfo,
-        ),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/wallet/history',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const TxHistoryScreen(),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/wallet/tx-detail',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) =>
-            TxDetailScreen(signature: state.extra as String),
-      ),
-
-      // --- NFT full-screen routes (ENABLE_WALLET flag) ---
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/nft/gallery',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const NFTGalleryScreen(),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/nft/detail',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) => NFTDetailScreen(
-          nft: state.extra as NFTAsset,
-        ),
-      ),
-      if (AppConfig.enableWallet) GoRoute(
-        path: '/nft/send',
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, state) => NFTSendScreen(
-          nft: state.extra as NFTAsset,
-        ),
-      ),
       // Phase 10: AI
       GoRoute(
         path: '/ai-chat',
@@ -554,7 +461,6 @@ class _MainShellState extends ConsumerState<_MainShell> {
     '/chat',
     '/friends',
     '/contacts',
-    if (AppConfig.enableWallet) '/wallet',
     '/settings',
   ];
 
@@ -657,12 +563,6 @@ class _MainShellState extends ConsumerState<_MainShell> {
               activeIcon: Icon(Icons.forum_rounded),
               label: 'Communities',
             ),
-            if (AppConfig.enableWallet)
-              const BottomNavigationBarItem(
-                icon: Icon(Icons.account_balance_wallet_rounded),
-                activeIcon: Icon(Icons.account_balance_wallet_rounded),
-                label: 'Wallet',
-              ),
             const BottomNavigationBarItem(
               icon: Icon(Icons.settings_rounded),
               activeIcon: Icon(Icons.settings_rounded),
@@ -708,7 +608,7 @@ class _CallRouteHost extends ConsumerWidget {
     // the framework-level guard that also covers MainActivity-hosted
     // paths (call accepted while the device is already unlocked) and iOS
     // (where the gesture-pop would otherwise leak the user out of /call
-    // into chat / wallet routes underneath). The auto-pop on idle above
+    // into the chat routes underneath). The auto-pop on idle above
     // remains the only legitimate exit, fired when CallNotifier ends.
     final canExit = status == CallStatus.idle;
     return PopScope(

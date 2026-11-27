@@ -1,9 +1,10 @@
 /// @file        chat_screen.dart
-/// @description Chat screen (1:1 + group) — message list, message input/send, typing indicator, expiring messages, read receipts, online status, reply/quote, message deletion, link preview, group AppBar mode (tap -> group info screen), system-message display, Send Asset (Wallet V2 Phase F, 1:1 only)
+/// @description Chat screen (1:1 + group) — message list, message input/send, typing indicator, expiring messages, read receipts, online status, reply/quote, message deletion, link preview, group AppBar mode (tap -> group info screen), system-message display
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (Block at the 5,000-account cap says so and keeps the chat). Earlier 2026-11-22 (friend graph off the server — design §5.7: a 1:1 chat shows where the
+/// @lastUpdated 2026-11-27 (wallet removed: no Send Asset in the + menu, no TransferRequestScreen,
+///              no AppConfig). Earlier 2026-11-23 (no account, conversation or community id in a log line — logRef). Earlier 2026-11-22 (Block at the 5,000-account cap says so and keeps the chat). Earlier 2026-11-22 (friend graph off the server — design §5.7: a 1:1 chat shows where the
 ///              peer stands in the friend list on this device (ContactStatusBanner: not in your
 ///              friends — Add / Block; request sent; wants to be your friend — Accept / Decline;
 ///              account unavailable; blocked — Unblock); the 1:1 header name follows the name order
@@ -30,7 +31,6 @@
 ///  - _confirmDeleteChat(): "Delete chat" confirmation dialog (local-only deletion)
 ///  - _confirmBlockContact(): "Block contact" confirmation dialog (server block + local deletion)
 ///  - ContactStatusBanner (contact_status_banner.dart): the 1:1 peer's place in the friend list
-///  - _handleSendAsset(): Wallet V2 Phase F — enter 1:1 chat transfer screen (TransferRequestScreen)
 
 import 'dart:async';
 
@@ -38,7 +38,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
-import '../../../app/app_config.dart';
 import '../../../core/contacts/contact_store.dart' show ContactLabel;
 import '../../../core/diagnostics/log_ref.dart';
 import '../../../core/group_v2/gv2_codec.dart';
@@ -66,7 +65,6 @@ import '../widgets/attachment_picker_sheet.dart';
 import '../widgets/system_message_bubble.dart';
 import '../models/message.dart';
 import '../models/conversation.dart';
-import '../../wallet/screens/transfer_request_screen.dart';
 import '../../ai/providers/ai_provider.dart';
 import '../../ai/providers/translation_provider.dart';
 import '../../ai/service/conversation_summarizer.dart';
@@ -237,16 +235,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _showAttachmentSheet() {
-    // Wallet V2 Phase F: Send Asset option is shown only in 1:1 rooms (V1 limit).
-    final conversations = ref.read(conversationListProvider);
-    final conversation = conversations
-        .where((c) => c.id == widget.conversationId)
-        .firstOrNull;
-    final isDirect1to1 = conversation?.type == ConversationType.direct;
-    final peerSnowId = isDirect1to1
-        ? (conversation?.otherParticipant(_myId) ?? '')
-        : '';
-
     showModalBottomSheet(
       context: context,
       backgroundColor: SnowColors.surface,
@@ -289,49 +277,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               );
         },
         onAddFriend: () => _handleAddFriend(),
-        // Send Asset opens TransferRequestScreen through Navigator.push, bypassing
-        // the router — so the route guard alone did not hide it.
-        onSendAsset: (AppConfig.enableWallet &&
-                isDirect1to1 &&
-                peerSnowId.isNotEmpty)
-            ? () => _handleSendAsset(
-                  peerSnowId: peerSnowId,
-                  conversation: conversation,
-                )
-            : null,
-      ),
-    );
-  }
-
-  /// Wallet V2 Phase F — enter the 1:1 chat transfer screen.
-  ///
-  /// **Flow**:
-  /// 1. Resolve peer displayName (contact cache -> conversation.displayName -> snow ID)
-  /// 2. Push TransferRequestScreen (rootNavigator) — that screen calls
-  ///    transferServiceProvider.sendRequest directly + SnackBar feedback.
-  /// 3. This chat_screen just navigates — no result handling here.
-  Future<void> _handleSendAsset({
-    required String peerSnowId,
-    required Conversation? conversation,
-  }) async {
-    // displayName resolution (same priority as chat header).
-    final contacts = ref.read(contactProvider);
-    final contact =
-        contacts.where((c) => c.snowChatId == peerSnowId).firstOrNull;
-    final displayName = (contact?.displayName?.isNotEmpty ?? false)
-        ? contact!.displayName!
-        : (conversation?.displayName(_myId) ??
-            (peerSnowId.length > 12
-                ? '${peerSnowId.substring(0, 8)}...${peerSnowId.substring(peerSnowId.length - 4)}'
-                : peerSnowId));
-
-    if (!mounted) return;
-    await Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute<void>(
-        builder: (_) => TransferRequestScreen(
-          recipientSnowchatId: peerSnowId,
-          recipientDisplayName: displayName,
-        ),
       ),
     );
   }

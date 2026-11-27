@@ -1,12 +1,11 @@
 /// @file        system_message_bubble.dart
 /// @description System-message bubble widget — renders group-event (member added/removed, name change, etc.) system notices
 ///              as centered gray text. Phase 10: includes decryption-failed placeholder rendering.
-///              Wallet V2 Phase G: added transfer_completed permanent system message (Sent/Received +
-///              7-char tx hash + Solana explorer link).
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-31
-/// @lastUpdated 2026-11-21 (no safety_number_changed bubble — nothing writes that event since the legacy TOFU policy is gone). Earlier 2026-11-20 (group protocol v2: a line that carries a group event is worded here
+/// @lastUpdated 2026-11-27 (wallet removed: no transfer_completed bubble, no explorer link).
+///              Earlier 2026-11-21 (no safety_number_changed bubble — nothing writes that event since the legacy TOFU policy is gone). Earlier 2026-11-20 (group protocol v2: a line that carries a group event is worded here
 ///              with the names the user knows the accounts by — _Gv2EventLine; a v2 message
 ///              whose key has not come says that it may still arrive).
 ///              Earlier 2026-05-06 (missed-call countdown anchor switched from
@@ -25,22 +24,15 @@
 ///  - _buildDecryptionFailedBubble(): decryption-failed placeholder UI (lock icon + guidance copy)
 ///  - _Gv2EventLine: a change of a group protocol v2 group, worded with local names
 ///  - _MissedCallBubble: missed call — 5-min countdown + red call_missed icon (StatefulWidget)
-///  - _TransferCompletedBubble: transfer completed — direction (sent/received) + amount + token + 7-char tx hash (permanent, StatelessWidget)
-///  - _formatTransferAmount(): metadata's amount (BigInt string) + token + decimals -> display string
-///  - _resolveTokenLabel(): token type + mint -> "SOL" / "USDC" / "TOKEN" / "NFT" label
-///  - _explorerUrlForNetwork(): metadata.network -> SolanaNetwork mapping -> explorerTxUrl
 
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../app/providers.dart' show currentSnowIdProvider;
 import '../../../core/group_v2/gv2_events.dart' show gv2EventText;
 import '../../group/providers/group_detail_provider.dart';
 import '../../group/providers/gv2_group_provider.dart';
 import '../../../shared/constants/colors.dart';
-import '../../wallet/rpc/rpc_config.dart';
-import '../../wallet/utils/amount_converter.dart';
 import '../models/message.dart';
 
 /// WhatsApp-style centered system message (no sender bubble).
@@ -89,12 +81,6 @@ class SystemMessageBubble extends StatelessWidget {
         screenEnteredAt: screenEnteredAt,
       );
     }
-    // Wallet V2 Phase G — permanent transfer-completed system message
-    // (Sent/Received + 7-char tx hash + Solana explorer link). spec §6.4 / §5.9.
-    if (eventType == 'transfer_completed') {
-      return _TransferCompletedBubble(metadata: metadata);
-    }
-
     // Group protocol v2: a change of the group, worded here with the names
     // this user knows the accounts by (the stored text names them by
     // nickname or id).
@@ -298,177 +284,6 @@ class _MissedCallBubbleState extends State<_MissedCallBubble> {
       ),
     );
   }
-}
-
-/// Wallet V2 Phase G — permanent transfer-completed system message bubble.
-///
-/// metadata keys (transfer_service `_commitTransferSystemMessage`):
-///   - requestId: UUID (for debug)
-///   - txHash: Solana tx signature (Base58, ~88 chars)
-///   - amount: BigInt string (lamports or SPL smallest unit)
-///   - token: 'SOL' | 'SPL' | 'NFT' (TokenType.toJson)
-///   - mint: SPL/NFT mint address (null/missing for SOL)
-///   - decimals: int (SOL=9, USDC=6, NFT=0)
-///   - direction: 'sent' | 'received' (sender side vs recipient side)
-///   - network: 'devnet' | 'mainnet' (explorer cluster branch)
-///
-/// No TTL — kept permanently as transaction evidence (spec §6.4).
-/// Direction branch favors metadata (the system message's senderSnowchatId is
-/// stored as an empty string by MessageDao.insertLocalSystemMessage, so a self
-/// comparison is impossible — the direction key is ground truth).
-///
-/// StatelessWidget — currently no ref usage. If token-registry watch becomes
-/// necessary, promote to ConsumerWidget in Phase V1.x (V1 falls back to a
-/// 'TOKEN' label).
-class _TransferCompletedBubble extends StatelessWidget {
-  final Map<String, dynamic> metadata;
-
-  const _TransferCompletedBubble({required this.metadata});
-
-  @override
-  Widget build(BuildContext context) {
-    const accent = SnowColors.primary;
-    final direction = (metadata['direction'] as String?) ?? 'received';
-    final isSent = direction == 'sent';
-    final verb = isSent ? 'Sent' : 'Received';
-
-    final amountDisplay = _formatTransferAmount(metadata);
-    final tokenLabel = _resolveTokenLabel(metadata);
-    final txHash = (metadata['txHash'] as String?) ?? '';
-    final txHashShort =
-        txHash.length >= 7 ? '${txHash.substring(0, 7)}...' : txHash;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 24),
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: accent.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: accent.withValues(alpha: 0.5)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.account_balance_wallet,
-                    size: 16,
-                    color: accent,
-                  ),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      '$verb $amountDisplay $tokenLabel',
-                      style: const TextStyle(
-                        color: accent,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.check_circle, size: 12, color: accent),
-                ],
-              ),
-              if (txHash.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                InkWell(
-                  onTap: () => _openExplorer(context, txHash),
-                  borderRadius: BorderRadius.circular(4),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 2,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          txHashShort,
-                          style: TextStyle(
-                            color: accent.withValues(alpha: 0.8),
-                            fontSize: 10,
-                            fontFamily: 'monospace',
-                            decoration: TextDecoration.underline,
-                            decorationColor: accent.withValues(alpha: 0.6),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Icon(
-                          Icons.open_in_new,
-                          size: 10,
-                          color: accent.withValues(alpha: 0.7),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openExplorer(BuildContext context, String txHash) async {
-    final url = _explorerUrlForNetwork(metadata, txHash);
-    final uri = Uri.parse(url);
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to open explorer')),
-      );
-    }
-  }
-}
-
-/// metadata.amount (BigInt string) + decimals → display string.
-/// SOL converts lamports → SOL (1e9); others use smallestUnitToDisplay(decimals).
-/// Returns '?' on bad values (fallback first, never block the UI).
-String _formatTransferAmount(Map<String, dynamic> metadata) {
-  try {
-    final amountStr = metadata['amount'] as String?;
-    if (amountStr == null || amountStr.isEmpty) return '?';
-    final amount = BigInt.parse(amountStr);
-    final token = (metadata['token'] as String?) ?? 'SOL';
-    if (token.toUpperCase() == 'SOL') {
-      return lamportsToSol(amount);
-    }
-    final decimals = (metadata['decimals'] as int?) ?? 0;
-    return smallestUnitToDisplay(amount, decimals);
-  } catch (_) {
-    return '?';
-  }
-}
-
-/// Token label — SOL as-is, NFT shows 'NFT', SPL shows 'TOKEN' (until V1.x deferred).
-/// Only USDC mint is named explicitly — other SPL = 'TOKEN' (token symbol mapping deferred to V1.x).
-String _resolveTokenLabel(Map<String, dynamic> metadata) {
-  final token = (metadata['token'] as String?)?.toUpperCase() ?? 'SOL';
-  if (token == 'SOL') return 'SOL';
-  if (token == 'NFT') return 'NFT';
-  // SPL — per-mint symbol mapping is deferred to V1.x.
-  // The USDC devnet/mainnet mint hard-list needs a separate wire-up via the token registry provider.
-  return 'TOKEN';
-}
-
-/// metadata.network ('devnet'|'mainnet') → SolanaNetwork → explorerTxUrl.
-/// Missing or unknown values fall back to devnet (dev environment first).
-String _explorerUrlForNetwork(
-  Map<String, dynamic> metadata,
-  String txHash,
-) {
-  final networkStr = (metadata['network'] as String?) ?? 'devnet';
-  final network = networkStr == 'mainnet'
-      ? SolanaNetwork.mainnet
-      : SolanaNetwork.devnet;
-  return network.explorerTxUrl(txHash);
 }
 
 /// The system line of a change in a group protocol v2 group. The row holds

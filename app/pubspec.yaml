@@ -1,7 +1,7 @@
 name: snowchat
-description: E2EE Messenger + Solana Wallet
+description: E2EE Messenger
 publish_to: 'none'
-version: 1.0.0+1006
+version: 1.0.0+1007
 
 environment:
   sdk: ^3.11.0
@@ -44,27 +44,26 @@ dependencies:
   # Biometric auth
   local_auth: ^2.2.0
 
-  # Solana / Crypto
+  # Identity keys: BIP39 recovery phrase -> SLIP-0010 Ed25519 (key_derivation.dart).
+  # ed25519_hd_key is pinned exactly: a change in its derivation would restore a
+  # different account from the same phrase (key_derivation_golden_test.dart).
   bip39: ^1.0.6
+  ed25519_hd_key: 2.3.0
   pinenacl: ^0.6.0
 
   # Hash (Safety Number SHA-512 iteration; transitive via flutter SDK already)
   crypto: ^3.0.0
 
-  # QR code
+  # QR code: my QR / friend QR scan, community invite QR, Safety Number QR
   qr_flutter: ^4.1.0
-  mobile_scanner: ^7.2.0  # Phase 6.1 §3.3 — Flutter ≥3.29 OK (Spike S7)
+  mobile_scanner: ^7.2.0  # Flutter ≥3.29 OK (Spike S7)
 
   # Deeplink (snowchat:// invite links — Phase 1, Phase 2 = Universal/App Link)
   app_links: ^6.3.2
 
-  # Image
-  cached_network_image: ^3.3.0
-
   # UI
   shimmer: ^3.0.0
   flutter_slidable: ^3.0.0
-  intl: ^0.19.0
   cupertino_icons: ^1.0.8
 
   # Push / Local Notifications
@@ -111,8 +110,6 @@ dependencies:
   # external apps exposes Save/Share outside our control; pdfx renders inside
   # our process so the disappearing TTL promise is preserved.
   pdfx: ^2.9.2
-  solana: ^0.31.2+1
-  fl_chart: ^1.2.0
   connectivity_plus: ^7.1.1
   background_downloader: ^8.6.0
   permission_handler: ^12.0.1

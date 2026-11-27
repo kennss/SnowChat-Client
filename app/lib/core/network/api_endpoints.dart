@@ -3,7 +3,7 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (no deleteMessage — the server's unsend route is gone; a 1:1 unsend is
+/// @lastUpdated 2026-11-27 (wallet removed: no /wallet or /nft endpoints). Earlier 2026-11-22 (no deleteMessage — the server's unsend route is gone; a 1:1 unsend is
 ///              the sealed control; no push-token clear — a device whose session ended loses its
 ///              tokens on the server). Earlier 2026-11-22 (fetchFile POST /files/fetch { fileId } replaces downloadFile GET
 ///              /files/:fileId).
@@ -29,13 +29,6 @@
 ///  - ApiEndpoints.conversationDelete / conversationClear: a 1:1 on the server (POST)
 ///  - ApiEndpoints.devicePushToken / deviceVoipToken / deviceRemove: this account's devices
 ///  - ApiEndpoints.uploadFile / fetchFile: file upload / fetch (POST, fileId in the body)
-///  - ApiEndpoints.walletRegister: wallet registration endpoint
-///  - ApiEndpoints.walletTokens(): per-wallet token list endpoint
-///  - ApiEndpoints.walletPrices: token price endpoint
-///  - ApiEndpoints.walletTokenMetadata(): token metadata endpoint
-///  - ApiEndpoints.walletEnhancedHistory: Helius Enhanced Transactions proxy endpoint
-///  - ApiEndpoints.nftCollection: NFT collection endpoint
-///  - ApiEndpoints.nftDetail(): NFT detail endpoint
 
 import 'dart:async';
 import 'dart:io';
@@ -226,17 +219,4 @@ abstract class ApiEndpoints {
   static const String deviceVoipToken = '/devices/voip-token';
   /// POST { deviceId } — remove one of this account's devices.
   static const String deviceRemove = '/devices/remove';
-
-  // Wallet
-  static const String walletRegister = '/wallet';
-  static String walletTokens(String walletId) => '/wallet/$walletId/tokens';
-  static const String walletPrices = '/wallet/prices';
-  static String walletTokenMetadata(String mint) =>
-      '/wallet/token-metadata/$mint';
-  static const String walletEnhancedHistory = '/wallet/enhanced-history';
-
-  // NFT
-  static const String nftCollection = '/nft/collection';
-  static String nftDetail(String mintAddress) => '/nft/$mintAddress';
-
 }

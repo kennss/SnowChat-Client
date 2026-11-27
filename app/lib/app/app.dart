@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef; a tap on a push
+/// @lastUpdated 2026-11-27 (wallet removed: the security alert no longer speaks of assets; comments
+///              no longer name wallet routes or the wallet's toasts). Earlier 2026-11-22 (no account or conversation id in a log line — logRef; a tap on a push
 ///              whose row is no message opens the Friends tab when it was a contact notice the queue
 ///              just handled, else the chat list). Earlier 2026-11-22 (watches contactSyncProvider — the contact backup's restore, block-tag
 ///              replace and periodic write while signed in; a friend notification's tap opens the
@@ -45,7 +46,7 @@
 /// @functions
 ///  - SnowChatApp: app root ConsumerWidget, configures MaterialApp.router
 ///  - snowTheme(): factory for Material ThemeData based on dark mode
-///  - rootScaffoldMessengerKey: global ScaffoldMessenger handle (Wallet V2 Phase F)
+///  - rootScaffoldMessengerKey: global ScaffoldMessenger handle (app-level SnackBars)
 
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -92,7 +93,7 @@ Future<bool> _isKeyguardLocked() async {
 ///
 /// Why finish on locked: MainActivity's manifest carries showWhenLocked=true
 /// so the call path can render /call without forcing PIN entry. That same
-/// flag would otherwise leave the underlying chat / wallet route visible
+/// flag would otherwise leave the underlying chat route visible
 /// on top of the keyguard once /call is popped — a security regression.
 /// SystemNavigator.pop() finishes the Activity, returning the user to
 /// the lock screen.
@@ -105,7 +106,7 @@ Future<void> _maybeFinishOnKeyguardElsePop(GoRouter router) async {
   }
   // Unlocked path: do nothing here. _CallRouteHost (router.dart) already
   // popped /call synchronously the moment status flipped to idle; the user
-  // is now on the underlying chat / wallet route they had open before the
+  // is now on the underlying chat route they had open before the
   // call, which is the desired UX when the device was already unlocked.
   diagLog('SnowChatDiag', '[idleClose] keyguard unlocked → no-op');
 }
@@ -114,9 +115,9 @@ Future<void> _maybeFinishOnKeyguardElsePop(GoRouter router) async {
 /// main navigator, so global dialog display reuses it.
 final securityAlertNavigatorKey = rootNavigatorKey;
 
-/// Wallet V2 Phase F — global ScaffoldMessenger handle. Used by TransferService
-/// to show toasts (transfer declined / failed / network mismatch, etc.) regardless
-/// of screen lifecycle. Wired to MaterialApp.scaffoldMessengerKey.
+/// Global ScaffoldMessenger handle: SnackBars that do not belong to one
+/// screen (the hard token expiry notice below) regardless of screen
+/// lifecycle. Wired to MaterialApp.scaffoldMessengerKey.
 final rootScaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
 /// 2026-05-07 Auto re-auth dedup flag.
@@ -631,7 +632,7 @@ class SnowChatApp extends ConsumerWidget {
                 content: const Text(
                   'Another device attempted to access your account.\n\n'
                   'If this wasn\'t you, your recovery phrase may be compromised. '
-                  'Consider creating a new identity and transferring your assets.',
+                  'Consider creating a new identity.',
                   style:
                       TextStyle(color: SnowColors.textSecondary, height: 1.5),
                 ),

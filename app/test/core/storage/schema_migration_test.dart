@@ -9,7 +9,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-13
-/// @lastUpdated 2026-11-22 (v17 → v18 marks the contact restore done with the block replace due — an
+/// @lastUpdated 2026-11-27 (v18 → v19: the four wallet tables and their indexes go, the other rows
+///              stay; the fresh install makes seven hand-made indexes, not ten). Earlier 2026-11-22 (v17 → v18 marks the contact restore done with the block replace due — an
 ///              install upgraded in place has no backup). Earlier 2026-11-22 (v17 → v18: the contacts table goes; contact_list, peer_names and
 ///              contact_sync_state come; blocked_accounts.nickname). Earlier 2026-11-21 (v16 → v17: direct_outbox and local_messages.peer_client_id with its
 ///              unique index). Earlier 2026-11-21 (v15 → v16: blocked_accounts; v14 → v15: gv2_backup_state.write_due_at_ms). Earlier 2026-11-20 (v13 → v14: only conversations keyed by a snowId or a v2 group id stay,
@@ -125,7 +126,7 @@ void main() {
     // Tables: the same set, each with the same columns.
     expect(await createdTables(db), await recordedTables(current));
 
-    // Indexes: every recorded one, plus exactly the ten older indexes that
+    // Indexes: every recorded one, plus exactly the seven older indexes that
     // onCreate makes by hand (they predate the recording and are not part of
     // the drift schema). Anything else is an index nobody recorded.
     final indexes = await createdIndexes(db);
@@ -139,9 +140,6 @@ void main() {
       'idx_conversations_active_time',
       'idx_attachments_message',
       'idx_attachments_pending',
-      'idx_wallet_balances_owner',
-      'idx_wallet_tx_cache_owner_time',
-      'idx_wallet_address_book_owner',
     });
 
     // Constraints and index definitions, as drift's own verifier compares them.
@@ -176,13 +174,19 @@ void main() {
       'peer_names',
       'contact_sync_state',
     });
-    // v18 dropped the never-written contacts table.
-    expect(before.keys, contains('contacts'));
-    expect(now.keys, isNot(contains('contacts')));
+    // v18 dropped the never-written contacts table, v19 the wallet tables.
+    const dropped = {
+      'contacts',
+      'wallet_balances',
+      'wallet_tx_cache',
+      'wallet_address_book',
+      'pending_transfers',
+    };
+    expect(before.keys.toSet().difference(now.keys.toSet()), dropped);
     // Everything else v10 had is unchanged, but for the one column v17
     // added to local_messages (the receiver's duplicate guard).
     for (final e in before.entries) {
-      if (e.key == 'contacts') continue;
+      if (dropped.contains(e.key)) continue;
       if (e.key == 'local_messages') {
         expect(now[e.key]!.where((c) => !c.startsWith('peer_client_id ')),
             e.value);
@@ -469,6 +473,56 @@ void main() {
     final again = await db.contactDao.ensureSyncState(periodMs: 7, nowMs: 100);
     expect(again.restored, isTrue);
     expect(again.periodMs, state.periodMs);
+  });
+
+  test('v18 → v19 drops the wallet tables and their indexes, keeps the rest',
+      () async {
+    final schema = await verifier.schemaAt(18);
+    final raw = schema.rawDatabase;
+    const peer = 'snow0123456789abcdef0123456789abcdef';
+    raw.execute(
+        'INSERT INTO conversations (id, type, participant_ids, created_at, updated_at) '
+        "VALUES (?, 'direct', '[]', 1, 2)",
+        [peer]);
+    raw.execute(
+        'INSERT INTO local_messages (id, conversation_id, sender_snowchat_id, '
+        "date_sent, date_received, plaintext) VALUES ('m1', ?, ?, 1, 2, 'kept')",
+        [peer, peer]);
+    raw.execute(
+        'INSERT INTO blocked_accounts (snow_id, blocked, synced, updated_at_ms) '
+        'VALUES (?, 1, 1, 5)',
+        [peer]);
+    // The hand-made wallet indexes an older onCreate / v4 step made.
+    raw.execute('CREATE INDEX idx_wallet_balances_owner '
+        'ON wallet_balances (owner_address, last_updated_ms DESC)');
+    raw.execute('CREATE INDEX idx_wallet_tx_cache_owner_time '
+        'ON wallet_tx_cache (owner_address, block_time DESC)');
+    raw.execute('CREATE INDEX idx_wallet_address_book_owner '
+        'ON wallet_address_book (owner_address, last_used_ms DESC)');
+
+    final db = SnowDatabase(schema.newConnection());
+    addTearDown(db.close);
+    await verifier.migrateAndValidate(db, 19, options: strict);
+
+    final tables = {
+      for (final r in await db.customSelect(listNames,
+          variables: [Variable.withString('table')]).get())
+        r.read<String>('name'),
+    };
+    expect(
+        tables.intersection({
+          'wallet_balances',
+          'wallet_tx_cache',
+          'wallet_address_book',
+          'pending_transfers',
+        }),
+        isEmpty);
+    final indexes = await createdIndexes(db);
+    expect(indexes.where((i) => i.startsWith('idx_wallet_')), isEmpty);
+
+    expect((await db.select(db.conversations).getSingle()).id, peer);
+    expect((await db.messageDao.getMessageById('m1'))!.plaintext, 'kept');
+    expect((await db.blockListDao.allRows()).single.snowId, peer);
   });
 
   test('a new install (no upgrade) makes the sync state on first use: not '

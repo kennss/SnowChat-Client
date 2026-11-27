@@ -8,7 +8,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-07
-/// @lastUpdated 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (review fixes: a contact notice is handed on with whether it answers one of
+/// @lastUpdated 2026-11-27 (wallet removed: no transfer-control branch — an old build's transfer_*
+///              notice reaches the queue as an unknown inner type and is consumed). Earlier
+///              2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (review fixes: a contact notice is handed on with whether it answers one of
 ///              this user's (onContactNotice's isAnswer), and its row id is remembered for a while —
 ///              wasContactNotice() — so a tap on its "New message" push opens the Friends tab; a read
 ///              receipt flips only this user's messages in the room of its authenticated sender; a
@@ -513,7 +515,7 @@ class MessageQueue {
           //    or partial writes that survived synchronous=FULL.
           // 3. Only after the verify do we enqueue the ack.
           final type = (item.envelope['type'] ?? '') as String;
-          // Consumed envelopes (session reset, transfer, sealed control, a
+          // Consumed envelopes (session reset, sealed control, a
           // retry response that filled its placeholder) and refused ones
           // leave no row of their own in localMessages. Skip drift-verify
           // and ACK directly.
@@ -764,10 +766,8 @@ class MessageQueue {
         await _applyDeleteChat(decrypted.senderSnowchatId);
       } else if (decrypted.metadata?['_isContactNotice'] == true) {
         await _applyContactNotice(decrypted, messageId);
-      } else if (decrypted.metadata?['_isTransferControl'] == true ||
-          decrypted.metadata?['_isUnknownType'] == true) {
-        // A wallet notice (dispatched by the decrypt) or a type this build
-        // does not know: consumed, nothing shown.
+      } else if (decrypted.metadata?['_isUnknownType'] == true) {
+        // A type this build does not know: consumed, nothing shown.
         debugPrint('[DIAG:SealedControl] $messageId consumed (no row)');
       } else {
         debugPrint('[DIAG:SealedControl] $messageId unknown control type — dropped');
@@ -1019,17 +1019,6 @@ class MessageQueue {
     // used.
     final convId = senderId;
     debugPrint('[DIAG:Sealed] $messageId decrypted');
-
-    // Wallet V2 Phase B (D2 P0-1 fix): skip transfer control messages (Sealed path).
-    // EncryptedMessageHandler's transfer_* dispatcher already emitted to TransferEventBus.
-    // No drift insert (avoids empty system bubble + noise).
-    if (decrypted.metadata != null &&
-        decrypted.metadata!['_isTransferControl'] == true) {
-      debugPrint('[DIAG:Sealed] $messageId TRANSFER_CONTROL — drift skip');
-      _enqueueAck(messageId);
-      envelope['_consumed'] = true;
-      return;
-    }
 
     // Sealed read receipt (2026-07-15): normally arrives as wire type
     // 'sealed_control' (handled by _processSealedControl). This branch is

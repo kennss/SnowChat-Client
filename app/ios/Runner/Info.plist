@@ -73,11 +73,11 @@
 	<key>NSCalendarsUsageDescription</key>
 	<string>SnowChat AI uses calendar access to help manage your schedule. All data stays on-device.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Camera access is used to scan Solana wallet addresses and Solana Pay QR codes.</string>
+	<string>SnowChat uses the camera to take photos you send in a chat and to scan QR codes for adding a friend or joining a community.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>SnowChat AI uses contacts to help find people. All data stays on-device.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Authenticate to confirm wallet actions.</string>
+	<string>SnowChat uses Face ID to unlock the app when you turn on biometric unlock.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>SnowChat AI uses location to answer location-based questions. All data stays on-device.</string>
 	<key>NSMicrophoneUsageDescription</key>

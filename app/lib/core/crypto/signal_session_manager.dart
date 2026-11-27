@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-23 (no account id in an exception message — they reach log lines; logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (contract §12.1: no account id in a URL path — the prekey bundle is POST /keys/prekeys/fetch and the identity directory POST /keys/identity/fetch, both { snowchatId }; ensureSessionBatch and its POST /keys/prekeys/batch are gone (no caller; the route is removed)). Earlier 2026-11-22 (SC-05: the session_reset notice goes only through sessionResetNotifier —
+/// @lastUpdated 2026-11-27 (getPeerEd25519PublicKey documented for its one remaining user, the
+///              call fingerprint check — the wallet that also read it is gone). Earlier 2026-11-23 (no account id in an exception message — they reach log lines; logRef). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (contract §12.1: no account id in a URL path — the prekey bundle is POST /keys/prekeys/fetch and the identity directory POST /keys/identity/fetch, both { snowchatId }; ensureSessionBatch and its POST /keys/prekeys/batch are gone (no caller; the route is removed)). Earlier 2026-11-22 (SC-05: the session_reset notice goes only through sessionResetNotifier —
 ///              a sealed control — never as a non-sealed private_message; the socket parameter is gone — nothing here sends). Earlier 2026-11-21 (legacy TOFU removed: no pending-key-change block or IdentityKeyChangedException; the identity store is always there; the peer Ed lookup admits only bound identities). Earlier 2026-11-20 (a peer whose directory device has no identity binding is refused — refuseUnbound(); v1 groups removed: the group Sender Key operations and saveGroupState() are gone. refreshPeerIdentity(): admit the peer's current directory identity and put aside sessions that do not match it — before a group invite, so that it is not sealed to an identity the peer no longer has. archivePeerSessions() is durable: the peer is recorded in secure storage first and the record cleared only once the store is saved; before initialize() only the record is made, and initialize() applies it right after loading the store — an archive asked for early is no longer lost. Optional sessionStorePath for tests. Earlier same day: archivePeerSessions(): a peer stated — with its own signature, group protocol v2 member_reset — that its sessions are gone; ours with it are archived and the next message starts a new one). Earlier 2026-11-13 (archiveAndResetSession(notifyPeer: false): group protocol v2 sends the first message of the new session itself, sealed over the group queue, instead of the non-sealed session_reset row). Earlier 2026-11-10 (B-2 Identity Binding v1: every POST /keys/prekeys body (full upload AND OPK replenish) carries identityKeyEd25519 + identityBinding; checkPreKeyCount() self-checks hasIdentityBinding/identityBindingEpoch against the server and repairs via PUT /keys/identity-binding; ensureSession picks the highest-epoch validly-bound device and never retries a hard identity rejection (memoized cooldown, no OPK burn); ensureSessionBatch is per-entry fault isolated; decrypt() hands the envelope deviceId + a cached non-consuming GET /keys/identity lookup to the Signal layer instead of pre-fetching a TOFU pin; the incoming deviceId is cached only after a verified decrypt; getPeerEd25519PublicKey returns the bound Ed (verified directory fallback). Removed dead _syncIdentityKeyToServer (posted keys without a binding)). Earlier 2026-05-05 (Fix A: pin-cache-first on msgType=2 decrypt — eliminates the ~500ms HTTP race that let sealed_call_signaling overtake an in-flight session_reset on long-idle pre-warm)
 ///
 /// @functions
@@ -16,7 +17,7 @@
 ///  - SignalSessionManager.ensureSession(): Ensure a session exists with the recipient (X3DH)
 ///  - SignalSessionManager.encrypt(): Encrypt a message
 ///  - SignalSessionManager.decrypt(): Decrypt a message
-///  - SignalSessionManager.getPeerEd25519PublicKey(): Peer Signal Ed25519 key — bound record first, verified identity-directory fallback (Wallet V2 Phase F)
+///  - SignalSessionManager.getPeerEd25519PublicKey(): Peer Signal Ed25519 key — bound record first, verified identity-directory fallback (call fingerprint check)
 ///  - SignalSessionManager.fetchIdentityDirectory(): Non-consuming GET /keys/identity/:snowId (parsed, uncached)
 ///  - SignalSessionManager.peekDeviceIdForIncoming(): Resolve the deviceId for an inbound envelope WITHOUT caching it
 ///  - SignalSessionManager.refreshLocalIdentityBinding(): Mint/reuse our binding and install it for type-2 embedding
@@ -1794,10 +1795,10 @@ class SignalSessionManager {
     return stored != null ? int.parse(stored) : 1;
   }
 
-  /// Wallet V2 Phase F — look up peer's Signal Ed25519 identity verify key.
+  /// Look up the peer's Signal Ed25519 identity verify key.
   ///
-  /// **Use**: TransferService's `_verifyWalletAddressSig` (P1-5) — verify
-  /// the Ed25519 signature on the walletAddress the peer responded with.
+  /// **Use**: CallService (SC-10) — verifies the signature the peer put on
+  /// its call fingerprint (providers.dart wires it as peerFingerprintKey).
   ///
   /// **Lookup priority (B-2)**:
   /// 1. VerifiedIdentityStore bound record → the account-signed Ed.

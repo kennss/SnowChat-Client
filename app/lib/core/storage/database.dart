@@ -12,10 +12,14 @@
 ///              Schema v18: the friend list moves to this device — contact_list, peer_names,
 ///              contact_sync_state (ContactDao) replace the unused contacts table;
 ///              blocked_accounts.nickname
+///              Schema v19: the wallet tables go — wallet_balances, wallet_tx_cache,
+///              wallet_address_book, pending_transfers (the wallet was removed from the app)
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (the v17 → v18 upgrade writes the contact sync state as restored with
+/// @lastUpdated 2026-11-27 (v19: the four wallet tables, their DAOs and their hand-made indexes are
+///              gone; an upgrade drops the tables — the v4 / v9 steps that created them create
+///              nothing now). Earlier 2026-11-22 (the v17 → v18 upgrade writes the contact sync state as restored with
 ///              the block replace pending: an install upgraded in place has no backup to restore and
 ///              its block list goes to the server as a whole — design §5.10). Earlier 2026-11-22 (v18: contact_list / peer_names / contact_sync_state and ContactDao
 ///              replace the unused contacts table; blocked_accounts.nickname — design
@@ -36,12 +40,8 @@ import 'tables/conversations_table.dart';
 import 'tables/contacts_table.dart';
 import 'tables/sessions_table.dart';
 import 'tables/attachments_table.dart';
-import 'tables/wallet_balances_table.dart';
-import 'tables/wallet_tx_cache_table.dart';
-import 'tables/wallet_address_book_table.dart';
 import 'tables/ai_messages_table.dart';
 import 'tables/identity_verifications_table.dart';
-import 'tables/pending_transfers_table.dart';
 import 'tables/gv2_tables.dart';
 import 'tables/blocked_accounts_table.dart';
 import 'tables/direct_outbox_table.dart';
@@ -50,12 +50,8 @@ import 'tables/direct_outbox_table.dart';
 import 'daos/message_dao.dart';
 import 'daos/conversation_dao.dart';
 import 'daos/attachment_dao.dart';
-import 'daos/wallet_balance_dao.dart';
-import 'daos/wallet_tx_cache_dao.dart';
-import 'daos/wallet_address_book_dao.dart';
 import 'daos/ai_message_dao.dart';
 import 'daos/identity_verification_dao.dart';
-import 'daos/pending_transfer_dao.dart';
 import 'daos/block_list_dao.dart';
 import 'daos/direct_outbox_dao.dart';
 import 'daos/contact_dao.dart';
@@ -84,12 +80,8 @@ part 'database.g.dart';
     SignalSessions,
     SignalPreKeys,
     LocalAttachments,
-    WalletBalances,
-    WalletTxCache,
-    WalletAddressBook,
     AiMessages,
     IdentityVerifications,
-    PendingTransfers,
     Gv2Groups,
     Gv2Members,
     Gv2Pending,
@@ -114,12 +106,8 @@ part 'database.g.dart';
     MessageDao,
     ConversationDao,
     AttachmentDao,
-    WalletBalanceDao,
-    WalletTxCacheDao,
-    WalletAddressBookDao,
     AiMessageDao,
     IdentityVerificationDao,
-    PendingTransferDao,
     Gv2Store,
     Gv2InboxStore,
     BlockListDao,
@@ -133,7 +121,7 @@ class SnowDatabase extends _$SnowDatabase {
   SnowDatabase(super.e);
 
   @override
-  int get schemaVersion => 18;
+  int get schemaVersion => 19;
 
   @override
   MigrationStrategy get migration {
@@ -159,7 +147,6 @@ class SnowDatabase extends _$SnowDatabase {
         sw.reset();
         await _createCustomIndexes();
         await _createAttachmentIndexes();
-        await _createWalletIndexes();
         debugPrint('[Perf] 💾 drift onCreate indexes: ${sw.elapsedMilliseconds}ms');
       },
       onUpgrade: (m, from, to) async {
@@ -225,13 +212,6 @@ class SnowDatabase extends _$SnowDatabase {
           await m.createTable(localAttachments);
           await _createAttachmentIndexes();
         }
-        if (from < 4) {
-          // Phase 6.1 §3.1/§3.2/§3.5: create wallet cache / transaction / address book tables
-          await m.createTable(walletBalances);
-          await m.createTable(walletTxCache);
-          await m.createTable(walletAddressBook);
-          await _createWalletIndexes();
-        }
         if (from < 5) {
           // Phase 10: AI messages table
           await m.createTable(aiMessages);
@@ -249,11 +229,6 @@ class SnowDatabase extends _$SnowDatabase {
         if (from < 8) {
           // P0-2 Safety Number: per-peer verification + TOFU mismatch latch.
           await m.createTable(identityVerifications);
-        }
-        if (from < 9) {
-          // Wallet V2 Phase 1: persist in-flight tx for in-chat transfers (P0-1, P0-2).
-          // recoverPending() looks up RPC results for status='sent' rows.
-          await m.createTable(pendingTransfers);
         }
         if (from < 10) {
           // V1 reply-quote fix (2026-05-08) — replyToPreview and
@@ -390,6 +365,17 @@ class SnowDatabase extends _$SnowDatabase {
             blocksReplacePending: const Value(true),
           ));
         }
+        if (from < 19 && to >= 19) {
+          // The wallet was removed from the app (2026-11-27): its balance
+          // cache, transaction cache, address book and in-flight transfers
+          // go. DROP TABLE IF EXISTS — v4 and v9 created them, and a database
+          // below those versions upgrades without them now; their indexes go
+          // with the tables.
+          await m.deleteTable('wallet_balances');
+          await m.deleteTable('wallet_tx_cache');
+          await m.deleteTable('wallet_address_book');
+          await m.deleteTable('pending_transfers');
+        }
         debugPrint('[Perf] 💾 drift onUpgrade complete: ${sw.elapsedMilliseconds}ms');
       },
     );
@@ -432,25 +418,6 @@ class SnowDatabase extends _$SnowDatabase {
     await customStatement('''
       CREATE INDEX IF NOT EXISTS idx_conversations_active_time
       ON conversations (is_active, last_message_time DESC)
-    ''');
-  }
-
-  /// Wallet cache indexes for Phase 6.1 Step 2.
-  Future<void> _createWalletIndexes() async {
-    // Balance: per-owner latest lookup
-    await customStatement('''
-      CREATE INDEX IF NOT EXISTS idx_wallet_balances_owner
-      ON wallet_balances (owner_address, last_updated_ms DESC)
-    ''');
-    // Transaction cache: per-owner chronological
-    await customStatement('''
-      CREATE INDEX IF NOT EXISTS idx_wallet_tx_cache_owner_time
-      ON wallet_tx_cache (owner_address, block_time DESC)
-    ''');
-    // Address book: per-owner most-recently-used order
-    await customStatement('''
-      CREATE INDEX IF NOT EXISTS idx_wallet_address_book_owner
-      ON wallet_address_book (owner_address, last_used_ms DESC)
     ''');
   }
 

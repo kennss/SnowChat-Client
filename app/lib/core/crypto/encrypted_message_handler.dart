@@ -3,7 +3,9 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-22 (review fixes: every sealed 1:1 plaintext is padded with spaces to a multiple
+/// @lastUpdated 2026-11-27 (wallet removed: no transfer_* dispatcher, validators or transfer bus
+///              and no solana import — an inner transfer_* type is now an unknown type, consumed
+///              and never shown (_isUnknownType)). Earlier 2026-11-22 (review fixes: every sealed 1:1 plaintext is padded with spaces to a multiple
 ///              of sealedPlaintextBlock (512 bytes — encodeSealedPlaintext), so a contact notice, a
 ///              short message with a name certificate and one without travel in envelopes of the same
 ///              size; sendSealedMessage takes the wire id from its caller (wireMessageId — the 1:1
@@ -34,7 +36,7 @@
 ///  - EncryptedMessageHandler: E2EE message encrypt/decrypt handler class (sealed 1:1 only)
 ///  - EncryptedMessageHandler.getDecryptedFileBytes(): Extract fileId/fileKey from message metadata, download and decrypt
 ///  - EncryptedMessageHandler.sendSealedMessage(): Send Sealed Sender 1:1 encrypted message (seal() wraps DR ciphertext)
-///  - EncryptedMessageHandler.sendSealedPayload(): Seal a raw inner payload (contact notices, wallet notices) after refreshing the peer's identity
+///  - EncryptedMessageHandler.sendSealedPayload(): Seal a raw inner payload (contact notices) after refreshing the peer's identity
 ///  - EncryptedMessageHandler.sendSealedSessionReset(): Sealed control telling the peer this device re-established the session
 ///  - EncryptedMessageHandler.sendSealedReadReceipt() / sendSealedUnsend() / sendSealedDeleteChat(): silent sealed controls
 ///  - EncryptedMessageHandler.sendSealedGroupInvite(): the group protocol v2 invite over the sealed 1:1 path
@@ -42,27 +44,17 @@
 ///  - newWireMessageId(): a random UUID for a sealed send's wire clientMessageId
 ///  - encodeSealedPlaintext(): the inner JSON as UTF-8, padded with spaces to a multiple of
 ///    sealedPlaintextBlock
-///  - EncryptedMessageHandler._tryDispatchTransfer(): wallet V2 Phase B — transfer_* type dispatch + EventBus emit
-///  - EncryptedMessageHandler._validateTransferRequest(): Validate UUID v4 / amount / decimals / mint / sentAt
-///  - EncryptedMessageHandler._validateTransferResponse(): Validate walletAddress / Sig / ataRentLamports
-///  - EncryptedMessageHandler._validateTransferCompleted(): Validate txHash non-empty Base58
-///  - EncryptedMessageHandler._validateTransferFailed(): Validate requestId UUID v4
-///  - EncryptedMessageHandler._isValidUuidV4(): UUID v4 regex validation (replay window guard)
-///  - EncryptedMessageHandler._isValidBase58Address(): Solana Base58 32-byte validation (Ed25519HDPublicKey.fromBase58)
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
-import 'package:solana/solana.dart' show Ed25519HDPublicKey;
 import 'package:uuid/uuid.dart';
 
 import '../blocking/block_list.dart' show BlockedSenderException;
 import '../contacts/contact_notice.dart';
 import '../../features/chat/models/message.dart';
-import '../../features/wallet/models/transfer_request.dart';
-import '../../features/wallet/services/transfer_event_bus.dart';
 import '../network/file_service.dart';
 import '../group_v2/gv2_invite.dart' show gv2InviteInnerType;
 import '../network/socket_manager.dart';
@@ -161,12 +153,6 @@ class EncryptedMessageHandler {
     _senderCertificateManager = manager;
   }
 
-  /// Wallet V2 Phase B (2026-04-20): emit target after transfer_request /
-  /// response / completed / failed payload dispatch. When null, transfer_*
-  /// payloads are silent dropped (defensive against wallet module disabled
-  /// environments). In production providers.dart always injects this.
-  final TransferEventBus? _transferEventBus;
-
   /// In-flight decrypt futures: prevents double-decryption when two callers
   /// ask decryptSealedMessage for the same envelope at the same time.
   ///
@@ -186,7 +172,6 @@ class EncryptedMessageHandler {
     FileService? fileService,
     SealedSenderService? sealedSenderService,
     SenderCertificateManager? senderCertificateManager,
-    TransferEventBus? transferEventBus,
     required Future<bool> Function(String snowId) isBlocked,
     this.onNewInboundSession,
   })  : _sessionManager = sessionManager,
@@ -194,7 +179,6 @@ class EncryptedMessageHandler {
         _fileService = fileService,
         _sealedSenderService = sealedSenderService,
         _senderCertificateManager = senderCertificateManager,
-        _transferEventBus = transferEventBus,
         _isBlocked = isBlocked;
 
   /// Whether an account is blocked (BlockList.isBlocked): what it sent is
@@ -325,7 +309,7 @@ class EncryptedMessageHandler {
   }
 
   /// Seal [payload] — a whole inner JSON object with its own `type` (a
-  /// contact notice, a wallet transfer notice) — to [recipientId] and hand
+  /// contact notice) — to [recipientId] and hand
   /// it to the socket; [onAck] gets the server's answer. [control] sends it
   /// as a silent `sealed_control` row (no push); otherwise as an ordinary
   /// sealed row, pushed like a message.
@@ -741,8 +725,8 @@ class EncryptedMessageHandler {
       );
 
       // X1: the certificate-authenticated sender is an account this user
-      // blocked — refused before anything of it is acted on (a transfer
-      // control, a read receipt, an unsend, a group invite, a message).
+      // blocked — refused before anything of it is acted on (a read
+      // receipt, an unsend, a group invite, a contact notice, a message).
       if (await _isBlocked(senderId)) throw const BlockedSenderException();
 
       // A prekey message: the peer started a new session (first contact, a
@@ -762,19 +746,6 @@ class EncryptedMessageHandler {
       // The room is the certificate-authenticated sender's — never a
       // conversation id the envelope names.
       final resolvedConversationId = senderId;
-
-      // Wallet V2 Phase B (2026-04-20): transfer_* type dispatch (Sealed path).
-      // Goes through the same dispatcher as the normal 1:1 path — the sender
-      // identity from the unsealed Sealed Sender envelope is used as
-      // fromSnowchatId (authenticity guaranteed).
-      final transferMsg = _tryDispatchTransfer(
-        payload: payload,
-        senderSnowchatId: senderId,
-        messageId: messageId,
-        conversationId: resolvedConversationId,
-        timestamp: timestamp,
-      );
-      if (transferMsg != null) return transferMsg;
 
       // Sealed read receipt (2026-07-15): silent E2EE control — the peer
       // read our messages. Surfaced via metadata so MessageQueue's control
@@ -1015,288 +986,6 @@ class EncryptedMessageHandler {
     }
     return downloadAndDecryptFile(metadata);
   }
-
-  // ---------------------------------------------------------------------------
-  // Wallet V2 Phase B — transfer_* dispatcher
-  // ---------------------------------------------------------------------------
-
-  /// UUID v4 regex (lowercase hex, version=4, variant=89ab).
-  /// Spec §5.15: replay window guard — strict format validation for `requestId`.
-  /// e.g. `1f4e2c0a-1234-4abc-89ab-0123456789ab`
-  static final RegExp _uuidV4Re = RegExp(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-  );
-
-  /// Transfer payload replay window — reject if `sentAt` falls outside
-  /// now ± 24h. Blocks malicious peers attaching very old or future
-  /// timestamps to attempt redelivery / fingerprinting.
-  static const Duration _transferReplayWindow = Duration(hours: 24);
-
-  /// Wallet V2 Phase B (Spec §5.15): if payload['type'] is transfer_*,
-  /// emit on TransferEventBus and return a system Message marking to caller.
-  ///
-  /// **Return value**:
-  /// - `null` → not a transfer payload (caller handles as normal message)
-  /// - `Message` (system type, plaintext='', metadata includes wireType) →
-  ///   transfer handled. The caller identifies via
-  ///   metadata['_isTransferControl'] and branches drift insert / UI
-  ///   (Phase G unification planned).
-  ///
-  /// **Validation failure is silent drop** (spec §5.15): no TransferFailed
-  /// is sent — no response to malicious peers (auto-response could be
-  /// abused as an amplification attack).
-  ///
-  /// **try/catch wrapper**: unguarded casts in model-level fromJson would,
-  /// on field missing / type mismatch, raise an unhandled `TypeError` →
-  /// killing the E2EE handler isolate. The dispatcher catches all to
-  /// protect the isolate.
-  Message? _tryDispatchTransfer({
-    required Map<String, dynamic> payload,
-    required String senderSnowchatId,
-    required String messageId,
-    required String conversationId,
-    required DateTime timestamp,
-  }) {
-    final wireType = payload['type'];
-    if (wireType is! String) return null;
-
-    switch (wireType) {
-      case TransferMessageType.request:
-        try {
-          final req = TransferRequest.fromJson(payload);
-          if (!_validateTransferRequest(req)) {
-            debugPrint('[Transfer] invalid transfer_request fields, drop');
-            return _transferControlMessage(
-              messageId: messageId,
-              conversationId: conversationId,
-              senderSnowchatId: senderSnowchatId,
-              timestamp: timestamp,
-              wireType: wireType,
-            );
-          }
-          debugPrint('[Transfer] dispatch request requestId=${req.requestId} '
-              'bus=${_transferEventBus == null ? "NULL" : _transferEventBus.hashCode}');
-          _transferEventBus?.addRequest(senderSnowchatId, req);
-        } catch (e) {
-          debugPrint('[Transfer] malformed transfer_request: $e');
-        }
-        return _transferControlMessage(
-          messageId: messageId,
-          conversationId: conversationId,
-          senderSnowchatId: senderSnowchatId,
-          timestamp: timestamp,
-          wireType: wireType,
-        );
-
-      case TransferMessageType.response:
-        try {
-          final resp = TransferResponse.fromJson(payload);
-          if (!_validateTransferResponse(resp)) {
-            debugPrint('[Transfer] invalid transfer_response fields, drop');
-            return _transferControlMessage(
-              messageId: messageId,
-              conversationId: conversationId,
-              senderSnowchatId: senderSnowchatId,
-              timestamp: timestamp,
-              wireType: wireType,
-            );
-          }
-          debugPrint('[Transfer] dispatch response requestId=${resp.requestId} '
-              'accepted=${resp.accepted} bus=${_transferEventBus == null ? "NULL" : _transferEventBus.hashCode}');
-          _transferEventBus?.addResponse(senderSnowchatId, resp);
-        } catch (e) {
-          debugPrint('[Transfer] malformed transfer_response: $e');
-        }
-        return _transferControlMessage(
-          messageId: messageId,
-          conversationId: conversationId,
-          senderSnowchatId: senderSnowchatId,
-          timestamp: timestamp,
-          wireType: wireType,
-        );
-
-      case TransferMessageType.completed:
-        try {
-          final c = TransferCompleted.fromJson(payload);
-          if (!_validateTransferCompleted(c)) {
-            debugPrint('[Transfer] invalid transfer_completed fields, drop');
-            return _transferControlMessage(
-              messageId: messageId,
-              conversationId: conversationId,
-              senderSnowchatId: senderSnowchatId,
-              timestamp: timestamp,
-              wireType: wireType,
-            );
-          }
-          debugPrint('[Transfer] dispatch completed requestId=${c.requestId} '
-              'bus=${_transferEventBus == null ? "NULL" : _transferEventBus.hashCode}');
-          _transferEventBus?.addCompleted(senderSnowchatId, c);
-        } catch (e) {
-          debugPrint('[Transfer] malformed transfer_completed: $e');
-        }
-        return _transferControlMessage(
-          messageId: messageId,
-          conversationId: conversationId,
-          senderSnowchatId: senderSnowchatId,
-          timestamp: timestamp,
-          wireType: wireType,
-        );
-
-      case TransferMessageType.failed:
-        try {
-          final f = TransferFailed.fromJson(payload);
-          if (!_validateTransferFailed(f)) {
-            debugPrint('[Transfer] invalid transfer_failed fields, drop');
-            return _transferControlMessage(
-              messageId: messageId,
-              conversationId: conversationId,
-              senderSnowchatId: senderSnowchatId,
-              timestamp: timestamp,
-              wireType: wireType,
-            );
-          }
-          debugPrint('[Transfer] dispatch failed requestId=${f.requestId} '
-              'reason=${f.reason.toJson()} bus=${_transferEventBus == null ? "NULL" : _transferEventBus.hashCode}');
-          _transferEventBus?.addFailed(senderSnowchatId, f);
-        } catch (e) {
-          debugPrint('[Transfer] malformed transfer_failed: $e');
-        }
-        return _transferControlMessage(
-          messageId: messageId,
-          conversationId: conversationId,
-          senderSnowchatId: senderSnowchatId,
-          timestamp: timestamp,
-          wireType: wireType,
-        );
-
-      default:
-        return null; // normal message
-    }
-  }
-
-  /// Marking Message returned to the caller by the transfer_* dispatcher.
-  /// In Phase G, message_queue will inspect metadata['_isTransferControl']
-  /// and branch drift insert policy (request/response/failed are skipped;
-  /// completed is converted into a permanent system message after RPC
-  /// verification).
-  static Message _transferControlMessage({
-    required String messageId,
-    required String conversationId,
-    required String senderSnowchatId,
-    required DateTime timestamp,
-    required String wireType,
-  }) {
-    return Message(
-      id: messageId,
-      conversationId: conversationId,
-      senderSnowchatId: senderSnowchatId,
-      plaintext: '',
-      timestamp: timestamp,
-      type: MessageType.system,
-      status: MessageStatus.delivered,
-      metadata: <String, dynamic>{
-        '_isTransferControl': true,
-        'wireType': wireType,
-      },
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Wallet V2 Phase B — field validation helpers (spec §5.15)
-  // ---------------------------------------------------------------------------
-
-  /// Validate transfer_request — UUID v4 / amount > 0 / decimals 0~18 / mint
-  /// (SOL→null, SPL/NFT→Base58) / sentAt now ± 24h.
-  bool _validateTransferRequest(TransferRequest req) {
-    if (!_isValidUuidV4(req.requestId)) return false;
-
-    // amount BigInt-safe + positive
-    final amount = BigInt.tryParse(req.amount);
-    if (amount == null || amount <= BigInt.zero) return false;
-
-    // decimals range
-    if (req.decimals < 0 || req.decimals > 18) return false;
-
-    // mint vs token consistency
-    switch (req.token) {
-      case TokenType.sol:
-        if (req.mint != null) return false; // SOL must have no mint
-        break;
-      case TokenType.spl:
-      case TokenType.nft:
-        final mint = req.mint;
-        if (mint == null || !_isValidBase58Address(mint)) return false;
-        break;
-    }
-
-    // sentAt now ± 24h (replay window)
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final windowMs = _transferReplayWindow.inMilliseconds;
-    if ((req.sentAt - nowMs).abs() > windowMs) return false;
-
-    return true;
-  }
-
-  /// Validate transfer_response — UUID v4 + when accepted=true, walletAddress
-  /// / walletAddressSig non-null + Base58 + ataRentLamports >= 0.
-  bool _validateTransferResponse(TransferResponse resp) {
-    if (!_isValidUuidV4(resp.requestId)) return false;
-
-    if (resp.accepted) {
-      // accepted=true branch: walletAddress + sig required (P1-5)
-      final addr = resp.walletAddress;
-      final sig = resp.walletAddressSig;
-      if (addr == null || addr.isEmpty) return false;
-      if (sig == null || sig.isEmpty) return false;
-      if (!_isValidBase58Address(addr)) return false;
-    }
-
-    // ataRentLamports >= 0 when non-null
-    final rent = resp.ataRentLamports;
-    if (rent != null && rent < 0) return false;
-
-    return true;
-  }
-
-  /// Validate transfer_completed — UUID v4 + txHash non-empty Base58 (~64 chars).
-  bool _validateTransferCompleted(TransferCompleted c) {
-    if (!_isValidUuidV4(c.requestId)) return false;
-    if (c.txHash.isEmpty) return false;
-    // txHash is a Solana signature (Base58-encoded 64-byte) — typically
-    // 87~88 chars. Ed25519HDPublicKey.fromBase58 is for 32-byte public keys
-    // only, so it's unfit for signature validation → only validate Base58
-    // alphabet + length range.
-    if (!_isBase58SignatureLike(c.txHash)) return false;
-    return true;
-  }
-
-  /// Validate transfer_failed — UUID v4 (reason is enum, fromJson throws).
-  bool _validateTransferFailed(TransferFailed f) {
-    return _isValidUuidV4(f.requestId);
-  }
-
-  /// Whether [s] is in UUID v4 format (lowercase hex).
-  bool _isValidUuidV4(String s) => _uuidV4Re.hasMatch(s);
-
-  /// Solana address = Ed25519 32-byte public key Base58. `solana` package's
-  /// `Ed25519HDPublicKey.fromBase58` is a strict parse — validates
-  /// length / alphabet / decoded byte length. Returns false on throw.
-  bool _isValidBase58Address(String addr) {
-    try {
-      Ed25519HDPublicKey.fromBase58(addr);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Validate Solana transaction signature Base58 format. Ed25519 signatures
-  /// are 64 bytes → 86~88 chars when Base58-encoded (varies). Unlike public
-  /// keys, the package has no 32-byte enforcing tool, so we fall back to
-  /// regex.
-  static final RegExp _base58SigRe =
-      RegExp(r'^[1-9A-HJ-NP-Za-km-z]{43,90}$');
-  bool _isBase58SignatureLike(String s) => _base58SigRe.hasMatch(s);
 
   // ---------------------------------------------------------------------------
   // Private helpers

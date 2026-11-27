@@ -1,9 +1,9 @@
 /// @file        attachment_picker_sheet.dart
-/// @description Attachment picker bottom sheet — gallery (multi), camera, file pick, add friend, Send Asset (Wallet V2 Phase F)
+/// @description Attachment picker bottom sheet — gallery (multi), camera, file pick, add friend
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-04-02
-/// @lastUpdated 2026-05-11 (Tier 2A expanded: in disappearing mode the "File"
+/// @lastUpdated 2026-11-27 (wallet removed: no Send Asset option). Earlier 2026-05-11 (Tier 2A expanded: in disappearing mode the "File"
 ///              option stays visible but the picker is constrained to PDF /
 ///              TXT / MD via FilePicker.platform.pickFiles(type:
 ///              FileType.custom, allowedExtensions:[...]). These three types
@@ -17,7 +17,7 @@
 ///              Wallet V2 Phase F Send Asset 1:1 only.)
 ///
 /// @functions
-///  - AttachmentPickerSheet: bottom-sheet widget showing attachment-pick options (+ add friend + Send Asset)
+///  - AttachmentPickerSheet: bottom-sheet widget showing attachment-pick options (+ add friend)
 
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -25,7 +25,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../shared/constants/colors.dart';
 
 /// Bottom sheet for selecting attachments (WhatsApp-style).
-/// Supports: Gallery (multi-select), Camera, File picker, Add Friend, Send Asset.
+/// Supports: Gallery (multi-select), Camera, File picker, Add Friend.
 class AttachmentPickerSheet extends StatelessWidget {
   /// Called with list of image file paths (1~10).
   final void Function(List<String> paths) onImagesSelected;
@@ -36,10 +36,6 @@ class AttachmentPickerSheet extends StatelessWidget {
 
   /// Called when user taps "Add Friend". Null = hide option.
   final VoidCallback? onAddFriend;
-
-  /// Called when user taps "Send Asset". Null = hide option (group/channel).
-  /// Wallet V2 Phase 1 — shown only in 1:1 rooms (group/channel is a V1 limit).
-  final VoidCallback? onSendAsset;
 
   /// Tier 2A — when the conversation has an active disappearing TTL we
   /// restrict attachments to photos only. The "File" option is hidden and
@@ -54,7 +50,6 @@ class AttachmentPickerSheet extends StatelessWidget {
     required this.onImagesSelected,
     required this.onFileSelected,
     this.onAddFriend,
-    this.onSendAsset,
     this.disappearingActive = false,
   });
 
@@ -132,17 +127,6 @@ class AttachmentPickerSheet extends StatelessWidget {
                 onTap: () {
                   Navigator.pop(context);
                   onAddFriend!();
-                },
-              ),
-            if (onSendAsset != null)
-              _buildOption(
-                context,
-                icon: Icons.account_balance_wallet_rounded,
-                color: SnowColors.primary,
-                label: 'Send Asset',
-                onTap: () {
-                  Navigator.pop(context);
-                  onSendAsset!();
                 },
               ),
           ],

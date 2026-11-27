@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-23 (no display name in a log line). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (setProfile: a nickname the server took drops this account's cached
+/// @lastUpdated 2026-11-27 (wallet removed: sign-up, restore and register derive and register no
+///              wallet — _deriveAndRegisterWallet / _deriveWalletLocally are gone). Earlier 2026-11-23 (no display name in a log line). Earlier 2026-11-22 (no account or conversation id in a log line — logRef). Earlier 2026-11-22 (setProfile: a nickname the server took drops this account's cached
 ///              name certificate — NameCertService.invalidateOwn). Earlier 2026-11-22 (friend graph off the server: sign-up never overwrites an identity on this
 ///              device — createIdentity() reuses the one an earlier attempt made (IdentityManager
 ///              refuses to overwrite) and an account the server already knows goes on to log in;
@@ -17,11 +18,10 @@
 ///  - OnboardingNotifier: StateNotifier managing onboarding state
 ///  - onboardingProvider: StateNotifierProvider exposing onboarding state
 ///  - setProfile(nickname, kind, passcode): set the nickname and the app passcode (PasscodeStore)
-///  - createIdentity(): create new identity, derive wallet keypair, server register, authenticate, upload prekeys
-///  - restoreIdentity(): restore identity from mnemonic, restore wallet, authenticate, upload prekeys
+///  - createIdentity(): create new identity, server register, authenticate, upload prekeys
+///  - restoreIdentity(): restore identity from mnemonic, authenticate, upload prekeys
 ///  - proceedToVerify(): advance to verification step
 ///  - completeVerification(): finish verification and complete onboarding
-///  - _deriveAndRegisterWallet(): derive wallet keypair and register on server (POST /wallet)
 ///  - _uploadPreKeysWithRetry(): upload prekeys (up to 3 retries)
 
 import 'dart:async';
@@ -31,11 +31,9 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
-import '../../app/app_config.dart';
 import '../../app/providers.dart';
 import '../../core/network/api_endpoints.dart';
 import '../../core/security/passcode.dart';
-import '../wallet/wallet_provider.dart' hide secureStorageProvider;
 import '../../core/diagnostics/log_ref.dart';
 
 // --- Onboarding state ---
@@ -242,10 +240,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         // 'will retry later' path) is what created the CCC bug.
         await _uploadPreKeysWithRetry();
 
-        // Step 5: Derive wallet keypair and register with server.
-        await _deriveAndRegisterWallet(mnemonic.join(' '));
-
-        // Step 6: A new account writes its empty contact backup now (the
+        // Step 5: A new account writes its empty contact backup now (the
         // server learns a backup exists at sign-up, not with the first
         // contact). An existing account restores from its backup instead.
         if (newAccount) {
@@ -369,16 +364,6 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
                 '(will retry on next socket reconnect): $e');
           }));
           _mark('uploadPreKeys SCHEDULED (background)');
-
-          // Step 5: Restore wallet keypair — also fire-and-forget (867ms).
-          // Wallet state is only needed when user opens the Wallet tab,
-          // which requires at least one more navigation step.
-          unawaited(_deriveAndRegisterWallet(words.join(' '))
-              .timeout(const Duration(seconds: 5))
-              .catchError((_) {
-            debugPrint('[Onboarding] Background wallet registration failed');
-          }));
-          _mark('deriveAndRegisterWallet SCHEDULED (background)');
         } catch (e) {
           debugPrint('[Onboarding] Authentication failed: $e');
 
@@ -396,18 +381,6 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
           }
 
           isNewUser = true;
-        }
-      }
-
-      // Derive wallet locally if not already done (non-blocking, 5s timeout)
-      if (isNewUser) {
-        try {
-          await _deriveWalletLocally(words.join(' '))
-              .timeout(const Duration(seconds: 5));
-          _mark('deriveWalletLocally');
-        } catch (_) {
-          _mark('deriveWalletLocally (timeout)');
-          debugPrint('[Onboarding] Local wallet derivation timed out (non-fatal)');
         }
       }
 
@@ -482,7 +455,7 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
         return false;
       }
 
-      // Step 3: Upload prekeys + register wallet.
+      // Step 3: Upload prekeys.
       // Phase 8.7 round 4: rethrow on final failure (was silent before).
       try {
         await _uploadPreKeysWithRetry();
@@ -494,10 +467,6 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
               'Please check your connection and try again.',
         );
         return false;
-      }
-      final mnemonic = state.mnemonic;
-      if (mnemonic != null) {
-        await _deriveAndRegisterWallet(mnemonic.join(' '));
       }
       // A new account: the empty contact backup (see createIdentity).
       if (newAccount) {
@@ -546,40 +515,6 @@ class OnboardingNotifier extends StateNotifier<OnboardingState> {
       debugPrint('[Onboarding] Auto-joined channel via invite: $code');
     } catch (e) {
       debugPrint('[Onboarding] Auto-join failed: $e');
-    }
-  }
-
-  /// Derive wallet keypair from mnemonic and register with server.
-  /// KeypairManager.createWallet() handles both derivation and server registration.
-  Future<void> _deriveAndRegisterWallet(String mnemonic) async {
-    // Wallet compiled out: no keypair, no server registration, and none of
-    // the balance, price and token-list lookups that follow it (Solana RPC,
-    // CoinGecko, Jupiter) — each told a third party this device's address
-    // for a feature the user cannot see. The recovery phrase is kept by
-    // IdentityManager, so a build that turns the wallet on can derive it then.
-    if (!AppConfig.enableWallet) return;
-    try {
-      final walletNotifier = _ref.read(walletProvider.notifier);
-      await walletNotifier.createFromMnemonic(mnemonic);
-
-      final walletState = _ref.read(walletProvider);
-      if (walletState.publicKey != null) {
-        debugPrint('[Onboarding] Wallet derived: ${walletState.publicKey}');
-      }
-    } catch (e) {
-      debugPrint('[Onboarding] Wallet derivation failed: $e');
-    }
-  }
-
-  /// Derive wallet keypair locally without server registration.
-  Future<void> _deriveWalletLocally(String mnemonic) async {
-    if (!AppConfig.enableWallet) return; // see _deriveAndRegisterWallet
-    try {
-      final walletNotifier = _ref.read(walletProvider.notifier);
-      await walletNotifier.createFromMnemonic(mnemonic);
-      debugPrint('[Onboarding] Wallet derived locally');
-    } catch (e) {
-      debugPrint('[Onboarding] Local wallet derivation failed: $e');
     }
   }
 

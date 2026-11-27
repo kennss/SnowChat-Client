@@ -74,7 +74,7 @@
              logic: /call is the only route pushed via the Accept flow, and
              when it ends with the keyguard still locked we run
              SystemNavigator.pop() to finish this Activity instead of
-             popping into the underlying chat/wallet route. That post-call
+             popping into the underlying chat route. That post-call
              finish closes the only meaningful security gap of this setup.
         -->
         <activity

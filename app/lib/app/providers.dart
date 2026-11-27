@@ -1,9 +1,11 @@
 /// @file        providers.dart
-/// @description Global Riverpod providers. DI for auth, crypto, network, storage, Solana network services.
+/// @description Global Riverpod providers. DI for auth, crypto, network, storage, messaging, calls.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-23 (callProvider gets the "Show caller name on calls" reader — SettingsNotifier.callShowCallerNameForCall). Earlier 2026-11-22 (notificationServiceProvider no longer asks the microphone — askStartupPrompts in PushService owns the start prompts). Earlier 2026-11-22 (review fixes: contactSyncProvider runs a ContactSyncRunner — one run at a
+/// @lastUpdated 2026-11-27 (wallet removed: no solanaNetworkProvider, no transferEventBusProvider,
+///              no transfer recovery at startup; the message handler takes no transfer bus).
+///              Earlier 2026-11-23 (callProvider gets the "Show caller name on calls" reader — SettingsNotifier.callShowCallerNameForCall). Earlier 2026-11-22 (notificationServiceProvider no longer asks the microphone — askStartupPrompts in PushService owns the start prompts). Earlier 2026-11-22 (review fixes: contactSyncProvider runs a ContactSyncRunner — one run at a
 ///              time, one timer, cancelled on dispose, re-armed when a block / unblock makes the
 ///              backup write due sooner (writeSoon, 1–10 minutes later); a contact notice is handed
 ///              on with its answer mark; the queue names an unnamed sender from this device's names
@@ -30,7 +32,6 @@
 ///              tokenSnapshotProvider 로 derived. tokenManagerProvider KeepAlive
 ///              SSoT. AuthService 의 onTokenRefresh callback 폐기. socket /
 ///              push token sync 도 events stream 으로 listen)
-/// @note SolanaNetwork enum is defined in solana_config.dart and re-exported here
 ///
 /// @functions
 ///  - isOnboardedProvider: onboarding completion state provider
@@ -63,15 +64,11 @@
 ///  - contactRestoreNoticeProvider: the restore notice not shown yet (the main shell shows it)
 ///  - communityAvatarBytesProvider: a community avatar's image (POST /files/fetch), per file id
 ///  - linkPreviewServiceProvider: LinkPreviewService provider
-///  - solanaNetworkProvider: Solana network (Devnet/Mainnet) state provider
-///  - solanaConfigProvider: SolanaConfig provider for the current network
-///  - transferEventBusProvider: Wallet V2 — chat transfer event broadcast bus (Phase B)
 
 import '../core/security/passcode.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'app_config.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -141,19 +138,7 @@ import '../core/storage/secure_storage.dart';
 import '../core/storage/encrypted_database.dart';
 import '../core/storage/local_file_protection.dart';
 import '../features/settings/settings_provider.dart';
-import '../features/wallet/services/transfer_event_bus.dart';
-import '../features/wallet/services/transfer_service.dart';
-
-// --- Solana network ---
-// Re-export SolanaNetwork — canonical definition in rpc_config.dart.
-export '../features/wallet/rpc/rpc_config.dart' show SolanaNetwork;
-
-import '../features/wallet/rpc/rpc_config.dart' show SolanaNetwork;
 import '../core/diagnostics/log_ref.dart';
-
-final solanaNetworkProvider = StateProvider<SolanaNetwork>((ref) {
-  return SolanaNetwork.devnet;
-});
 
 // --- Onboarding state ---
 final isOnboardedProvider = StateProvider<bool>((ref) => false);
@@ -251,7 +236,7 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
   //   (1) uninstall the app to bypass PIN,
   //   (2) reinstall — Keychain still has identity + PIN,
   //   (3) brute-force the PIN (6-digit, 30s lockout after 5 attempts),
-  //   (4) walk into the full chat history + mnemonic + wallet.
+  //   (4) walk into the full chat history + mnemonic.
   // With this, step (2) restarts the user in a true fresh-install state.
   await ensureFreshInstallSecureStoragePurge(secureStorage);
 
@@ -367,29 +352,6 @@ final appStartupProvider = FutureProvider<bool>((ref) async {
     // it once here as fallthrough triggers it immediately on the existing-session
     // startup path too.
     ref.read(sealedSenderAutoInitProvider);
-
-    // Step 6 — Wallet V2 Phase E2: in-flight transfer recovery.
-    // For sender rows that never sent transfer_completed (status='sent' &&
-    // signature non-null) due to app kill / network drop, query the RPC result
-    // after the fact → emit transfer_completed retroactively (P0-1 persistence fix).
-    // fire-and-forget — failures retry on the next startup (rows aged 1h+ are
-    // auto-cleaned via timeout).
-    //
-    // Skipped entirely when the wallet is compiled out: reading the provider
-    // instantiates TransferService, which subscribes to TransferEventBus and
-    // pops a confirm dialog whenever a peer sends a transfer request — a
-    // signing prompt for a wallet the user cannot see. The bus is a broadcast
-    // stream with no replay, so with no subscriber those requests are dropped
-    // and the sender's request times out.
-    if (AppConfig.enableWallet) {
-      Future<void>(() async {
-        try {
-          await ref.read(transferServiceProvider).recoverPending();
-        } catch (e) {
-          debugPrint('[AppStartup] transfer recoverPending failed (non-fatal): $e');
-        }
-      });
-    }
   }
 
   return true;
@@ -832,18 +794,6 @@ final senderCertificateManagerProvider = Provider<SenderCertificateManager?>((re
   }
 });
 
-// --- Wallet V2 Phase B: Transfer Event Bus ---
-//
-// Broadcast bus for chat transfer events (1:1 SOL/SPL/NFT). EncryptedMessageHandler's
-// transfer_* dispatcher emits; wallet-module listeners (TransferService /
-// TransferConfirmDialog etc.) subscribe via ref.watch(transferEventBusProvider).events.
-// Single instance (app lifetime). dispose via ref.onDispose.
-final transferEventBusProvider = Provider<TransferEventBus>((ref) {
-  final bus = TransferEventBus();
-  ref.onDispose(() => bus.dispose());
-  return bus;
-});
-
 // --- Community avatars ---
 /// The image of a community's avatar (its uploaded file [fileId]), fetched
 /// once with the account's login — POST /files/fetch, the file id in the
@@ -1038,7 +988,6 @@ final encryptedMessageHandlerProvider =
     fileService: ref.read(fileServiceProvider),
     sealedSenderService: ref.read(sealedSenderServiceProvider),
     senderCertificateManager: ref.read(senderCertificateManagerProvider),
-    transferEventBus: ref.read(transferEventBusProvider),
     isBlocked: ref.read(blockListProvider).isBlocked,
     // A peer started a new session (it may have reinstalled): its next
     // message from this account carries the name certificate again.

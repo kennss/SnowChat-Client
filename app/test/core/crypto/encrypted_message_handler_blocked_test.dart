@@ -5,11 +5,13 @@
 ///              that the queue would retry). The inner types (contract §12.4): a type this build
 ///              does not know is marked `_isUnknownType` (consumed, never shown — no empty
 ///              bubble); contact_added / contact_removed are contact notices with their name
-///              certificate; a message carries its sender's name certificate as peerNameCert.
+///              certificate; a message carries its sender's name certificate as peerNameCert; the
+///              transfer notices of the removed wallet (transfer_*) are unknown types like any other.
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-11-21
-/// @lastUpdated 2026-11-22 (a contact notice also says whether it is an answer). Earlier 2026-11-22
+/// @lastUpdated 2026-11-27 (an older build's wallet transfer notices are unknown types). Earlier
+///              2026-11-22 (a contact notice also says whether it is an answer). Earlier 2026-11-22
 ///              (no non-sealed 1:1 — Part 3 E; the inner-type rules of §12.4). Earlier
 ///              2026-11-22 (SealedSenderService takes trustedServerKeys). Earlier 2026-11-21
 ///
@@ -130,6 +132,28 @@ void main() {
     expect(message.metadata, {'_isUnknownType': true});
     expect(message.plaintext, isEmpty);
     expect(message.peerClientId, isNull);
+  });
+
+  test("the removed wallet's transfer notices (an older build sends them) are "
+      'unknown types: consumed, never a bubble', () async {
+    var n = 0;
+    for (final type in const [
+      'transfer_request',
+      'transfer_response',
+      'transfer_completed',
+      'transfer_failed',
+    ]) {
+      sessions.payload = {
+        'type': type,
+        'requestId': '1f4e2c0a-1234-4abc-89ab-0123456789ab',
+        'amount': '1000',
+        'text': 'x',
+      };
+      final message =
+          await handler.decryptSealedMessage(sealedFromBob('t${n++}'));
+      expect(message.metadata, {'_isUnknownType': true}, reason: type);
+      expect(message.plaintext, isEmpty, reason: type);
+    }
   });
 
   test('a payload without a type is a text message (the rule is for a type '

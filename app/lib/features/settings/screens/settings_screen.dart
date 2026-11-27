@@ -3,7 +3,8 @@
 /// @author      Kennt Kim
 /// @company     Calida Lab
 /// @created     2026-03-29
-/// @lastUpdated 2026-11-23 (Privacy: "Show caller name on calls" — whether the system call
+/// @lastUpdated 2026-11-27 (wallet removed: no Wallet section — network tile, Hidden Accounts — and
+///              the reset warning no longer names wallet data; no AppConfig). Earlier 2026-11-23 (Privacy: "Show caller name on calls" — whether the system call
 ///              screens show the name this phone knows for the other party; default on).
 ///              Earlier 2026-11-22 (Security: Change Passcode, Auto-Lock (default 1 min); biometric unlock
 ///              wording). Earlier 2026-11-20 (group protocol v2 has no build flag: the retention tile shows where groups can run, and account deletion always goes through deleteAccountWithProof). Earlier 2026-11-20 (group protocol v2: "Offline group messages" — how long the server keeps group messages for this account; a progress dialog while the account leaves its groups and is deleted; account deletion with group protocol v2 on: leave every v2 group first, then delete with the account key's deletion proof — core/network/account_deletion.dart). Earlier 2026-11-12 (account deletion: removed the marketplace-listing warning copy). Earlier 2026-11-11 (at-rest protection level 1: _performReset closes + deletes the encrypted drift DB and its SQLCipher key BEFORE the secure-storage wipe — files first, key last). Earlier 2026-11-08 (ENABLE_WALLET=false hardening: the Wallet section (network tile + Hidden Accounts) is hidden when AppConfig.enableWallet is false). Earlier 2026-08-07 (added Android-only "Lock-screen calls" tile in Notifications — opens the system USE_FULL_SCREEN_INTENT toggle via CallPermissionHelper.promptFromSettings so users can (re-)enable full-screen incoming calls over the lock screen on Android 14+). Earlier 2026-08-04 (Reset App / Delete Account now actually WIPE local data: _performReset deletes the drift DB file (+ WAL/SHM) and invalidates snowDatabaseProvider instead of only close()ing the connection, and clears currentDisplayNameProvider — previously a new identity created after a reset inherited the prior account's conversations + display name). Earlier 2026-08-03 (Profile header is now tappable (InkWell + trailing
@@ -32,14 +33,12 @@ import '../../../shared/constants/sizes.dart';
 import '../../../shared/widgets/snow_avatar.dart';
 import '../../../shared/widgets/snow_id_display.dart';
 import '../../../app/providers.dart';
-import '../../../app/app_config.dart';
 import '../../../core/group_v2/gv2_trusted_keys.dart' show gv2GroupsAvailable;
 import '../../../app/restart_widget.dart';
 import '../../../utils/version.dart';
 import '../../ai/service/supported_languages.dart';
 import '../providers/gv2_retention_provider.dart';
 import '../settings_provider.dart';
-import 'network_settings_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -249,21 +248,6 @@ class SettingsScreen extends ConsumerWidget {
           ),
 
           const Divider(),
-
-          // Wallet / Network — omitted entirely in an ENABLE_WALLET=false build
-          // (its routes do not exist there).
-          if (AppConfig.enableWallet) ...[
-            _buildSectionHeader('Wallet'),
-            _buildNetworkTile(context, ref),
-            _buildNavTile(
-              icon: Icons.visibility_off_rounded,
-              title: 'Hidden Accounts',
-              subtitle: 'Restore derived sub-wallets you have hidden',
-              onTap: () => context.push('/settings/hidden-wallets'),
-            ),
-
-            const Divider(),
-          ],
 
           // About
           _buildSectionHeader('About'),
@@ -679,43 +663,6 @@ class SettingsScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildNetworkTile(BuildContext context, WidgetRef ref) {
-    final network = ref.watch(solanaNetworkProvider);
-    return ListTile(
-      leading: const Icon(
-        Icons.swap_horiz_rounded,
-        color: SnowColors.textSecondary,
-        size: 22,
-      ),
-      title: const Text(
-        'Network',
-        style: TextStyle(
-          color: SnowColors.textPrimary,
-          fontSize: 15,
-        ),
-      ),
-      subtitle: const Text(
-        'Solana RPC network selection',
-        style: TextStyle(
-          color: SnowColors.textTertiary,
-          fontSize: 12,
-        ),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          NetworkBadge(network: network, compact: true),
-          const SizedBox(width: 4),
-          const Icon(
-            Icons.chevron_right_rounded,
-            color: SnowColors.textTertiary,
-          ),
-        ],
-      ),
-      onTap: () => context.push('/settings/network'),
-    );
-  }
-
   /// Reset app: clear all local data and return to onboarding.
   /// Identity keys and recovery phrase are deleted from secure storage.
   void _showResetConfirm(BuildContext context, WidgetRef ref) {
@@ -729,7 +676,7 @@ class SettingsScreen extends ConsumerWidget {
         ),
         content: const Text(
           'This will clear all local data and return to the welcome screen.\n\n'
-          'Your identity, messages, and wallet data will be deleted from this device. '
+          'Your identity and messages will be deleted from this device. '
           'Make sure you have backed up your recovery phrase before proceeding.',
           style: TextStyle(color: SnowColors.textSecondary),
         ),
